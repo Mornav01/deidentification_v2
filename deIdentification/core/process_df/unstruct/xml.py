@@ -1,4 +1,8 @@
-import re
+import re          # standard lib – re.Match type hint + fallback
+try:
+    import re2
+except ImportError:
+    import re as re2  # type: ignore[no-redef]
 import xml.etree.ElementTree as ET
 from dateutil import parser as date_parser
 from deIdentification.nd_logger import nd_logger
@@ -11,11 +15,11 @@ except Exception:
     HAS_LXML = False
 
 # ---------------- regex helpers ----------------
-XML_DECLARATION_RE = re.compile(r"<\?xml[^>]*\?>", re.IGNORECASE)
-XML_STYLESHEET_RE = re.compile(r"<\?xml-stylesheet[^>]*\?>", re.IGNORECASE)
-PI_RE = re.compile(r"<\?.*?\?>", re.DOTALL)  # generic processing instruction removal
-CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
-BARE_AMP_RE = re.compile(r'&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9A-Fa-f]+;)')
+XML_DECLARATION_RE = re2.compile(r"<\?xml[^>]*\?>", re2.IGNORECASE)
+XML_STYLESHEET_RE = re2.compile(r"<\?xml-stylesheet[^>]*\?>", re2.IGNORECASE)
+PI_RE = re2.compile(r"(?s)<\?.*?\?>")  # (?s) = DOTALL; RE2 supports inline flag
+CONTROL_CHARS_RE = re2.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
+BARE_AMP_RE = re2.compile(r'&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9A-Fa-f]+;)')
 
 # ---------------- cleaning helpers ----------------
 def remove_control_chars(text: str) -> str:
@@ -28,13 +32,13 @@ def escape_bare_ampersands(text: str) -> str:
     return BARE_AMP_RE.sub("&amp;", text)
 
 def normalize_br(text: str) -> str:
-    return re.sub(r"<br\s*>", "<br />", text, flags=re.IGNORECASE)
+    return re2.sub(r"(?i)<br\s*>", "<br />", text)
 
 def wrap_with_root_if_needed(text: str) -> str:
     s = text.strip()
     if not s:
         return s
-    m = re.match(r"\s*<([A-Za-z0-9_:.-]+)(\s|>)", s)
+    m = re2.match(r"\s*<([A-Za-z0-9_:.-]+)(\s|>)", s)
     if not m:
         return f"<root>{s}</root>"
     root_tag = m.group(1)
@@ -149,7 +153,7 @@ def deidentify_xml_tags(text: str, tag_replacements: dict) -> str:
         elif tag_name.lower() in ["zip", "zipcode", "postalcode"]:
             def mask_zip(m):
                 return m.group(0)[:3]  # keep only first 3 digits
-            tag.text = re.sub(r"\d{5}", mask_zip, val)
+            tag.text = re2.sub(r"\d{5}", mask_zip, val)
 
         # --- General Replacements ---
         elif tag_name in tag_replacements:

@@ -1,4 +1,8 @@
-import re
+import re          # standard lib – re.Match type hint + fallback
+try:
+    import re2
+except ImportError:
+    import re as re2  # type: ignore[no-redef]
 import xml.etree.ElementTree as ET
 from dateutil import parser as date_parser
 from deIdentification.nd_logger import nd_logger
@@ -41,7 +45,7 @@ def deidentify_xml_tags(text: str, tag_replacements: dict) -> str:
                 masked = zip5[:3]     # keep only first 3 digits
                 #nd_logger.info(f"[XMLUtils] Masking ZIP inside '{val}' → '{masked}'")
                 return masked
-            masked_val = re.sub(r"\d{5}", mask_zip, val)
+            masked_val = re2.sub(r"\d{5}", mask_zip, val)
             if masked_val != val:
                 #nd_logger.info(f"[XMLUtils] Updated {tag_name}: '{val}' → '{masked_val}'")
                 pass

@@ -1,8 +1,9 @@
 import polars as pl
+import re          # standard lib – re.Match type hint + fallback
 try:
-    import re2 as re  # google-re2: RE2 engine, no catastrophic backtracking, Python 3.13 safe
+    import re2
 except ImportError:
-    import re  # type: ignore[no-redef]
+    import re as re2  # type: ignore[no-redef]
 import itertools
 from typing import List
 from core.process_df.rules import RuleBase
@@ -115,17 +116,17 @@ class NotesRule(RuleBase):
             if encounter_id_col and row.get(encounter_id_col) is not None:
                 original = str(row[encounter_id_col])
                 replacement = str(row.get("nd_encounter_id", "((ENCOUNTER_ID))"))
-                replacements[re.escape(original)] = replacement
+                replacements[re2.escape(original)] = replacement
             if appointment_id_col and row.get(appointment_id_col) is not None:
                 original = str(row[appointment_id_col])
                 replacement = str(row.get("nd_appointment_id", "((APPOINTMENT_ID))"))
-                replacements[re.escape(original)] = replacement
+                replacements[re2.escape(original)] = replacement
             for col in [patient_id_col, reference_pid_col]:
                 if col and row.get(col) is not None:
                     original = str(row[col])
                     nd_pid = row.get("_resolved_nd_patient_id")
                     replacement = str(int(nd_pid)) if nd_pid is not None else "((PATIENT_ID))"
-                    replacements[re.escape(original)] = replacement
+                    replacements[re2.escape(original)] = replacement
             return replacements
 
         rows_as_dicts = df.to_dicts()
@@ -138,7 +139,7 @@ class NotesRule(RuleBase):
                     # Also fixes a latent bug: Polars str.replace_all (Rust/RE2) rejects
                     # lookbehind, so any path that forwarded this pattern to Polars would
                     # have silently failed.
-                    text = re.sub(rf"\b{pattern}\b", repl, text)
+                    text = re2.sub(rf"\b{pattern}\b", repl, text)
                 except Exception as e:
                     nd_logger.warning(
                         f"[{self.__class__.__name__}] Regex error for pattern {pattern}: {e}"
@@ -349,7 +350,7 @@ class NotesRule(RuleBase):
                 min_allowed_words = max(config_min_words, 3)
                 if word_count < min_allowed_words:
                     continue
-                pattern = rf"(?i)\b{re.escape(val)}\b"
+                pattern = rf"(?i)\b{re2.escape(val)}\b"
                 replacement_map[pattern] = mask_config[col]["masking_value"]
             pii_replacements.append(replacement_map)
 
@@ -358,7 +359,7 @@ class NotesRule(RuleBase):
                 return text
             for pattern, repl in replacements.items():
                 try:
-                    text = re.sub(pattern, repl, text)
+                    text = re2.sub(pattern, repl, text)
                 except Exception:
                     pass
             return text
@@ -381,7 +382,7 @@ class NotesRule(RuleBase):
             )
             return masked_col
 
-        date_pattern = re.compile(DATE_PATTERN_NOTES)
+        date_pattern = re2.compile(DATE_PATTERN_NOTES)
         dob_rows = df_batch.select(dob_columns).to_dicts()
         dob_replacements_list = []
 
@@ -476,9 +477,9 @@ class NotesRule(RuleBase):
                     return note_text
                 try:
                     sorted_patterns = sorted(patterns, key=len, reverse=True)
-                    compiled = re.compile(
-                        "|".join(rf"\b{re.escape(p)}\b" for p in sorted_patterns),
-                        re.IGNORECASE,
+                    compiled = re2.compile(
+                        "|".join(rf"\b{re2.escape(p)}\b" for p in sorted_patterns),
+                        re2.IGNORECASE,
                     )
                     return compiled.sub(masking_value, note_text)
                 except Exception as e:
@@ -530,7 +531,7 @@ class NotesRule(RuleBase):
                 # \b is RE2-safe. The original (?<![A-Za-z0-9])…(?![A-Za-z0-9]) used
                 # lookbehind which is unsupported in both google-re2 AND Polars' Rust
                 # regex engine, so it was already silently failing via the except branch.
-                pattern = r"(?i)\b{}\b".format(re.escape(str(old_value)))
+                pattern = r"(?i)\b{}\b".format(re2.escape(str(old_value)))
                 try:
                     masked_col = masked_col.str.replace_all(pattern, new_value)
                 except Exception as e:

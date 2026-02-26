@@ -1,4 +1,8 @@
-import re
+import re          # standard lib – re.Match type hint + fallback
+try:
+    import re2
+except ImportError:
+    import re as re2  # type: ignore[no-redef]
 
 
 

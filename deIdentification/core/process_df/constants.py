@@ -1,7 +1,8 @@
+import re          # standard lib – re.Match type hint + fallback
 try:
-    import re2 as re  # google-re2: RE2 engine, no catastrophic backtracking, Python 3.13 safe
+    import re2
 except ImportError:
-    import re  # type: ignore[no-redef]
+    import re as re2  # type: ignore[no-redef]
 
 DATE_PATTERN_NOTES = (
     # 1. ISO style: YYYY-MM-DD with optional time and fractional seconds
@@ -89,9 +90,9 @@ DATE_PATTERN_GENERAL = (
 
 
 ZIP_CODE_PATTERNS = {
-    "US": re.compile(r'^(\d{3})(\d{2})(?:-\d{4})?$'),  # Matches 12345 and 12345-6789,
-    # add more countries her, e.g.
-    "CA": re.compile(r'^([A-Z]\d[A-Z]) ?\d[A-Z]\d$')
+    "US": re2.compile(r'^(\d{3})(\d{2})(?:-\d{4})?$'),  # Matches 12345 and 12345-6789,
+    # add more countries here, e.g.
+    "CA": re2.compile(r'^([A-Z]\d[A-Z]) ?\d[A-Z]\d$')
 }
 
 

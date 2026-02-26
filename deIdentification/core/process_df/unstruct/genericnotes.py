@@ -1,8 +1,9 @@
 import polars as pl
+import re          # standard lib – re.Match type hint + fallback
 try:
-    import re2 as re  # google-re2: RE2 engine, no catastrophic backtracking, Python 3.13 safe
+    import re2
 except ImportError:
-    import re  # type: ignore[no-redef]
+    import re as re2  # type: ignore[no-redef]
 from typing import Dict
 from .utils import GENERIC_REGEX_DICT
 from core.process_df.rules import RuleBase, BaseDateOffsetRule
@@ -21,7 +22,7 @@ def mask_address(match: re.Match) -> str:
 class GenericDateShiftRule(BaseDateOffsetRule):
     """Shift dates found in free-text notes columns using the per-patient offset."""
 
-    COMPILED_DATE_PATTERN = re.compile(DATE_PATTERN_NOTES)
+    COMPILED_DATE_PATTERN = re2.compile(DATE_PATTERN_NOTES)
 
     def __init__(self):
         super().__init__(format_as_datetime=False, is_notes=True)
@@ -84,7 +85,7 @@ class GenericNotesRule(RuleBase):
                 # Address masking uses a callable replacement (named-group substitution).
                 for pattern in patterns:
                     try:
-                        compiled = re.compile(pattern, re.IGNORECASE)
+                        compiled = re2.compile(pattern, re2.IGNORECASE)
                     except Exception as e:
                         nd_logger.warning(
                             f"[{self.__class__.__name__}] Invalid address pattern: "
@@ -107,7 +108,7 @@ class GenericNotesRule(RuleBase):
             elif processing_func:
                 # Custom processing function (e.g. fuzzy replacement).
                 for pattern in patterns:
-                    compiled = re.compile(pattern, re.IGNORECASE)
+                    compiled = re2.compile(pattern, re2.IGNORECASE)
                     df = df.with_columns(
                         pl.col(col_name).map_elements(
                             lambda text: processing_func(text, compiled, masking_value)
@@ -126,7 +127,7 @@ class GenericNotesRule(RuleBase):
                 for pattern in patterns:
                     try:
                         # Validate the pattern first; Polars raises on invalid regex.
-                        re.compile(pattern)
+                        re2.compile(pattern)
                     except Exception as e:
                         nd_logger.warning(
                             f"[{self.__class__.__name__}] Invalid pattern for key '{key}': "

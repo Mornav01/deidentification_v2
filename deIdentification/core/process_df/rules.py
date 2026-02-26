@@ -2,10 +2,11 @@ import polars as pl
 from datetime import timedelta, datetime
 from typing import Dict
 from enum import Enum
+import re          # standard lib – re.Match type hint + fallback
 try:
-    import re2 as re  # google-re2: RE2 engine, no catastrophic backtracking, Python 3.13 safe
+    import re2
 except ImportError:
-    import re  # type: ignore[no-redef]
+    import re as re2  # type: ignore[no-redef]
 from dateutil import parser as date_parser
 from core.process_df.constants import DATE_PATTERN_GENERAL, ZIP_CODE_PATTERNS
 from django.conf import settings
@@ -121,7 +122,7 @@ def _normalize_to_mysql_datetime(val) -> str | None:
 
 
 class BaseDateOffsetRule(RuleBase):
-    COMPILED_DATE_PATTERN = re.compile(DATE_PATTERN_GENERAL)
+    COMPILED_DATE_PATTERN = re2.compile(DATE_PATTERN_GENERAL)
 
     def __init__(self, format_as_datetime: bool = True, is_notes: bool = False):
         self.format_as_datetime = format_as_datetime
@@ -147,7 +148,7 @@ class BaseDateOffsetRule(RuleBase):
             try:
                 parsed = date_parser.parse(date_str)
                 shifted = parsed + timedelta(days=offset_days)
-                if re.search(r"\d{2}:\d{2}:\d{2}", date_str):
+                if re2.search(r"\d{2}:\d{2}:\d{2}", date_str):
                     shifted_str = shifted.strftime("%Y-%m-%d %H:%M:%S")
                 else:
                     shifted_str = shifted.strftime("%Y-%m-%d")
