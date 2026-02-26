@@ -135,7 +135,14 @@ class NotesRule(RuleBase):
 
             for col in [patient_id_col, reference_pid_col]:
                 if col and row.get(col) is not None:
-                    original = str(row[col])
+                    # _resolved_patient_id may be Float64 after a Polars join →
+                    # str(9097.0) = "9097.0" which won't match "9097" in the text.
+                    # Normalise to int string the same way we do for nd_pid below.
+                    raw_original = row[col]
+                    try:
+                        original = str(int(float(raw_original)))
+                    except (ValueError, TypeError):
+                        original = str(raw_original)
                     nd_pid = row.get("_resolved_nd_patient_id")
                     if nd_pid is not None:
                         try:
