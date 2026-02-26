@@ -38,16 +38,16 @@ echo ""
 # ---------------------------------------------------------------------------
 # Phase 1: Clean up any leftover sessions and free the server port
 # ---------------------------------------------------------------------------
-echo "--- Phase 1: Cleaning sessions & ports ---"
-screen -ls | grep "deid_" | awk '{print $1}' | xargs -I{} screen -X -S {} quit 2>/dev/null
-lsof -ti:8000 | xargs kill -9 2>/dev/null
-sleep 2
+# echo "--- Phase 1: Cleaning sessions & ports ---"
+# screen -ls | grep "deidv2_" | awk '{print $1}' | xargs -I{} screen -X -S {} quit 2>/dev/null
+# lsof -ti:8000 | xargs kill -9 2>/dev/null
+# sleep 2
 
 # ---------------------------------------------------------------------------
 # Phase 2: Start the Django development server
 # ---------------------------------------------------------------------------
 echo "--- Phase 2: Starting server ---"
-screen -dmS "SRV_deid" bash -lc "conda activate '$VENV_PATH' && cd '$PROJECT_DIR' && python manage.py runserver > server_debug.log 2>&1"
+screen -dmS "SRV_deidv2" bash -lc "conda activate '$VENV_PATH' && cd '$PROJECT_DIR' && python manage.py runserver > server_debug.log 2>&1"
 sleep 3
 
 # ---------------------------------------------------------------------------
@@ -61,12 +61,12 @@ sleep 3
 #   - For 1000 small tables (single task each) + 100 large tables (4 tasks
 #     each), running 8-16 workers gives good throughput.
 # ---------------------------------------------------------------------------
-echo "--- Phase 3: Starting $n worker(s) ---"
-for ((i = 1; i <= n; i++)); do
-  screen -dmS "WRK_deid_$i" bash -lc "conda activate '$VENV_PATH' && cd '$PROJECT_DIR' && python manage.py start_worker"
-  echo "  Started WRK_deid_$i"
-done
+# echo "--- Phase 3: Starting $n worker(s) ---"
+# for ((i = 1; i <= n; i++)); do
+#   screen -dmS "WRK_deidv2_$i" bash -lc "conda activate '$VENV_PATH' && cd '$PROJECT_DIR' && python manage.py start_worker"
+#   echo "  Started WRK_deidv2_$i"
+# done
 
 echo ""
 echo "--- Active sessions ---"
-screen -ls | grep "deid"
+screen -ls | grep "deidv2"
