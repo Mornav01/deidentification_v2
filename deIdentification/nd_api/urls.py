@@ -19,10 +19,6 @@ from .views import (
     DbStatsView,
     UserPermissions,
     CloudMovement,
-    DumpDataView,
-    StartDumpView,
-    DumpRestoreView,
-    StartDumpRestoreView,
     TableQCView,
     TablesQCListView,
     TableQCStatusView,
@@ -73,11 +69,6 @@ urlpatterns = [
     path("stats_view/<int:db_id>/", DbStatsView.as_view(), name="stats_view"),
     path("user_permissions/", UserPermissions.as_view(), name="user_permissions"),
     path("cloudmove/<int:table_id>/", CloudMovement.as_view(), name="cloudmove"),
-    
-    path("dump/", DumpDataView.as_view(), name="datadump"),
-    path("start_dump_creation/<int:dump_id>/", StartDumpView.as_view(), name="datadump"),
-    path("restore_dump/<int:restore_dump_id>/", StartDumpRestoreView.as_view(), name="restore_dump"),
-    path("restore_details/", DumpRestoreView.as_view(), name="restore_details"),
 
     # Add apis for QC
     path("qc/tables/", TablesQCListView.as_view(), name="qc_tables"),

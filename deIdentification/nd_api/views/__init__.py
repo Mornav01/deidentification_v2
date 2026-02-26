@@ -8,5 +8,4 @@ from .view_table_data import ViewTableDataView
 from .permission import UserPermissions
 from .stats_view import DbStatsView
 from .cloudmove import CloudMovement
-from .datadump import DumpDataView, StartDumpView, DumpRestoreView, StartDumpRestoreView 
 from .qc_view import TableQCView, TablesQCListView, QCResultView, TableQCStatusView
