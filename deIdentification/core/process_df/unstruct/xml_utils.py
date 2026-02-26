@@ -21,8 +21,6 @@ xml_tag_replacements = {
 
     # ── Provider / facility ──────────────────────────────────────────────────
     # ProviderId / NPI are not in the mapping table → static placeholder is fine
-    "ProviderId":      "((PROVIDER_ID))",
-    "providerId":      "((PROVIDER_ID))",
     "ProviderName":    "((PROVIDER_NAME))",
     "providerName":    "((PROVIDER_NAME))",
     "AttendingName":   "((PROVIDER_NAME))",

@@ -163,8 +163,12 @@ class NotesRule(RuleBase):
                 continue
             for pattern, repl in replacements.items():
                 try:
-                    # \b is RE2-safe and equivalent to (?<!\d)…(?!\d) for numeric IDs.
-                    text = re2.sub(rf"\b{pattern}\b", repl, text)
+                    # Use standard re (not re2) here: RE2 doesn't support lookbehind.
+                    # (?<!\d){pattern}(?!\d) is the correct semantic — only skip when
+                    # the ID is immediately adjacent to another digit (e.g. "12309097"
+                    # should NOT replace the embedded 9097).  \b would also exclude
+                    # word-chars like "_" which is too restrictive.
+                    text = re.sub(rf"(?<!\d){pattern}(?!\d)", repl, text)
                 except Exception as e:
                     nd_logger.warning(
                         f"[{self.__class__.__name__}] Regex error for pattern {pattern}: {e}"
