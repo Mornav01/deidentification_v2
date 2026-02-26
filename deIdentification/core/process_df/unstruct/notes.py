@@ -365,15 +365,23 @@ class NotesRule(RuleBase):
             f"[{self.__class__.__name__}] Masking PII columns: {pii_columns}"
         )
 
-        # Build per-row replacement maps from the PII columns.
-        pii_rows = (
-            df_batch.select(pii_columns)
-            .cast(pl.Utf8)
+        # ── Optimisation: build replacement map ONCE per unique patient ──────
+        # A 100k-row batch may have only 33k unique patients.  Many notes rows
+        # share the same patient → we'd re-compute the same map hundreds of
+        # times.  Instead, build 33k maps (one per distinct patient_id), then
+        # look up by _resolved_patient_id for each source row.
+        lookup_col = "_resolved_patient_id"
+        has_pid = lookup_col in df_batch.columns
+
+        # Select just the columns we need (PII values + patient key).
+        select_cols = pii_columns + ([lookup_col] if has_pid else [])
+        pii_rows_df = (
+            df_batch.select(select_cols)
+            .cast({c: pl.Utf8 for c in pii_columns})
             .fill_null("")
-            .to_dicts()
         )
-        pii_replacements = []
-        for row in pii_rows:
+
+        def _build_map(row: dict) -> dict:
             replacement_map: dict = {}
             for col in pii_columns:
                 val = row[col].strip()
@@ -386,7 +394,27 @@ class NotesRule(RuleBase):
                     continue
                 pattern = rf"(?i)\b{re2.escape(val)}\b"
                 replacement_map[pattern] = mask_config[col]["masking_value"]
-            pii_replacements.append(replacement_map)
+            return replacement_map
+
+        if has_pid:
+            # Deduplicate: build one map per unique patient (33k instead of 100k).
+            pii_cols_only = pii_rows_df.select(pii_columns)
+            pid_series = pii_rows_df[lookup_col].to_list()
+
+            # Map patient_id → replacement_map (computed lazily, cached in dict).
+            pid_to_map: dict = {}
+            for pid, row in zip(pid_series, pii_cols_only.to_dicts()):
+                if pid not in pid_to_map:
+                    pid_to_map[pid] = _build_map(row)
+
+            pii_replacements = [pid_to_map.get(pid, {}) for pid in pid_series]
+            nd_logger.debug(
+                f"[{self.__class__.__name__}] Built {len(pid_to_map)} unique PII maps "
+                f"for {len(pii_replacements)} rows."
+            )
+        else:
+            # Fallback: no patient key available — build per-row as before.
+            pii_replacements = [_build_map(row) for row in pii_rows_df.to_dicts()]
 
         def replace_row(text: str, replacements: dict) -> str:
             if not replacements:
