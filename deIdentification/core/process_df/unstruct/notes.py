@@ -108,8 +108,8 @@ class NotesRule(RuleBase):
             f"enc={encounter_id_col}, pid={patient_id_col}, "
             f"ref={reference_pid_col}, appt={appointment_id_col}"
         )
-        nd_logger.info(f"[{self.__class__.__name__}] df.columns: {df.columns}")
-        nd_logger.info(f"[{self.__class__.__name__}] df.head(): {df.head()}")
+        # nd_logger.info(f"[{self.__class__.__name__}] df.columns: {df.columns}")
+        # nd_logger.info(f"[{self.__class__.__name__}] df.head(): {df.head()}")
 
         text_list = df[text_column].cast(pl.Utf8).to_list()
 
