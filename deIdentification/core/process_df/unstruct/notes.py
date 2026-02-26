@@ -478,8 +478,7 @@ class NotesRule(RuleBase):
                 try:
                     sorted_patterns = sorted(patterns, key=len, reverse=True)
                     compiled = re2.compile(
-                        "|".join(rf"\b{re2.escape(p)}\b" for p in sorted_patterns),
-                        re2.IGNORECASE,
+                        "(?i)" + "|".join(rf"\b{re2.escape(p)}\b" for p in sorted_patterns),
                     )
                     return compiled.sub(masking_value, note_text)
                 except Exception as e:

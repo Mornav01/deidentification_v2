@@ -15,8 +15,8 @@ except Exception:
     HAS_LXML = False
 
 # ---------------- regex helpers ----------------
-XML_DECLARATION_RE = re2.compile(r"<\?xml[^>]*\?>", re2.IGNORECASE)
-XML_STYLESHEET_RE = re2.compile(r"<\?xml-stylesheet[^>]*\?>", re2.IGNORECASE)
+XML_DECLARATION_RE = re2.compile(r"(?i)<\?xml[^>]*\?>")
+XML_STYLESHEET_RE = re2.compile(r"(?i)<\?xml-stylesheet[^>]*\?>")
 PI_RE = re2.compile(r"(?s)<\?.*?\?>")  # (?s) = DOTALL; RE2 supports inline flag
 CONTROL_CHARS_RE = re2.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
 BARE_AMP_RE = re2.compile(r'&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9A-Fa-f]+;)')

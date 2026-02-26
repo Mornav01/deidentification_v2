@@ -85,7 +85,7 @@ class GenericNotesRule(RuleBase):
                 # Address masking uses a callable replacement (named-group substitution).
                 for pattern in patterns:
                     try:
-                        compiled = re2.compile(pattern, re2.IGNORECASE)
+                        compiled = re2.compile(f"(?i){pattern}")
                     except Exception as e:
                         nd_logger.warning(
                             f"[{self.__class__.__name__}] Invalid address pattern: "
@@ -108,7 +108,7 @@ class GenericNotesRule(RuleBase):
             elif processing_func:
                 # Custom processing function (e.g. fuzzy replacement).
                 for pattern in patterns:
-                    compiled = re2.compile(pattern, re2.IGNORECASE)
+                    compiled = re2.compile(f"(?i){pattern}")
                     df = df.with_columns(
                         pl.col(col_name).map_elements(
                             lambda text: processing_func(text, compiled, masking_value)

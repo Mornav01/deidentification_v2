@@ -453,6 +453,7 @@ class NDDBHandler:
                     [list(row) for row in rows],
                     schema=columns,
                     orient="row",
+                    infer_schema_length=len(rows),
                 )
         finally:
             conn.close()
@@ -487,6 +488,12 @@ class NDDBHandler:
                     [list(row) for row in rows],
                     schema=columns,
                     orient="row",
+                    # Scan every row in the batch before fixing column dtypes.
+                    # Without this, Polars locks the schema after the first
+                    # `infer_schema_length` (default 100) rows. If those rows
+                    # are all NULL for a column and a later row holds a string
+                    # (e.g. "7/29/2019"), Polars raises ComputeError.
+                    infer_schema_length=len(rows),
                 )
         finally:
             conn.close()
