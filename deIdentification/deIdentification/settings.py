@@ -32,7 +32,7 @@ SECRET_KEY = "django-insecure-81e&%b$hwo15=#dwuv8pr(tz+8$eit5jr&_(ey=v@e3=&8u(b-
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = is_true(os.environ.get("DEBUG", "true"))
-DISABLE_AUTHENTICATION = is_true(os.environ.get("DISABLE_AUTHENTICATION", "false"))
+DISABLE_AUTHENTICATION = is_true(os.environ.get("DISABLE_AUTHENTICATION", "true"))
 
 
 ALLOWED_HOSTS = ["*"]
@@ -78,7 +78,6 @@ INSTALLED_APPS = [
     "nd_api",
     "rest_framework",
     "worker",
-    "keycloakauth",
     "corsheaders",
 ]
 
@@ -157,7 +156,7 @@ STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 
-BATCH_SIZE_DURING_DE_IDENTIFICATION = int(os.environ.get("BATCH_SIZE_DURING_DE_IDENTIFICATION", 10000))
+BATCH_SIZE_DURING_DE_IDENTIFICATION = int(os.environ.get("BATCH_SIZE_DURING_DE_IDENTIFICATION", 100000))
 PATIENT_ID_PREFIX = 10000000
 
 # Jupyter Lab settings
@@ -177,7 +176,7 @@ CREATE_SAVEPOINT_IN_TRANSACTION = is_true(
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
-        "NAME": os.getenv("DE_IDENTIFICATION_DB_NAME", "deid_staging"),
+        "NAME": os.getenv("DE_IDENTIFICATION_DB_NAME", "deid_prod_v2"),
         "USER": os.getenv("DE_IDENTIFICATION_DB_USER", "postgres"),
         "PASSWORD": os.getenv("DE_IDENTIFICATION_DB_PASSWORD", "postgres"),
         "HOST": os.getenv("DE_IDENTIFICATION_DB_HOST", "localhost"),

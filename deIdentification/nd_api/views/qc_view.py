@@ -2,7 +2,6 @@ import traceback
 import uuid
 from typing import TypedDict
 from rest_framework.views import APIView
-from keycloakauth.utils import IsAuthenticated
 from django.conf import settings
 from django.db import transaction
 from rest_framework import status
@@ -19,7 +18,7 @@ from qc_package.schema import OutputSchemaForTable
 
 @conditional_authentication
 class TableQCView(APIView):
-    authentication_classes = [IsAuthenticated]
+    authentication_classes = []
 
     def post(self, request):
         data = request.data
@@ -137,7 +136,7 @@ def marked_complete_and_clean_up_tasks(table_id: int, chain_id: int, dependencie
 
 @conditional_authentication
 class TablesQCListView(APIView):
-    authentication_classes = [IsAuthenticated]
+    authentication_classes = []
 
     def get(self, request):
         try:
@@ -179,7 +178,7 @@ class TablesQCListView(APIView):
 
 @conditional_authentication
 class TableQCStatusView(APIView):
-    authentication_classes = [IsAuthenticated]
+    authentication_classes = []
 
     def get(self, request, table_id):
         try:
@@ -208,7 +207,7 @@ class TableQCStatusView(APIView):
 
 @conditional_authentication
 class QCResultView(APIView):
-    authentication_classes = [IsAuthenticated]
+    authentication_classes = []
 
     def get(self, request, table_id):
         try:

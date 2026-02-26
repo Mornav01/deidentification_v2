@@ -4,7 +4,6 @@ from nd_api.models import TableDetailsModel, TableQCStatus
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from keycloakauth.utils import IsAuthenticated
 from deIdentification.nd_logger import nd_logger
 import hashlib
 from worker.models import Task, Chain
@@ -37,7 +36,7 @@ def parse_mysql_connection_string(conn_str):
     }
 @conditional_authentication
 class CloudMovement(APIView):
-    authentication_classes = [IsAuthenticated]
+    authentication_classes = []
 
     def get(self, request, table_id: int):
         try:

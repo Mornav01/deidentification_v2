@@ -3,13 +3,12 @@ from nd_api.models import  DataDump, RestoreDump
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from keycloakauth.utils import IsAuthenticated
 from deIdentification.nd_logger import nd_logger
 from nd_api.migratedb.migrate import restore_database
 
 
 class DumpRestoreView(APIView):
-    authentication_classes = [IsAuthenticated]
+    authentication_classes = []
 
     def get(self, request):
         try:
@@ -57,7 +56,7 @@ class DumpRestoreView(APIView):
 
 
 class StartDumpRestoreView(APIView):
-    authentication_classes = [IsAuthenticated]
+    authentication_classes = []
 
     def get(self, request, restore_dump_id: int):
         try:

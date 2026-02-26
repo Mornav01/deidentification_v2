@@ -7,7 +7,6 @@ from nd_api.models import TableDetailsModel
 import csv
 import io
 from datetime import datetime
-from keycloakauth.utils import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 from deIdentification.nd_logger import nd_logger
@@ -25,7 +24,7 @@ CSV_HEADERS = [
 
 
 class DownloadConfigAsCSV(APIView):
-    # authentication_classes = [IsAuthenticated]
+    # authentication_classes = []
 
     def get(self, request, db_id: int):
         try:
@@ -79,7 +78,7 @@ class DownloadConfigAsCSV(APIView):
 
 
 class UploadConfigFromCSV(APIView):
-    # authentication_classes = [IsAuthenticated]
+    # authentication_classes = []
     
     def post(self, request, db_id: int):
         try:

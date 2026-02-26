@@ -9,14 +9,13 @@ from rest_framework.response import Response
 from nd_api.models import TableDetailsModel, DbDetailsModel, IgnoreRowsDeIdentificaiton
 from core.process_df.main import start_de_identification_for_table
 from nd_api.hooks import de_identification_failure_hook_for_table
-from keycloakauth.utils import IsAuthenticated
 from deIdentification.nd_logger import nd_logger
 from nd_api.decorator import conditional_authentication
 
 
 @conditional_authentication
 class StopDeIdentificationView(APIView):
-    authentication_classes = [IsAuthenticated]
+    authentication_classes = []
 
     def post(self, request, table_id: int):
         try:
@@ -47,7 +46,7 @@ class StopDeIdentificationView(APIView):
         
 @conditional_authentication
 class DeIdentifyTableView(APIView):
-    authentication_classes = [IsAuthenticated]
+    authentication_classes = []
 
     def get(self, request, table_id: int):
         try:

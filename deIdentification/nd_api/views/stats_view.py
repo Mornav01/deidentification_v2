@@ -4,14 +4,13 @@ from nd_api.models import DbStatsGeneratedStatus
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from keycloakauth.utils import IsAuthenticated
 from deIdentification.nd_logger import nd_logger
 from nd_api.decorator import conditional_authentication
 
 
 @conditional_authentication
 class DbStatsView(APIView):
-    authentication_classes = [IsAuthenticated]
+    authentication_classes = []
 
     def get(self, request, db_id: int):
         try:

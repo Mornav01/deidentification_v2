@@ -8,7 +8,6 @@ from worker.models import Task, Chain
 from django.db import transaction
 from deIdentification.settings import CREATE_SAVEPOINT_IN_TRANSACTION
 from nd_api.schemas.table_config import TableDetailsForUI, ColumnDetailsForUI
-from keycloakauth.utils import IsAuthenticated
 from deIdentification.nd_logger import nd_logger
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
@@ -21,7 +20,7 @@ class RequestCtx(TypedDict):
 
 @conditional_authentication
 class RegisterNewDbView(APIView):
-    authentication_classes = [IsAuthenticated]
+    authentication_classes = []
 
     def post(self, request):
         try:
@@ -48,7 +47,7 @@ class RegisterNewDbView(APIView):
 
 @conditional_authentication
 class GetAllDbsView(APIView):
-    authentication_classes = [IsAuthenticated]
+    authentication_classes = []
 
     def get(self, request):
         try:
@@ -70,7 +69,7 @@ class GetAllDbsView(APIView):
 
 @conditional_authentication
 class GetDbDetailsView(APIView):
-    authentication_classes = [IsAuthenticated]
+    authentication_classes = []
 
     def get(self, request, db_id: int):
         try:

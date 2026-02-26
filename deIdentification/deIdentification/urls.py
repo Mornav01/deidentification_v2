@@ -18,9 +18,7 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path, include
 from nd_api.urls import urlpatterns as nd_api_urls
-from keycloakauth.urls import urlpatterns as auth_urlpatterns
 
 urlpatterns = []
 
-urlpatterns += auth_urlpatterns
 urlpatterns += nd_api_urls

@@ -43,7 +43,6 @@ spacy==3.8.8
 
 # General Utilities
 requests==2.32.3
-python-keycloak==5.1.1
 dateparser==1.2.0
 rapidfuzz==3.10.1
 presidio-analyzer==2.2.355
