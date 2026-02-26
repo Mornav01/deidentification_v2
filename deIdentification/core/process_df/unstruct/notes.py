@@ -113,20 +113,33 @@ class NotesRule(RuleBase):
 
         def build_replacements(row: dict) -> dict:
             replacements = {}
+
+            # ----------------------------------------------------------------
+            # dict.get(key, default) only uses `default` when the KEY is absent.
+            # If the column exists but the value is None (no mapping found),
+            # dict.get returns None — and str(None) = "None" which would corrupt
+            # the notes text.  Always use the explicit `if val is not None` form.
+            # ----------------------------------------------------------------
+
             if encounter_id_col and row.get(encounter_id_col) is not None:
                 original = str(row[encounter_id_col])
-                replacement = str(row.get("nd_encounter_id", "((ENCOUNTER_ID))"))
+                nd_enc = row.get("nd_encounter_id")
+                replacement = str(nd_enc) if nd_enc is not None else "((ENCOUNTER_ID))"
                 replacements[re2.escape(original)] = replacement
+
             if appointment_id_col and row.get(appointment_id_col) is not None:
                 original = str(row[appointment_id_col])
-                replacement = str(row.get("nd_appointment_id", "((APPOINTMENT_ID))"))
+                nd_appt = row.get("nd_appointment_id")
+                replacement = str(nd_appt) if nd_appt is not None else "((APPOINTMENT_ID))"
                 replacements[re2.escape(original)] = replacement
+
             for col in [patient_id_col, reference_pid_col]:
                 if col and row.get(col) is not None:
                     original = str(row[col])
                     nd_pid = row.get("_resolved_nd_patient_id")
                     replacement = str(int(nd_pid)) if nd_pid is not None else "((PATIENT_ID))"
                     replacements[re2.escape(original)] = replacement
+
             return replacements
 
         rows_as_dicts = df.to_dicts()

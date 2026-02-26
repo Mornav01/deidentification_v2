@@ -169,6 +169,9 @@ def _sql_result_to_polars(result) -> pl.DataFrame:
         [list(r) for r in rows],
         schema=columns,
         orient="row",
+        # Scan all rows before fixing dtypes — avoids ComputeError when early
+        # rows are all-null and a later row has a typed value (e.g. a string ID).
+        infer_schema_length=len(rows),
     )
 
 
