@@ -137,7 +137,15 @@ class NotesRule(RuleBase):
                 if col and row.get(col) is not None:
                     original = str(row[col])
                     nd_pid = row.get("_resolved_nd_patient_id")
-                    replacement = str(int(nd_pid)) if nd_pid is not None else "((PATIENT_ID))"
+                    if nd_pid is not None:
+                        try:
+                            # Use float() first to handle both "67890" and "67890.0"
+                            # (Polars may emit float strings when the column is Float64).
+                            replacement = str(int(float(nd_pid)))
+                        except (ValueError, TypeError):
+                            replacement = str(nd_pid)
+                    else:
+                        replacement = "((PATIENT_ID))"
                     replacements[re2.escape(original)] = replacement
 
             return replacements
@@ -145,13 +153,17 @@ class NotesRule(RuleBase):
         rows_as_dicts = df.to_dicts()
         result = []
         for text, row in zip(text_list, rows_as_dicts):
-            replacements = build_replacements(row)
+            try:
+                replacements = build_replacements(row)
+            except Exception as e:
+                nd_logger.warning(
+                    f"[{self.__class__.__name__}] build_replacements failed for a row: {e}"
+                )
+                result.append(text)
+                continue
             for pattern, repl in replacements.items():
                 try:
                     # \b is RE2-safe and equivalent to (?<!\d)…(?!\d) for numeric IDs.
-                    # Also fixes a latent bug: Polars str.replace_all (Rust/RE2) rejects
-                    # lookbehind, so any path that forwarded this pattern to Polars would
-                    # have silently failed.
                     text = re2.sub(rf"\b{pattern}\b", repl, text)
                 except Exception as e:
                     nd_logger.warning(
@@ -581,7 +593,34 @@ class NotesRule(RuleBase):
             .alias(text_column)
         )
 
-        # XML-tag masking (row-wise Python; only applies to XML-shaped notes).
+        # ── De-identification ordering (highest → lowest priority) ──────────
+        #
+        # 1. KEY PHI VALUES  — replace the actual encounter / patient ID numbers
+        #    pulled from the mapping table.  Must run first so the raw identifiers
+        #    are removed before any later step could interfere with them.
+        #    Runs unconditionally: if mapping has no entry the fallback placeholder
+        #    "((ENCOUNTER_ID))" / "((PATIENT_ID))" is used instead.
+        #
+        # 2. XML TAG MASKING — tag-name-based static replacements
+        #    (e.g. <PatientId>, <EncounterId>, <GuarantorName> …).
+        #    Provides a second-pass safety net for any XML-tagged PHI that the
+        #    value-based step above might have missed.
+        #
+        # 3. PII TABLE MASKING — patient-specific names, DOB, insurance, etc.
+        #    from the external PII database.  Only runs when patient context
+        #    (_resolved_patient_id) is available.
+        #
+        # 4. GENERIC RULES — phone numbers, addresses, dates, SSN, IP addresses,
+        #    URLs, etc.  Runs last so earlier steps cannot accidentally block them.
+        # ─────────────────────────────────────────────────────────────────────
+
+        # Step 1 ── Key PHI values (encounter/patient IDs from mapping table)
+        df = self.de_identify_key_phi_columns(df, column_details)
+        nd_logger.info(
+            f"[{self.__class__.__name__}] Step 1: key-PHI column replacement done."
+        )
+
+        # Step 2 ── XML tag masking
         df = df.with_columns(
             pl.col(text_column).map_elements(
                 lambda text: deidentify_xml_tags(text, xml_tag_replacements),
@@ -589,24 +628,28 @@ class NotesRule(RuleBase):
             ).alias(text_column)
         )
         nd_logger.info(
-            f"[{self.__class__.__name__}] XML tag masking applied for '{text_column}'."
+            f"[{self.__class__.__name__}] Step 2: XML tag masking done for '{text_column}'."
         )
 
+        # Step 3 ── PII table masking (patient-specific)
         if "_resolved_patient_id" in df.columns:
             patient_ids = (
                 df["_resolved_patient_id"].drop_nulls().unique().to_list()
             )
-
-            df = self.de_identify_key_phi_columns(df, column_details)
-
             if self.pii_data_df is None:
                 self._get_pii_data_table(patient_ids)
-
             if not self.secondary_pii_data_dfs:
                 self._get_secondary_pii_data_table(patient_ids)
-
             df = self.deidentify_primary_pii_values(df, column_details)
             df = self.deidentify_secondary_pii_values(df, column_details)
+            nd_logger.info(
+                f"[{self.__class__.__name__}] Step 3: PII table masking done."
+            )
 
+        # Step 4 ── Generic rules (phone, address, dates, SSN, URLs, IPs …)
         df = GenericNotesRule().apply(df, column_details)
+        nd_logger.info(
+            f"[{self.__class__.__name__}] Step 4: generic rules done."
+        )
+
         return df
