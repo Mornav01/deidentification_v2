@@ -94,11 +94,20 @@ GENERIC_REGEX_DICT = {
     "phone_number": {
         "masking_value": "((PHONE_NUMBER))",
         "regex": [
-            # RE2 / Rust regex do NOT support lookbehind (?<!\d) or lookahead (?!\d).
-            # Replaced with \b word-boundary anchors, which are supported by RE2,
-            # Rust regex (Polars), and standard `re`, and are semantically equivalent
-            # for phone numbers that are surrounded by non-word characters.
-            r"\b(?:(?:\+1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)?\d{3}[\s.-]?\d{4})\b"
+            # Requires at least one separator (space / dash / dot) between EVERY
+            # pair of digit groups so that plain numeric IDs (encounter IDs,
+            # patient IDs) are never matched.
+            #
+            # Matches  : (123) 456-7890  123-456-7890  123.456.7890  123 456 7890
+            #            +1-123-456-7890  +1 (123) 456-7890  123-4567 (local 7-digit)
+            # Rejects  : 1234567  1234567890  any run of digits without separators
+            #
+            # Pattern breakdown:
+            #   (?:\+?1[\s.-]?)?          – optional country code  (+1, 1-, 1 )
+            #   (?:\(\d{3}\)[\s.-]        – area code in parens: (123) or (123)-
+            #    |\d{3}[\s.-])            – OR plain 3-digit area code WITH separator
+            #   \d{3}[\s.-]\d{4}         – middle-3 + last-4 WITH separator between them
+            r"(?:\+?1[\s.-]?)?(?:\(\d{3}\)[\s.-]|\d{3}[\s.-])\d{3}[\s.-]\d{4}\b"
         ],
         "processing_func": None,
     },
