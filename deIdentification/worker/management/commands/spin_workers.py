@@ -19,7 +19,7 @@ MAX_WORKERS = _CPU_COUNT
 CPU_THRESHOLD = 70.0
 RAM_THRESHOLD = 70.0
 CHECK_INTERVAL = 10       # seconds between health checks
-SPAWN_DELAY = 10          # seconds between new workers
+SPAWN_DELAY = 2           # seconds between spawning consecutive workers
 IDLE_GRACE_PERIOD = 60    # seconds with no tasks before killing workers
 RECENT_ACTIVITY_WINDOW = 30  # seconds
 
@@ -45,18 +45,22 @@ def get_project_dir():
     return os.getcwd()
 
 
-def has_ready_tasks():
+def count_ready_tasks():
+    """Return the number of NOT_STARTED tasks waiting to be picked up."""
     try:
-        nd_logger.debug("Polling for ready tasks")
         from worker.models import Task
         from worker.models.helper import ComputationStatus
-        exists = Task.objects.filter(status=ComputationStatus.NOT_STARTED).exists()
-        if not exists:
+        count = Task.objects.filter(status=ComputationStatus.NOT_STARTED).count()
+        if count == 0:
             nd_logger.info("Found no task to pick up")
-        return exists
+        return count
     except Exception as e:
         nd_logger.error(f"[Manager] Error checking ready tasks: {e}", exc_info=True)
-        return False
+        return 0
+
+
+def has_ready_tasks():
+    return count_ready_tasks() > 0
 
 
 def get_system_usage(samples=3):
@@ -258,21 +262,33 @@ class Command(BaseCommand):
 
             if tasks_present:
                 last_task_seen_at = now
+                pending = count_ready_tasks()
 
-                # 🔑 STRICT RULE:
-                # Spawn ONLY if there are ZERO workers
-                if not worker_processes:
+                # Spawn up to MAX_WORKERS workers, one per pending task, subject
+                # to CPU / RAM headroom.  Each spawn is separated by SPAWN_DELAY
+                # seconds so the system doesn't get flooded all at once.
+                current_count = len(worker_processes)
+                workers_needed = min(pending, MAX_WORKERS) - current_count
+
+                if workers_needed > 0:
                     cpu, ram = get_system_usage()
                     if cpu < CPU_THRESHOLD and ram < RAM_THRESHOLD:
                         nd_logger.info(
-                            "[Manager] Tasks exist and no active workers. Spawning ONE worker."
+                            f"[Manager] {pending} task(s) pending, "
+                            f"{current_count} worker(s) active → spawning {workers_needed} more."
                         )
-                        start_worker(project_dir, conda_env)
-                        time.sleep(SPAWN_DELAY)
+                        for _ in range(workers_needed):
+                            start_worker(project_dir, conda_env)
+                            time.sleep(SPAWN_DELAY)
+                    else:
+                        nd_logger.info(
+                            f"[Manager] Tasks exist but resources are high "
+                            f"(CPU={cpu:.1f}% RAM={ram:.1f}%). Not spawning."
+                        )
                 else:
                     nd_logger.info(
-                        "[Manager] Tasks exist but existing workers are idle. "
-                        "Waiting for idle workers to exit before spawning."
+                        f"[Manager] {pending} task(s) pending, "
+                        f"{current_count} worker(s) already running — no new spawn needed."
                     )
             else:
                 # ──────────────────────────────────────
