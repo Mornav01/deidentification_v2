@@ -290,6 +290,13 @@ class JoinMapping:
                 schema={"patient_id": pl.Int64, "nd_patient_id": pl.Int64, "offset": pl.Int64}
             )
 
+        # Keep drop_left_join_column=False so the original patient_id from the
+        # encounter/appointment row survives the join.  Polars always drops the
+        # *right* key when left_on != right_on, so the renamed right-side key
+        # (e.g. "patient_id_from_encounter_mapping") disappears automatically.
+        # We then rename the surviving left-side "patient_id" to
+        # "patient_id_{right_suffix}" so PatientIdentifierResolver can coalesce
+        # it into _resolved_patient_id for use in de_identify_key_phi_columns.
         df_joined = join_dataframes(
             df_mapping,
             df_patient_mapping,
@@ -297,11 +304,14 @@ class JoinMapping:
             right_on="patient_id",
             how="left",
             right_suffix=right_suffix,
-            drop_left_join_column=True,
+            drop_left_join_column=False,   # ← keep original patient_id
         )
+        # Rename patient_id (left key) → patient_id_{right_suffix}
+        if "patient_id" in df_joined.columns and f"patient_id_{right_suffix}" not in df_joined.columns:
+            df_joined = df_joined.rename({"patient_id": f"patient_id_{right_suffix}"})
         nd_logger.info(
             f"[{self.__class__.__name__}] Joined {table_name} + patient_mapping. "
-            f"Final rows: {df_joined.height}"
+            f"Final rows: {df_joined.height}, columns: {df_joined.columns}"
         )
         return df_joined
 
