@@ -1,4 +1,7 @@
-import re
+try:
+    import re2 as re  # google-re2: RE2 engine, no catastrophic backtracking, Python 3.13 safe
+except ImportError:
+    import re  # type: ignore[no-redef]
 
 DATE_PATTERN_NOTES = (
     # 1. ISO style: YYYY-MM-DD with optional time and fractional seconds

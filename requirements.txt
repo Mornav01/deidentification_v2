@@ -17,6 +17,8 @@ SQLAlchemy==2.0.37    # Essential for AF3 database migrations
 psycopg2-binary==2.9.10
 numpy>=2.1.0          # Required for Python 3.13
 pandas>=2.2.3
+polars>=1.0.0
+google-re2>=1.1          # RE2 engine: no catastrophic backtracking, Python 3.13 compatible
 django_extensions
 django-cors-headers
 

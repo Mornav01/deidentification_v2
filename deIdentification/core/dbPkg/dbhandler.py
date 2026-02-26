@@ -10,9 +10,9 @@ from sqlalchemy import (
     Integer,
     String
 )
-from .mssql import create_table as create_table_from_mssql
 import pandas as pd
-from typing import List, Dict, Union
+import polars as pl
+from typing import Iterator, List, Dict, Union
 
 
 class NDDBHandler:
@@ -86,9 +86,6 @@ class NDDBHandler:
     ):
         dest_table_name = dest_table_name or source_table_name
         
-        if self.engine.dialect.name == "mssql":
-            create_table_from_mssql(dest_table_name, self.engine, dest_handler.engine, column_type_mapping)
-            return
         source_table = Table(
             source_table_name, self.metadata, autoload_with=self.engine
         )
@@ -170,6 +167,18 @@ class NDDBHandler:
         return inspector.get_columns(table_name)
 
     def get_rows_count(self, table_name: str) -> int:
+        # For MySQL: use information_schema.TABLES which is near-instant (no full scan).
+        # information_schema.TABLE_ROWS is an estimate maintained by InnoDB; accurate
+        # enough for stats display and batch planning. Falls back to COUNT(*) for other DBs.
+        if self.engine.dialect.name == "mysql":
+            query = text(
+                "SELECT TABLE_ROWS FROM information_schema.TABLES "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :table_name"
+            )
+            result = self.session.execute(query, {"table_name": table_name})
+            count = result.scalar()
+            if count is not None:
+                return int(count)
         table = Table(table_name, self.metadata, autoload_with=self.engine)
         query = func.count().select().select_from(table)
         result = self.session.execute(query)
@@ -316,6 +325,8 @@ class NDDBHandler:
         return foreign_keys
 
     def fks_from_for_table(self, table_name: str) -> list[dict]:
+        # Legacy single-table method — O(N) per call (N = number of tables).
+        # For bulk stats generation use get_all_fks_map() once instead.
         inspector = reflection.Inspector.from_engine(self.engine)
         foreign_keys = []
         for table in self.get_all_tables():
@@ -330,6 +341,41 @@ class NDDBHandler:
                     )
         return foreign_keys
 
+    def get_all_fks_map(self) -> tuple[dict, dict]:
+        """Build complete FK graph for all tables in a single pass.
+
+        Returns:
+            fks_to_map:   {table_name → list of outgoing FK dicts}
+            fks_from_map: {referred_table_name → list of incoming FK dicts}
+
+        Replaces N calls to fks_from_for_table() (O(N²) total) with a single
+        O(N) loop — one inspector.get_foreign_keys() call per table.
+        """
+        inspector = reflection.Inspector.from_engine(self.engine)
+        all_tables = self.get_all_tables()
+        fks_to_map: dict[str, list] = {t: [] for t in all_tables}
+        fks_from_map: dict[str, list] = {t: [] for t in all_tables}
+
+        for table in all_tables:
+            for fk in inspector.get_foreign_keys(table):
+                fks_to_map[table].append(
+                    {
+                        "constrained_columns": fk["constrained_columns"],
+                        "referred_table": fk["referred_table"],
+                        "referred_columns": fk["referred_columns"],
+                    }
+                )
+                referred = fk["referred_table"]
+                if referred in fks_from_map:
+                    fks_from_map[referred].append(
+                        {
+                            "table": table,
+                            "constrained_columns": fk["constrained_columns"],
+                            "referred_columns": fk["referred_columns"],
+                        }
+                    )
+        return fks_to_map, fks_from_map
+
     def drop_table(self, table_name: str):
         if self._table_exists(self, table_name):
             self.session.execute(text(f"DROP TABLE {table_name}"))
@@ -341,44 +387,115 @@ class NDDBHandler:
             )
     
     def get_keyset_pagination_ranges(self, table_name: str, id_column: str = "nd_auto_increment_id", batch_size: int = 100000) -> List[Dict[str, int]]:
-        dialect_name = self.engine.dialect.name
-
-        if dialect_name == "mssql":
-            query = text(f"""
-                WITH ranked AS (SELECT {id_column}, ROW_NUMBER() OVER (ORDER BY {id_column}) AS rn
-                                FROM {table_name}
-                                WHERE {id_column} IS NOT NULL ),
-                    ranked_batches AS ( SELECT {id_column}, ((rn - 1) / :batch_size) AS batch_num
-                                        FROM ranked )
-                    SELECT MIN({id_column}) AS gt, MAX({id_column}) AS lt
-                    FROM ranked_batches
-                    GROUP BY batch_num
-                    ORDER BY MIN({id_column});
-                """)
-        elif dialect_name == "mysql":
-            query = text(f"""
-                WITH ranked AS (SELECT {id_column}, ROW_NUMBER() OVER (ORDER BY {id_column}) AS rn
-                                FROM {table_name}
-                                WHERE {id_column} IS NOT NULL ),
-                    ranked_batches AS ( SELECT {id_column}, FLOOR((rn - 1) / :batch_size) AS batch_num
-                                    FROM ranked )
-                    SELECT MIN({id_column}) AS gt, MAX({id_column}) AS lt
-                    FROM ranked_batches
-                    GROUP BY batch_num
-                    ORDER BY MIN({id_column});
-                """)
-        else:
-            raise NotImplementedError(f"Unsupported database dialect: {dialect_name}")
-
+        # Fast O(1) approach: MIN and MAX are pure index lookups on an auto-increment column.
+        # The old ROW_NUMBER() OVER () window function was O(N) — it materialized and sorted
+        # the entire table, taking 60–300s on 20–50M row tables.
+        # Since nd_auto_increment_id is an auto-increment column, ID distribution is dense
+        # and uniform, so MIN/MAX splitting gives batches close to batch_size rows.
+        min_max_query = text(
+            f"SELECT MIN(`{id_column}`), MAX(`{id_column}`) "
+            f"FROM `{table_name}` WHERE `{id_column}` IS NOT NULL"
+        )
         with self.engine.connect() as conn:
             try:
-                result = conn.execute(query, {"batch_size": batch_size})
-            except:
+                result = conn.execute(min_max_query)
+                row = result.fetchone()
+                if not row or row[0] is None:
+                    return None
+                min_id, max_id = int(row[0]), int(row[1])
+            except Exception:
                 return None
-            return [{"gt": row[0], "lt": row[1]} for row in result]
+
+        ranges = []
+        current = min_id
+        while current <= max_id:
+            end = min(current + batch_size - 1, max_id)
+            ranges.append({"gt": current, "lt": end})
+            current = end + 1
+        return ranges
 
 
-    def get_table_as_dataframe(self, table_name: str, limit: int, offset: Union[int, dict]) -> pd.DataFrame:
+    def stream_table_as_dataframes_in_range(
+        self,
+        table_name: str,
+        batch_size: int,
+        start_id: int,
+        end_id: int,
+        id_column: str = "nd_auto_increment_id",
+    ) -> Iterator[pl.DataFrame]:
+        """Stream a keyset-bounded slice of a table.
+
+        Identical to ``stream_table_as_dataframes`` but adds a WHERE clause so
+        only rows with ``id_column BETWEEN start_id AND end_id`` are returned.
+        This lets multiple workers process disjoint ranges of the same table in
+        parallel without any coordination overhead — each worker just needs the
+        two boundary values in its task payload.
+
+        No row count is required; the server cursor stops when the range is
+        exhausted, keeping memory at O(batch_size).
+        """
+        query = text(
+            f"SELECT * FROM `{table_name}` "
+            f"WHERE `{id_column}` BETWEEN :start_id AND :end_id"
+        )
+        conn = self.engine.connect().execution_options(
+            stream_results=True,
+            max_row_buffer=batch_size,
+        )
+        try:
+            result = conn.execute(query, {"start_id": start_id, "end_id": end_id})
+            columns = list(result.keys())
+            while True:
+                rows = result.fetchmany(batch_size)
+                if not rows:
+                    break
+                yield pl.DataFrame(
+                    [list(row) for row in rows],
+                    schema=columns,
+                    orient="row",
+                )
+        finally:
+            conn.close()
+
+    def stream_table_as_dataframes(self, table_name: str, batch_size: int) -> Iterator[pl.DataFrame]:
+        """Stream a table as an iterator of Polars DataFrames using a server-side cursor.
+
+        For MySQL+PyMySQL, `stream_results=True` activates SSCursor so rows are
+        fetched from the server in batches rather than loading the full result set
+        into client memory.  No row count or pagination ranges are needed — the
+        cursor simply stops when it has no more rows.
+
+        Memory stays at O(batch_size) regardless of table size, making 50 M-row
+        tables as cheap to start as 50-row tables.
+
+        Yields Polars DataFrames rather than Pandas to exploit Polars' faster
+        joins, column expressions, and lower memory footprint downstream.
+        """
+        query = text(f"SELECT * FROM `{table_name}`")
+        conn = self.engine.connect().execution_options(
+            stream_results=True,
+            max_row_buffer=batch_size,
+        )
+        try:
+            result = conn.execute(query)
+            columns = list(result.keys())
+            while True:
+                rows = result.fetchmany(batch_size)
+                if not rows:
+                    break
+                yield pl.DataFrame(
+                    [list(row) for row in rows],
+                    schema=columns,
+                    orient="row",
+                )
+        finally:
+            conn.close()
+
+    def get_table_as_dataframe(self, table_name: str, limit: int, offset: Union[int, dict]) -> pl.DataFrame:
+        """Fetch a slice of a table as a Polars DataFrame (legacy offset/keyset API).
+
+        Prefer `stream_table_as_dataframes()` for full-table processing.
+        """
         table = Table(table_name, self.metadata, autoload_with=self.engine)
 
         primary_key_cols = list(table.primary_key.columns)
@@ -394,38 +511,39 @@ class NDDBHandler:
             query = (table.select().order_by(order_column).limit(limit).offset(offset))
 
         result = self.session.execute(query)
-        return pd.DataFrame(result.fetchall(), columns=result.keys())
+        rows = result.fetchall()
+        columns = list(result.keys())
+        return pl.DataFrame(
+            [list(r) for r in rows],
+            schema=columns,
+            orient="row",
+        )
     
 
-    def insert_dataframe_in_batches(self, df: pd.DataFrame, table_name: str, batch_size: int = 10000, sanitize: bool = True) -> None:
-        """
-        Insert a large DataFrame into the given MySQL table in batches.
+    def insert_dataframe_in_batches(self, df: pl.DataFrame, table_name: str, batch_size: int = 10000) -> None:
+        """Insert a Polars DataFrame into the given MySQL table in batches.
 
-        Parameters:
-        - df: DataFrame to insert
-        - table_name: Target MySQL table
-        - batch_size: Number of rows per batch
-        - sanitize: Replace NaN/NaT/inf with None if True
+        Polars uses typed nulls (None) rather than float NaN, so no sanitization
+        step is needed — `to_dicts()` already converts null cells to Python None.
+        Only columns that exist in the destination table schema are inserted.
         """
-        if df.empty:
+        if df.is_empty():
             nd_logger.warning(f"[DBHandler] Empty DataFrame. Nothing to insert into '{table_name}'.")
             return
 
         valid_columns = self.get_column_names(table_name)
-        df = df[valid_columns]  # Keep only valid columns
-        
-        if sanitize:
-            df = df.astype(object).where(pd.notnull(df), None)
+        # Select only columns present in both the DataFrame and the destination table.
+        select_cols = [c for c in valid_columns if c in df.columns]
+        df = df.select(select_cols)
 
-        total_rows = len(df)
+        total_rows = df.height
         nd_logger.info(f"[DBHandler] Starting insertion of {total_rows} rows into '{table_name}' in batches of {batch_size}.")
 
         for start in range(0, total_rows, batch_size):
             end = min(start + batch_size, total_rows)
-            batch_df = df.iloc[start:end]
-
+            batch_df = df.slice(start, batch_size)
             try:
-                rows = batch_df.to_dict(orient="records")
+                rows = batch_df.to_dicts()  # nulls become Python None automatically
                 self.insert_to_db(rows, table_name)
                 nd_logger.info(f"[DBHandler] Inserted rows {start + 1} to {end} into '{table_name}'.")
             except Exception as e:

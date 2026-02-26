@@ -141,35 +141,37 @@ def create_stats_generation_tasks(db_obj: DbDetailsModel):
         else:
             return {"message": f"Stats Generation Task already exists. chain id: {chain.id}"}
 
-def process_table(table, db_details_obj: DbDetailsModel, rerun: bool = False):
+def process_table(table, db_details_obj: DbDetailsModel, fks_to_map: dict, fks_from_map: dict, rerun: bool = False):
+    # Each thread gets its own connection — do NOT share NDDBHandler across threads.
     source_db_connection = db_details_obj.get_source_db_connection()
-    table_details_obj, created = TableDetailsModel.register_table(table, db_details_obj)
-    if not created:
+    try:
+        table_details_obj, created = TableDetailsModel.register_table(table, db_details_obj)
+        if not created:
+            table_stats = {
+                "rows_count": table_details_obj.rows_count,
+                "size": table_details_obj.size,
+                "fks_to": fks_to_map.get(table, []),
+                "fks_from": fks_from_map.get(table, []),
+            }
+            if not rerun:
+                return table, table_stats, table_details_obj.rows_count
+        table_details_obj.table_details_for_ui = _get_default_table_details_for_ui(
+            source_db_connection.get_column_names(table)
+        )
+        table_details_obj.rows_count = source_db_connection.get_rows_count(table)
+        table_details_obj.size = source_db_connection.get_table_size(table)
+        table_details_obj.save()
+
         table_stats = {
             "rows_count": table_details_obj.rows_count,
             "size": table_details_obj.size,
-            "fks_to": [],
-            "fks_from": [],
+            # FK maps were pre-computed once before the thread pool — no per-table DB scan.
+            "fks_to": fks_to_map.get(table, []),
+            "fks_from": fks_from_map.get(table, []),
         }
-        if not rerun:
-            return table, table_stats, table_details_obj.rows_count
-    table_details_obj.table_details_for_ui = _get_default_table_details_for_ui(
-        source_db_connection.get_column_names(table)
-    )
-    table_details_obj.rows_count = source_db_connection.get_rows_count(table)
-    table_details_obj.size = source_db_connection.get_table_size(table)
-    table_details_obj.save()
-
-    table_stats = {
-        "rows_count": table_details_obj.rows_count,
-        "size": table_details_obj.size,
-        "fks_to": source_db_connection.fks_to_for_table(table),
-        "fks_from": source_db_connection.fks_from_for_table(table),
-    }
-
-    source_db_connection.close()
-
-    return table, table_stats, table_details_obj.rows_count
+        return table, table_stats, table_details_obj.rows_count
+    finally:
+        source_db_connection.close()
 
 def run_stats_generation_task(db_details_id: int, all_tables: list, rerun: bool = False, dependencies: list[Task] = []):
     nd_logger.info(f"inside the run stats generation task for db-id:  {db_details_id}")
@@ -185,10 +187,6 @@ def run_stats_generation_task(db_details_id: int, all_tables: list, rerun: bool 
                 "table_with_min_rows": "dummyvalue",
                 "table_with_max_size": "1 GB",
                 "table_with_min_size": "1 Kb",
-                # "table_with_max_rows": source_db_connection.table_with_max_rows(),
-                # "table_with_min_rows": source_db_connection.table_with_min_rows(),
-                # "table_with_max_size": source_db_connection.table_with_max_size(),
-                # "table_with_min_size": source_db_connection.table_with_min_size(),
             },
         }
         distribution = {
@@ -199,43 +197,142 @@ def run_stats_generation_task(db_details_id: int, all_tables: list, rerun: bool 
             "greater_than_1000000": 0,
             "unknown": 0
         }
-        # all_tables = source_db_connection.get_all_tables()
         db_stats["tables_stats"] = {}
 
-        # Adjust max_workers based on your system capabilities
-        with ThreadPoolExecutor(max_workers=settings.STATS_GENERATION_MAX_WORKER_COUNT) as executor:
-            future_to_table = {
-                executor.submit(process_table, table, db_details_obj, rerun): table
-                for table in all_tables
-            }
-
-            for future in tqdm(as_completed(future_to_table), total=len(all_tables), desc="Generating table stats"):
-                table, table_stats, rows_count = future.result()
-                db_stats["tables_stats"][table] = table_stats
-
-                if rows_count:
-                    if rows_count < 1000:
-                        distribution["less_than_1000"] += 1
-                    elif rows_count < 10000:
-                        distribution["between_1000_and_10000"] += 1
-                    elif rows_count < 100000:
-                        distribution["between_10000_and_100000"] += 1
-                    elif rows_count < 1000000:
-                        distribution["between_100000_and_1000000"] += 1
-                    else:
-                        distribution["greater_than_1000000"] += 1
-                else:
-                    distribution["unknown"] += 1
-
-        db_stats["graphs"] = {
-            "rows_count_distribution": distribution,
-        }
-        db_details_obj.db_stats = db_stats
-        db_details_obj.save()
-        db_details_obj.marked_stats_generation_as_completed()
-        return {}
+        # Pre-compute the entire FK graph in one O(N) pass before spawning threads.
+        # Previously each process_table() call did an O(N) scan = O(N²) total.
+        nd_logger.info("Pre-computing FK map for all tables...")
+        fks_to_map, fks_from_map = source_db_connection.get_all_fks_map()
+        nd_logger.info(f"FK map ready. Starting parallel stats for {len(all_tables)} tables...")
     finally:
         source_db_connection.close()
+
+    with ThreadPoolExecutor(max_workers=settings.STATS_GENERATION_MAX_WORKER_COUNT) as executor:
+        future_to_table = {
+            executor.submit(process_table, table, db_details_obj, fks_to_map, fks_from_map, rerun): table
+            for table in all_tables
+        }
+
+        for future in tqdm(as_completed(future_to_table), total=len(all_tables), desc="Generating table stats"):
+            table, table_stats, rows_count = future.result()
+            db_stats["tables_stats"][table] = table_stats
+
+            if rows_count:
+                if rows_count < 1000:
+                    distribution["less_than_1000"] += 1
+                elif rows_count < 10000:
+                    distribution["between_1000_and_10000"] += 1
+                elif rows_count < 100000:
+                    distribution["between_10000_and_100000"] += 1
+                elif rows_count < 1000000:
+                    distribution["between_100000_and_1000000"] += 1
+                else:
+                    distribution["greater_than_1000000"] += 1
+            else:
+                distribution["unknown"] += 1
+
+    db_stats["graphs"] = {
+        "rows_count_distribution": distribution,
+    }
+    db_details_obj.db_stats = db_stats
+    db_details_obj.save()
+    db_details_obj.marked_stats_generation_as_completed()
+    return {}
+
+
+def _register_single_table(table_name: str, db_details_obj: DbDetailsModel):
+    """Lightweight registration for one table — column schema only, no row counts.
+
+    Called in parallel by register_tables_for_db().  Each thread opens its own
+    connection so they don't share state.
+    """
+    source_db_connection = db_details_obj.get_source_db_connection()
+    try:
+        table_obj, created = TableDetailsModel.register_table(table_name, db_details_obj)
+        if created or not table_obj.table_details_for_ui.get("columns_details"):
+            # First time we see this table — populate the column schema so
+            # UploadConfigFromCSV can match CSV column names to it.
+            table_obj.table_details_for_ui = _get_default_table_details_for_ui(
+                source_db_connection.get_column_names(table_name)
+            )
+            table_obj.save()
+        return table_name, created
+    finally:
+        source_db_connection.close()
+
+
+def register_tables_for_db(
+    db_details_id: int,
+    all_tables: list[str] | None = None,
+    max_workers: int | None = None,
+):
+    """Register (or refresh) tables for a DB — **fast, no stats required**.
+
+    This is the lightweight alternative to run_stats_generation_task that you
+    must call once before using upload_config_from_csv or run.ipynb.
+
+    What it does for each table (in parallel):
+    - Creates a TableDetailsModel row if it doesn't exist yet.
+    - Populates table_details_for_ui with the column schema from the source DB
+      (needed by UploadConfigFromCSV to match CSV column names).
+
+    What it deliberately skips (all slow):
+    - COUNT(*) / information_schema row-count estimation
+    - Table size queries
+    - Foreign-key graph scans
+
+    Args:
+        db_details_id : id of the DbDetailsModel to register tables for.
+        all_tables    : list of table names to register.  If None, all tables
+                        in the source DB are discovered automatically.
+        max_workers   : thread-pool size.  Defaults to
+                        settings.STATS_GENERATION_MAX_WORKER_COUNT.
+    """
+    db_details_obj = DbDetailsModel.objects.get(id=db_details_id)
+    if max_workers is None:
+        max_workers = settings.STATS_GENERATION_MAX_WORKER_COUNT
+
+    if all_tables is None:
+        source_conn = db_details_obj.get_source_db_connection()
+        try:
+            all_tables = source_conn.get_all_tables()
+        finally:
+            source_conn.close()
+
+    nd_logger.info(
+        f"[register_tables] Registering {len(all_tables)} tables for db_id={db_details_id} "
+        f"using {max_workers} worker(s)…"
+    )
+
+    results = {"registered": [], "already_existed": [], "failed": []}
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_table = {
+            executor.submit(_register_single_table, table, db_details_obj): table
+            for table in all_tables
+        }
+        for future in tqdm(
+            as_completed(future_to_table),
+            total=len(all_tables),
+            desc="Registering tables",
+        ):
+            table = future_to_table[future]
+            try:
+                _, created = future.result()
+                if created:
+                    results["registered"].append(table)
+                else:
+                    results["already_existed"].append(table)
+            except Exception as exc:
+                nd_logger.error(f"[register_tables] Failed to register '{table}': {exc}")
+                results["failed"].append(table)
+
+    nd_logger.info(
+        f"[register_tables] Done. "
+        f"new={len(results['registered'])}, "
+        f"existing={len(results['already_existed'])}, "
+        f"failed={len(results['failed'])}"
+    )
+    return results
 
 
 def _get_default_table_details_for_ui(columns_names: list[str]) -> TableDetailsForUI:
