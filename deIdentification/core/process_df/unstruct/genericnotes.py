@@ -121,27 +121,44 @@ class GenericNotesRule(RuleBase):
                     )
 
             else:
-                # Simple regex replacement — use Polars' Rust-native str.replace_all
-                # for pure-regex patterns (no callable replacement).  This is the
-                # hot path and significantly faster than Pandas str.replace().
+                # Simple regex replacement.
+                # Fast path: RE2-compatible patterns → Polars str.replace_all (Rust regex).
+                # Fallback: patterns with lookahead/lookbehind that RE2 can't compile →
+                #   standard `re.sub` via map_elements.  Slower but correct.
                 for pattern in patterns:
                     try:
-                        # Validate the pattern first; Polars raises on invalid regex.
-                        re2.compile(pattern)
-                    except Exception as e:
-                        nd_logger.warning(
-                            f"[{self.__class__.__name__}] Invalid pattern for key '{key}': "
-                            f"{pattern!r} ({e})"
+                        re2.compile(pattern)   # test RE2 compatibility
+                        # RE2-compatible — use Polars' Rust-native engine
+                        df = df.with_columns(
+                            pl.col(col_name)
+                            .str.replace_all(pattern, masking_value)
+                            .alias(col_name)
                         )
-                        continue
-                    df = df.with_columns(
-                        pl.col(col_name)
-                        .str.replace_all(pattern, masking_value)
-                        .alias(col_name)
-                    )
-                    nd_logger.info(
-                        f"[{self.__class__.__name__}] Regex replace rule '{key}' applied."
-                    )
+                        nd_logger.info(
+                            f"[{self.__class__.__name__}] Regex replace rule '{key}' applied (RE2 path)."
+                        )
+                    except Exception as re2_err:
+                        # RE2 rejected it (e.g. lookahead/lookbehind) — try standard re
+                        try:
+                            std_compiled = re.compile(pattern)
+                            repl = masking_value  # capture for lambda closure
+                            df = df.with_columns(
+                                pl.col(col_name)
+                                .map_elements(
+                                    lambda text, _c=std_compiled, _r=repl: _c.sub(_r, text)
+                                    if isinstance(text, str) else text,
+                                    return_dtype=pl.Utf8,
+                                )
+                                .alias(col_name)
+                            )
+                            nd_logger.info(
+                                f"[{self.__class__.__name__}] Regex replace rule '{key}' applied (stdlib re fallback)."
+                            )
+                        except Exception as re_err:
+                            nd_logger.warning(
+                                f"[{self.__class__.__name__}] Pattern for '{key}' failed both RE2 and stdlib re: "
+                                f"{pattern!r} (re2={re2_err}, re={re_err})"
+                            )
 
         nd_logger.info(f"[{self.__class__.__name__}] GenericNotesRule completed.")
         return df

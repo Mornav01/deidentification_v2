@@ -94,8 +94,11 @@ GENERIC_REGEX_DICT = {
     "phone_number": {
         "masking_value": "((PHONE_NUMBER))",
         "regex": [
-            # One line so pattern starts with (?x) at position 0 (Python 3.13)
-            r"(?x)(?<!\d)(?:(?:\+1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)?\d{3}[\s.-]?\d{4})(?!\d)"
+            # RE2 / Rust regex do NOT support lookbehind (?<!\d) or lookahead (?!\d).
+            # Replaced with \b word-boundary anchors, which are supported by RE2,
+            # Rust regex (Polars), and standard `re`, and are semantically equivalent
+            # for phone numbers that are surrounded by non-word characters.
+            r"\b(?:(?:\+1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)?\d{3}[\s.-]?\d{4})\b"
         ],
         "processing_func": None,
     },

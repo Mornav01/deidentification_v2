@@ -19,7 +19,9 @@ XML_DECLARATION_RE = re2.compile(r"(?i)<\?xml[^>]*\?>")
 XML_STYLESHEET_RE = re2.compile(r"(?i)<\?xml-stylesheet[^>]*\?>")
 PI_RE = re2.compile(r"(?s)<\?.*?\?>")  # (?s) = DOTALL; RE2 supports inline flag
 CONTROL_CHARS_RE = re2.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
-BARE_AMP_RE = re2.compile(r'&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9A-Fa-f]+;)')
+# RE2 does not support lookaheads ((?!...) / (?=...)).
+# Use standard `re` (already imported) for this one pattern only.
+BARE_AMP_RE = re.compile(r'&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9A-Fa-f]+;)')
 
 # ---------------- cleaning helpers ----------------
 def remove_control_chars(text: str) -> str:
