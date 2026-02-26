@@ -231,57 +231,191 @@ class NotesRule(RuleBase):
     def deidentify_primary_pii_values(
         self, df: pl.DataFrame, column_details: dict
     ) -> pl.DataFrame:
+        """Apply primary-PII masking (names, DOB, combined patterns) to the notes column.
+
+        Old approach: row_num loop → N × Polars JOIN + N × map build + N × regex pass.
+        New approach: scan pii_data_df ONCE to build flat {pid → patterns} dicts,
+                      then do ONE single pass over the source rows.
+
+        For a 100k-row batch with 33k patients having up to 15 insurance records this
+        reduces inner-loop work from ~15 × 300k ≈ 4.5M ops to ~33k + 100k ≈ 133k ops.
+        """
         text_column = column_details["column_name"]
         if df.is_empty():
             return df
 
+        pii_df = self.pii_data_df
+        if pii_df is None or pii_df.is_empty():
+            nd_logger.warning(
+                f"[{self.__class__.__name__}] No PII records found. Skipping PII masking."
+            )
+            masked_col = df[text_column]
+            masked_col = self._apply_regex(masked_col)
+            masked_col = self._apply_replace_value(masked_col)
+            return df.with_columns(masked_col.alias(text_column))
+
         df = df.with_columns(pl.col(text_column).fill_null(""))
 
-        # Add a cumulative row number per patient to de-duplicate PII records.
-        pii_df = self.pii_data_df.clone()
-        pii_df = pii_df.with_columns(
-            pl.col("patient_id").cum_count().over("patient_id").alias("_row_num")
+        lookup_col = "_resolved_patient_id"
+        has_pid = lookup_col in df.columns
+        pid_list = df[lookup_col].to_list() if has_pid else [None] * df.height
+
+        mask_config   = self.pii_config.get("mask", {})
+        dob_config    = self.pii_config.get("dob", {})
+        combine_config = self.pii_config.get("combine", {})
+
+        # ── Determine which PII-table columns are actually needed ─────────────
+        pii_cols     = [c for c in mask_config     if c in pii_df.columns]
+        dob_cols     = [c for c in dob_config      if c in pii_df.columns]
+        combine_rules = {
+            rule_name: {
+                "cols": [c for c in rule.get("combine", []) if c in pii_df.columns],
+                "masking_value": rule.get("masking_value", ""),
+            }
+            for rule_name, rule in combine_config.items()
+        }
+        combine_rules = {k: v for k, v in combine_rules.items() if v["cols"]}
+
+        all_select = list(
+            {"patient_id"}
+            | set(pii_cols)
+            | set(dob_cols)
+            | {c for r in combine_rules.values() for c in r["cols"]}
         )
-        max_row_num = pii_df["_row_num"].max()
+        cast_to_utf8 = {
+            c: pl.Utf8 for c in all_select if c != "patient_id"
+        }
+
         nd_logger.info(
-            f"[{self.__class__.__name__}] Max PII records per patient: {max_row_num}"
+            f"[{self.__class__.__name__}] Building primary PII maps from "
+            f"{pii_df.height} records for {pii_df['patient_id'].n_unique()} patients…"
         )
 
-        mask_config = self.pii_config.get("mask", {})
-        masked_col: pl.Series = df[text_column]
-        continue_masking = True
+        # ── Phase 1: scan pii_data_df ONCE, collecting all records per patient ─
+        pid_to_mask:    dict = {}   # pid → {pattern: masking_value}
+        pid_to_dobs:    dict = {}   # pid → {date: year_str}
+        pid_to_combine: dict = {}   # pid → list[{col: val}]
 
-        try:
-            max_row_num = int(max_row_num)
-            if max_row_num <= 0:
-                raise ValueError("Non-positive row number")
-        except (TypeError, ValueError):
-            nd_logger.warning(
-                f"[{self.__class__.__name__}] No PII records found. "
-                "Skipping PII masking."
-            )
-            continue_masking = False
+        for row in (
+            pii_df
+            .select(all_select)
+            .with_columns([pl.col(c).cast(pl.Utf8).fill_null("") for c in cast_to_utf8])
+            .to_dicts()
+        ):
+            pid = row.get("patient_id")
 
-        if continue_masking:
-            for row_num in range(1, max_row_num + 1):
-                nd_logger.info(
-                    f"[{self.__class__.__name__}] Applying PII from row_num {row_num}..."
-                )
-                pii_batch = pii_df.filter(pl.col("_row_num") == row_num).drop("_row_num")
+            # --- exact-match mask patterns ---
+            if pii_cols:
+                entry = pid_to_mask.setdefault(pid, {})
+                for col in pii_cols:
+                    val = row[col].strip()
+                    if not val:
+                        continue
+                    word_count = len(val.split())
+                    min_words = max(mask_config[col].get("min_length", 0), 3)
+                    if word_count < min_words:
+                        continue
+                    entry[rf"(?i)\b{re2.escape(val)}\b"] = mask_config[col]["masking_value"]
 
-                # Left-join: result has same row count as df (one row per source row).
-                df_batch = df.join(
-                    pii_batch,
-                    left_on="_resolved_patient_id",
-                    right_on="patient_id",
-                    how="left",
-                    suffix="_pii",
-                )
+            # --- DOB ---
+            if dob_cols:
+                dob_map = pid_to_dobs.setdefault(pid, {})
+                for col in dob_cols:
+                    val = row[col].strip()
+                    if not val:
+                        continue
+                    try:
+                        parsed = date_parser.parse(val, fuzzy=True).date()
+                        dob_map[parsed] = str(parsed.year)
+                    except Exception:
+                        pass
 
-                masked_col = self._apply_mask_batched(df_batch, masked_col, mask_config)
-                masked_col = self._apply_dob(df_batch, masked_col)
-                masked_col = self._apply_combine(df_batch, masked_col)
+            # --- combine source rows ---
+            if combine_rules:
+                pid_to_combine.setdefault(pid, []).append(row)
 
+        # Pre-compute combined-pattern compiled regexes per patient.
+        # (itertools.permutations across ALL records for that patient.)
+        pid_to_compiled_combine: dict = {}   # pid → list[(compiled_re, masking_value)]
+        if combine_rules:
+            for pid, rows_data in pid_to_combine.items():
+                rule_list = []
+                for rule_name, rule in combine_rules.items():
+                    cols = rule["cols"]
+                    masking_value = rule["masking_value"]
+                    all_combos: set = set()
+                    for rdata in rows_data:
+                        values = [
+                            str(rdata[c]).strip()
+                            for c in cols
+                            if rdata.get(c) and str(rdata.get(c, "")).strip()
+                        ]
+                        for r in range(1, len(values) + 1):
+                            for perm in itertools.permutations(values, r):
+                                combined = " ".join(perm).strip().lower()
+                                if len(combined) > 2:
+                                    all_combos.add(combined)
+                    if all_combos:
+                        try:
+                            sorted_pats = sorted(all_combos, key=len, reverse=True)
+                            compiled = re2.compile(
+                                "(?i)" + "|".join(
+                                    rf"\b{re2.escape(p)}\b" for p in sorted_pats
+                                )
+                            )
+                            rule_list.append((compiled, masking_value))
+                        except Exception as exc:
+                            nd_logger.warning(
+                                f"[{self.__class__.__name__}] combine compile failed "
+                                f"for pid={pid}: {exc}"
+                            )
+                pid_to_compiled_combine[pid] = rule_list
+
+        nd_logger.info(
+            f"[{self.__class__.__name__}] PII maps ready — "
+            f"mask={len(pid_to_mask)}, dob={len(pid_to_dobs)}, "
+            f"combine={len(pid_to_compiled_combine)} patients."
+        )
+
+        # ── Phase 2: ONE pass over source rows ────────────────────────────────
+        date_re = re2.compile(DATE_PATTERN_NOTES) if dob_cols else None
+        text_list = df[text_column].to_list()
+        result: list = []
+
+        for text, pid in zip(text_list, pid_list):
+            if not isinstance(text, str):
+                result.append(text)
+                continue
+
+            # exact-match mask
+            for pattern, repl in pid_to_mask.get(pid, {}).items():
+                try:
+                    text = re2.sub(pattern, repl, text)
+                except Exception:
+                    pass
+
+            # DOB
+            if date_re:
+                dob_replacements = pid_to_dobs.get(pid)
+                if dob_replacements:
+                    def _dob_replacer(match, _repl=dob_replacements):
+                        ds = match.group(0)
+                        try:
+                            return _repl.get(date_parser.parse(ds, fuzzy=True).date(), ds)
+                        except Exception:
+                            return ds
+                    text = date_re.sub(_dob_replacer, text)
+
+            # combine
+            for compiled_re, masking_value in pid_to_compiled_combine.get(pid, []):
+                try:
+                    text = compiled_re.sub(masking_value, text)
+                except Exception:
+                    pass
+
+            result.append(text)
+
+        masked_col = pl.Series(result, dtype=pl.Utf8)
         masked_col = self._apply_regex(masked_col)
         masked_col = self._apply_replace_value(masked_col)
         df = df.with_columns(masked_col.alias(text_column))
@@ -300,6 +434,10 @@ class NotesRule(RuleBase):
         df = df.with_columns(pl.col(text_column).fill_null(""))
         masked_col: pl.Series = df[text_column]
 
+        lookup_col = "_resolved_patient_id"
+        has_pid = lookup_col in df.columns
+        pid_list = df[lookup_col].to_list() if has_pid else [None] * df.height
+
         for table_config in self.secondary_pii_configs:
             table_name = table_config.get("table_name")
             if not table_name:
@@ -313,24 +451,67 @@ class NotesRule(RuleBase):
                 continue
 
             mask_config = table_config.get("config", {})
-            pii_df = pii_df_raw.clone().with_columns(
-                pl.col("patient_id").cum_count().over("patient_id").alias("_row_num")
-            )
-            max_row_num = int(pii_df["_row_num"].max())
+            pii_cols = [col for col in mask_config if col in pii_df_raw.columns]
+            if not pii_cols:
+                nd_logger.warning(
+                    f"[{self.__class__.__name__}] [{table_name}] "
+                    "No matching PII columns in table. Skipping."
+                )
+                continue
+
+            # ── Build pid → merged replacement map (ALL records per patient) ─
+            # Old approach: row_num loop → max_N × source_rows ops (e.g. 5 × 100k).
+            # New approach: scan the PII table ONCE (e.g. 33k × avg_N records) to
+            # build a flat {pid: {pattern: masking_value}} dict, then do ONE pass
+            # over the source rows.  For insurance tables with 5 records/patient
+            # this cuts the inner work from 500k to ~100k operations.
             nd_logger.info(
-                f"[{self.__class__.__name__}] [{table_name}] Max PII per patient: {max_row_num}"
+                f"[{self.__class__.__name__}] [{table_name}] "
+                f"Building merged PII maps from {pii_df_raw.height} records…"
+            )
+            pid_to_map: dict = {}
+            select_cols = ["patient_id"] + pii_cols
+            for row in (
+                pii_df_raw
+                .select(select_cols)
+                .cast({c: pl.Utf8 for c in pii_cols})
+                .fill_null("")
+                .to_dicts()
+            ):
+                pid = row["patient_id"]
+                entry = pid_to_map.setdefault(pid, {})
+                for col in pii_cols:
+                    val = row[col].strip()
+                    if not val:
+                        continue
+                    word_count = len(val.split())
+                    config_min_words = mask_config[col].get("min_length", 0)
+                    min_allowed_words = max(config_min_words, 3)
+                    if word_count < min_allowed_words:
+                        continue
+                    pattern = rf"(?i)\b{re2.escape(val)}\b"
+                    entry[pattern] = mask_config[col]["masking_value"]
+
+            nd_logger.info(
+                f"[{self.__class__.__name__}] [{table_name}] "
+                f"Built maps for {len(pid_to_map)} unique patients."
             )
 
-            for row_num in range(1, max_row_num + 1):
-                pii_batch = pii_df.filter(pl.col("_row_num") == row_num).drop("_row_num")
-                df_batch = df.join(
-                    pii_batch,
-                    left_on="_resolved_patient_id",
-                    right_on="patient_id",
-                    how="left",
-                    suffix="_pii",
-                )
-                masked_col = self._apply_mask_batched(df_batch, masked_col, mask_config)
+            # ── Single pass over source rows ─────────────────────────────────
+            text_list = masked_col.to_list()
+            result: list[str] = []
+            for text, pid in zip(text_list, pid_list):
+                rmap = pid_to_map.get(pid)
+                if not rmap:
+                    result.append(text)
+                    continue
+                for pattern, repl in rmap.items():
+                    try:
+                        text = re2.sub(pattern, repl, text)
+                    except Exception:
+                        pass
+                result.append(text)
+            masked_col = pl.Series(result, dtype=pl.Utf8)
 
         df = df.with_columns(masked_col.alias(text_column))
         nd_logger.info(
