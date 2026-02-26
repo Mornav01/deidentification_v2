@@ -1,0 +1,8 @@
+TABLE_NAME,COLUMN_NAME,IS_PHI,DE_IDENTIFICATION_RULE,MASK_VALUE,REFERENCE_PATIENT_ID,REFERENCE_ENCOUNTER_ID
+ClinicalDocuments_LillyAD,patientid,Yes,PATIENT_ID,,,
+ClinicalDocuments_LillyAD,encounterid,Yes,ENCOUNTER_ID,,,
+ClinicalDocuments_LillyAD,DocumentID,No,,,,
+ClinicalDocuments_LillyAD,BinTypeID,No,,,,
+ClinicalDocuments_LillyAD,DocTypeID,No,,,,
+ClinicalDocuments_LillyAD,note_type,No,,,,
+ClinicalDocuments_LillyAD,notes,Yes,NOTES,,,

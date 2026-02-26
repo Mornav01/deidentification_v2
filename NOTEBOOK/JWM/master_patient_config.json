@@ -1,0 +1,362 @@
+{
+  "mask": {
+    "Patient_AltPatientID": {
+      "masking_value": "((PATIENTI_IDENTIFIER))"
+    },
+    "Patient_OrgPatientID": {
+      "masking_value": "((PATIENTI_IDENTIFIER))"
+    },
+    "Person_FirstName": {
+      "masking_value": "((PATIENT_NAME))"
+    },
+    "Person_MiddleName1": {
+      "masking_value": "((PATIENT_NAME))"
+    },
+    "Person_MiddleName2": {
+      "masking_value": "((PATIENT_NAME))"
+    },
+    "Person_LastName": {
+      "masking_value": "((PATIENT_NAME))"
+    },
+    "Person_NickName": {
+      "masking_value": "((PATIENT_NAME))"
+    },
+    "Person_MaidenName": {
+      "masking_value": "((PATIENT_NAME))"
+    },
+    "Person_SSN": {
+      "masking_value": "((SSN))"
+    },
+    "Person_DriverLicNum": {
+      "masking_value": "((DRIVERS_LICENSE))"
+    },
+    "Person_Pager": {
+      "masking_value": "((PAGER_NO))"
+    },
+    "Person_CellPhone1": {
+      "masking_value": "((PHONE_NUMBER))"
+    },
+    "Person_CellPhone2": {
+      "masking_value": "((PHONE_NUMBER))"
+    },
+    "Person_EMail1": {
+      "masking_value": "((EMAIL_ID))"
+    },
+    "Person_EMail2": {
+      "masking_value": "((EMAIL_ID))"
+    },
+    "Person_Occupation": {
+      "masking_value": "((OCCUPATION))"
+    },
+    "Person_PrimaryPhone": {
+      "masking_value": "((PHONE_NUMBER))"
+    },
+    "Person_PrimaryWorkPhone": {
+      "masking_value": "((PHONE_NUMBER))"
+    },
+    "RESIDENTIAL_AddressLine1": {
+      "masking_value": "((RESIDENTIAL_PATIENT_ADDRESS))"
+    },
+    "RESIDENTIAL_AddressLine2": {
+      "masking_value": "((RESIDENTIAL_PATIENT_ADDRESS))"
+    },
+    "RESIDENTIAL_City": {
+      "masking_value": "((RESIDENTIAL_PATIENT_CITY))"
+    },
+    "RESIDENTIAL_County": {
+      "masking_value": "((RESIDENTIAL_PATIENT_COUNTY))"
+    },
+    "RESIDENTIAL_PhoneNum1": {
+      "masking_value": "((RESIDENTIAL_PHONE_NUMBER))"
+    },
+    "RESIDENTIAL_PhoneNum2": {
+      "masking_value": "((RESIDENTIAL_PHONE_NUMBER))"
+    },
+    "RESIDENTIAL_FaxNumber": {
+      "masking_value": "((RESIDENTIAL_FAX))"
+    },
+    "PersonEmployers_PersonalPhoneNumber": {
+      "masking_value": "((PHONE_NUMBER))"
+    },
+    "Employers_Name": {
+      "masking_value": "((EMPLOYER_NAME))"
+    },
+    "Employers_Address1": {
+      "masking_value": "((EMPLOYER_ADDRESS))"
+    },
+    "Employers_Address2": {
+      "masking_value": "((EMPLOYER_ADDRESS))"
+    },
+    "Employers_City": {
+      "masking_value": "((EMPLOYER_CITY))"
+    },
+    "Employers_County": {
+      "masking_value": "((EMPLOYER_COUNTY))"
+    },
+    "Employers_Phone": {
+      "masking_value": "((EMPLOYER_PHONE))"
+    },
+    "Employers_Fax": {
+      "masking_value": "((EMPLOYER_FAX))"
+    },
+    "Employers_ContactName": {
+      "masking_value": "((EMPLOYER_DETAILS))"
+    },
+    "BILLING_AddressLine1": {
+      "masking_value": "((BILLING_PATIENT_ADDRESS))"
+    },
+    "BILLING_AddressLine2": {
+      "masking_value": "((BILLING_PATIENT_ADDRESS))"
+    },
+    "BILLING_City": {
+      "masking_value": "((BILLING_PATIENT_CITY))"
+    },
+    "BILLING_County": {
+      "masking_value": "((BILLING_PATIENT_COUNTY))"
+    },
+    "BILLING_PhoneNum1": {
+      "masking_value": "((BILLING_PHONE_NUMBER))"
+    },
+    "BILLING_PhoneNum2": {
+      "masking_value": "((BILLING_PHONE_NUMBER))"
+    },
+    "BILLING_FaxNumber": {
+      "masking_value": "((BILLING_FAX))"
+    }
+  },
+  "dob": {
+    "Person_DateOfBirth": {
+      "masking_value": "((PATIENT_DOB))"
+    }
+  },
+  "regex": {
+    "Person_SSN": {
+      "regex": [
+        "\\b\\d{3}[- ]\\d{2}[- ]\\d{4}\\b"
+      ],
+      "masking_value": "((SSN))",
+      "processing_func": null
+    },
+    "Person_Pager": {
+      "regex": [
+        "\\(\\d{3}\\)\\s*\\d{3}-\\d{4}",
+        "\\b\\d{3}-\\d{3}-\\d{4}\\b",
+        "\\+\\d{1,3}\\s\\d{1,4}[- ]\\d{3}[- ]\\d{4}\\b",
+        "\\b\\d{3} \\d{3} \\d{4}\\b"
+      ],
+      "masking_value": "((PAGER_NO))",
+      "processing_func": null
+    },
+    "Person_CellPhone1": {
+      "regex": [
+        "\\(\\d{3}\\)\\s*\\d{3}-\\d{4}",
+        "\\b\\d{3}-\\d{3}-\\d{4}\\b",
+        "\\+\\d{1,3}\\s\\d{1,4}[- ]\\d{3}[- ]\\d{4}\\b",
+        "\\b\\d{3} \\d{3} \\d{4}\\b"
+      ],
+      "masking_value": "((PHONE_NUMBER))",
+      "processing_func": null
+    },
+    "Person_CellPhone2": {
+      "regex": [
+        "\\(\\d{3}\\)\\s*\\d{3}-\\d{4}",
+        "\\b\\d{3}-\\d{3}-\\d{4}\\b",
+        "\\+\\d{1,3}\\s\\d{1,4}[- ]\\d{3}[- ]\\d{4}\\b",
+        "\\b\\d{3} \\d{3} \\d{4}\\b"
+      ],
+      "masking_value": "((PHONE_NUMBER))",
+      "processing_func": null
+    },
+    "Person_EMail1": {
+      "regex": [
+        "\\(\\d{3}\\)\\s*\\d{3}-\\d{4}",
+        "\\b\\d{3}-\\d{3}-\\d{4}\\b",
+        "\\+\\d{1,3}\\s\\d{1,4}[- ]\\d{3}[- ]\\d{4}\\b",
+        "\\b\\d{3} \\d{3} \\d{4}\\b"
+      ],
+      "masking_value": "((EMAIL_ID))",
+      "processing_func": null
+    },
+    "Person_EMail2": {
+      "regex": [
+        "\\(\\d{3}\\)\\s*\\d{3}-\\d{4}",
+        "\\b\\d{3}-\\d{3}-\\d{4}\\b",
+        "\\+\\d{1,3}\\s\\d{1,4}[- ]\\d{3}[- ]\\d{4}\\b",
+        "\\b\\d{3} \\d{3} \\d{4}\\b"
+      ],
+      "masking_value": "((EMAIL_ID))",
+      "processing_func": null
+    },
+    "Person_PrimaryPhone": {
+      "regex": [
+        "\\(\\d{3}\\)\\s*\\d{3}-\\d{4}",
+        "\\b\\d{3}-\\d{3}-\\d{4}\\b",
+        "\\+\\d{1,3}\\s\\d{1,4}[- ]\\d{3}[- ]\\d{4}\\b",
+        "\\b\\d{3} \\d{3} \\d{4}\\b"
+      ],
+      "masking_value": "((PHONE_NUMBER))",
+      "processing_func": null
+    },
+    "Person_PrimaryWorkPhone": {
+      "regex": [
+        "\\(\\d{3}\\)\\s*\\d{3}-\\d{4}",
+        "\\b\\d{3}-\\d{3}-\\d{4}\\b",
+        "\\+\\d{1,3}\\s\\d{1,4}[- ]\\d{3}[- ]\\d{4}\\b",
+        "\\b\\d{3} \\d{3} \\d{4}\\b"
+      ],
+      "masking_value": "((PHONE_NUMBER))",
+      "processing_func": null
+    },
+    "RESIDENTIAL_AddressLine1": {
+      "regex": [
+        "\n(?x)                             # Allow comments and ignore whitespace\n(?P<street_or_pobox>\n    (?:\\d+[A-Za-z]{0,3}\\s+[A-Za-z0-9\\s.,'-]*)   # Regular street address\n    |\n    (?:P\\.?\\s*O\\.?\\s*Box\\s+\\d+)                 # PO Box address\n)\n[,\\s]+                         # Comma or one/more spaces\n(?P<city>[A-Za-z\\s]+?)          # City name (lazy match)\n[,\\s]+                         # Comma or one/more spaces\n(?P<state>\n    AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|\n    MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|\n    SD|TN|TX|UT|VT|VA|WA|WV|WI|WY\n)\n[\\s,]*                         # Optional spaces or commas\n(?P<zip>\\d{5}(?:-\\d{4})?)       # ZIP code (with optional +4)\n"
+      ],
+      "masking_value": "((RESIDENTIAL_PATIENT_ADDRESS))",
+      "processing_func": null
+    },
+    "RESIDENTIAL_AddressLine2": {
+      "regex": [
+        "\n(?x)                             # Allow comments and ignore whitespace\n(?P<street_or_pobox>\n    (?:\\d+[A-Za-z]{0,3}\\s+[A-Za-z0-9\\s.,'-]*)   # Regular street address\n    |\n    (?:P\\.?\\s*O\\.?\\s*Box\\s+\\d+)                 # PO Box address\n)\n[,\\s]+                         # Comma or one/more spaces\n(?P<city>[A-Za-z\\s]+?)          # City name (lazy match)\n[,\\s]+                         # Comma or one/more spaces\n(?P<state>\n    AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|\n    MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|\n    SD|TN|TX|UT|VT|VA|WA|WV|WI|WY\n)\n[\\s,]*                         # Optional spaces or commas\n(?P<zip>\\d{5}(?:-\\d{4})?)       # ZIP code (with optional +4)\n"
+      ],
+      "masking_value": "((RESIDENTIAL_PATIENT_ADDRESS))",
+      "processing_func": null
+    },
+    "RESIDENTIAL_PhoneNum1": {
+      "regex": [
+        "\\(\\d{3}\\)\\s*\\d{3}-\\d{4}",
+        "\\b\\d{3}-\\d{3}-\\d{4}\\b",
+        "\\+\\d{1,3}\\s\\d{1,4}[- ]\\d{3}[- ]\\d{4}\\b",
+        "\\b\\d{3} \\d{3} \\d{4}\\b"
+      ],
+      "masking_value": "((RESIDENTIAL_PHONE_NUMBER))",
+      "processing_func": null
+    },
+    "RESIDENTIAL_PhoneNum2": {
+      "regex": [
+        "\\(\\d{3}\\)\\s*\\d{3}-\\d{4}",
+        "\\b\\d{3}-\\d{3}-\\d{4}\\b",
+        "\\+\\d{1,3}\\s\\d{1,4}[- ]\\d{3}[- ]\\d{4}\\b",
+        "\\b\\d{3} \\d{3} \\d{4}\\b"
+      ],
+      "masking_value": "((RESIDENTIAL_PHONE_NUMBER))",
+      "processing_func": null
+    },
+    "RESIDENTIAL_FaxNumber": {
+      "regex": [
+        "\\(\\d{3}\\)\\s*\\d{3}-\\d{4}",
+        "\\b\\d{3}-\\d{3}-\\d{4}\\b",
+        "\\+\\d{1,3}\\s\\d{1,4}[- ]\\d{3}[- ]\\d{4}\\b",
+        "\\b\\d{3} \\d{3} \\d{4}\\b"
+      ],
+      "masking_value": "((RESIDENTIAL_FAX))",
+      "processing_func": null
+    },
+    "PersonEmployers_PersonalPhoneNumber": {
+      "regex": [
+        "\\(\\d{3}\\)\\s*\\d{3}-\\d{4}",
+        "\\b\\d{3}-\\d{3}-\\d{4}\\b",
+        "\\+\\d{1,3}\\s\\d{1,4}[- ]\\d{3}[- ]\\d{4}\\b",
+        "\\b\\d{3} \\d{3} \\d{4}\\b"
+      ],
+      "masking_value": "((PHONE_NUMBER))",
+      "processing_func": null
+    },
+    "Employers_Address1": {
+      "regex": [
+        "\n(?x)                             # Allow comments and ignore whitespace\n(?P<street_or_pobox>\n    (?:\\d+[A-Za-z]{0,3}\\s+[A-Za-z0-9\\s.,'-]*)   # Regular street address\n    |\n    (?:P\\.?\\s*O\\.?\\s*Box\\s+\\d+)                 # PO Box address\n)\n[,\\s]+                         # Comma or one/more spaces\n(?P<city>[A-Za-z\\s]+?)          # City name (lazy match)\n[,\\s]+                         # Comma or one/more spaces\n(?P<state>\n    AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|\n    MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|\n    SD|TN|TX|UT|VT|VA|WA|WV|WI|WY\n)\n[\\s,]*                         # Optional spaces or commas\n(?P<zip>\\d{5}(?:-\\d{4})?)       # ZIP code (with optional +4)\n"
+      ],
+      "masking_value": "((EMPLOYER_ADDRESS))",
+      "processing_func": null
+    },
+    "Employers_Address2": {
+      "regex": [
+        "\n(?x)                             # Allow comments and ignore whitespace\n(?P<street_or_pobox>\n    (?:\\d+[A-Za-z]{0,3}\\s+[A-Za-z0-9\\s.,'-]*)   # Regular street address\n    |\n    (?:P\\.?\\s*O\\.?\\s*Box\\s+\\d+)                 # PO Box address\n)\n[,\\s]+                         # Comma or one/more spaces\n(?P<city>[A-Za-z\\s]+?)          # City name (lazy match)\n[,\\s]+                         # Comma or one/more spaces\n(?P<state>\n    AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|\n    MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|\n    SD|TN|TX|UT|VT|VA|WA|WV|WI|WY\n)\n[\\s,]*                         # Optional spaces or commas\n(?P<zip>\\d{5}(?:-\\d{4})?)       # ZIP code (with optional +4)\n"
+      ],
+      "masking_value": "((EMPLOYER_ADDRESS))",
+      "processing_func": null
+    },
+    "Employers_Phone": {
+      "regex": [
+        "\\(\\d{3}\\)\\s*\\d{3}-\\d{4}",
+        "\\b\\d{3}-\\d{3}-\\d{4}\\b",
+        "\\+\\d{1,3}\\s\\d{1,4}[- ]\\d{3}[- ]\\d{4}\\b",
+        "\\b\\d{3} \\d{3} \\d{4}\\b"
+      ],
+      "masking_value": "((EMPLOYER_PHONE))",
+      "processing_func": null
+    },
+    "Employers_Fax": {
+      "regex": [
+        "\\(\\d{3}\\)\\s*\\d{3}-\\d{4}",
+        "\\b\\d{3}-\\d{3}-\\d{4}\\b",
+        "\\+\\d{1,3}\\s\\d{1,4}[- ]\\d{3}[- ]\\d{4}\\b",
+        "\\b\\d{3} \\d{3} \\d{4}\\b"
+      ],
+      "masking_value": "((EMPLOYER_FAX))",
+      "processing_func": null
+    },
+    "BILLING_AddressLine1": {
+      "regex": [
+        "\n(?x)                             # Allow comments and ignore whitespace\n(?P<street_or_pobox>\n    (?:\\d+[A-Za-z]{0,3}\\s+[A-Za-z0-9\\s.,'-]*)   # Regular street address\n    |\n    (?:P\\.?\\s*O\\.?\\s*Box\\s+\\d+)                 # PO Box address\n)\n[,\\s]+                         # Comma or one/more spaces\n(?P<city>[A-Za-z\\s]+?)          # City name (lazy match)\n[,\\s]+                         # Comma or one/more spaces\n(?P<state>\n    AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|\n    MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|\n    SD|TN|TX|UT|VT|VA|WA|WV|WI|WY\n)\n[\\s,]*                         # Optional spaces or commas\n(?P<zip>\\d{5}(?:-\\d{4})?)       # ZIP code (with optional +4)\n"
+      ],
+      "masking_value": "((BILLING_PATIENT_ADDRESS))",
+      "processing_func": null
+    },
+    "BILLING_AddressLine2": {
+      "regex": [
+        "\n(?x)                             # Allow comments and ignore whitespace\n(?P<street_or_pobox>\n    (?:\\d+[A-Za-z]{0,3}\\s+[A-Za-z0-9\\s.,'-]*)   # Regular street address\n    |\n    (?:P\\.?\\s*O\\.?\\s*Box\\s+\\d+)                 # PO Box address\n)\n[,\\s]+                         # Comma or one/more spaces\n(?P<city>[A-Za-z\\s]+?)          # City name (lazy match)\n[,\\s]+                         # Comma or one/more spaces\n(?P<state>\n    AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|\n    MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|\n    SD|TN|TX|UT|VT|VA|WA|WV|WI|WY\n)\n[\\s,]*                         # Optional spaces or commas\n(?P<zip>\\d{5}(?:-\\d{4})?)       # ZIP code (with optional +4)\n"
+      ],
+      "masking_value": "((BILLING_PATIENT_ADDRESS))",
+      "processing_func": null
+    },
+    "BILLING_PhoneNum1": {
+      "regex": [
+        "\\(\\d{3}\\)\\s*\\d{3}-\\d{4}",
+        "\\b\\d{3}-\\d{3}-\\d{4}\\b",
+        "\\+\\d{1,3}\\s\\d{1,4}[- ]\\d{3}[- ]\\d{4}\\b",
+        "\\b\\d{3} \\d{3} \\d{4}\\b"
+      ],
+      "masking_value": "((BILLING_PHONE_NUMBER))",
+      "processing_func": null
+    },
+    "BILLING_PhoneNum2": {
+      "regex": [
+        "\\(\\d{3}\\)\\s*\\d{3}-\\d{4}",
+        "\\b\\d{3}-\\d{3}-\\d{4}\\b",
+        "\\+\\d{1,3}\\s\\d{1,4}[- ]\\d{3}[- ]\\d{4}\\b",
+        "\\b\\d{3} \\d{3} \\d{4}\\b"
+      ],
+      "masking_value": "((BILLING_PHONE_NUMBER))",
+      "processing_func": null
+    },
+    "BILLING_FaxNumber": {
+      "regex": [
+        "\\(\\d{3}\\)\\s*\\d{3}-\\d{4}",
+        "\\b\\d{3}-\\d{3}-\\d{4}\\b",
+        "\\+\\d{1,3}\\s\\d{1,4}[- ]\\d{3}[- ]\\d{4}\\b",
+        "\\b\\d{3} \\d{3} \\d{4}\\b"
+      ],
+      "masking_value": "((BILLING_FAX))",
+      "processing_func": null
+    }
+  },
+  "combine": {
+    "patientfullname": {
+      "regex": null,
+      "combine": [
+        "Person_FirstName",
+        "Person_MiddleName1",
+        "Person_MiddleName2",
+        "Person_LastName"
+      ],
+      "masking_value": "((PATIENT_NAME))",
+      "processing_func": null
+    }
+  },
+  "replace_value": [
+    {
+      "old_value": "MIND",
+      "new_value": "((FACILITY_NAME))"
+    }
+  ]
+}

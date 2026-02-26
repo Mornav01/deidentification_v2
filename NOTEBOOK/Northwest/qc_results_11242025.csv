@@ -1,0 +1,597 @@
+table_name,source_rows_count,dest_rows_count,qc_status,ignore_rows_count,reason,is_phi
+zip2countylookup,42310,42310,True,0,,False
+inpatientvisit,148840,148840,True,0,,True
+labloinccodes,29154,29154,True,0,,False
+lsm_actions,3727,3727,False,0,"QC Failed on columns: Notes, Notes",True
+patients,264590,227262,False,0,"data discrepancy present. QC Failed on columns: notes, notes, deceasedNotes, deceasedNotes, BillingAlertNotes, BillingAlertNotes",True
+notes,938113,938109,False,0,"data discrepancy present. QC Failed on columns: notes, notes, notesHTML, notesHTML",True
+progressnotes_decryptfinal,1287219,1287200,False,0,"data discrepancy present. QC Failed on columns: summary, summary",True
+surgicalhistory,840330,840312,False,0,"data discrepancy present. QC Failed on columns: reason, reason, date, date",True
+diagnosis,1994861,1994765,False,96,"QC Failed on columns: Notes, Notes, notesHtml, notesHtml",True
+udssegmentinformation,10,10,True,0,,False
+rulescpt,35,35,True,0,,False
+dl_cube_echeckin_data,86932,86932,True,0,,True
+referral,61437,61436,False,1,"QC Failed on columns: reason, reason, notes, notes, clinicalNotes, clinicalNotes",True
+patientinfo,165211,165171,True,40,,True
+asc_vitals_images_master,37,37,True,0,,False
+cci_edits_c1_c2,32488,32488,True,0,,True
+billingdata,1231564,1231467,False,0,data discrepancy present. ,True
+ndclookupenteries,95,95,True,0,,True
+properties,16480,16480,True,0,,True
+surescript_reqotherinfo,91944,91944,False,0,"QC Failed on columns: changeReasonText, changeReasonText",True
+rx_medication_alert,93252,93252,True,0,,True
+structhpi,2124,2121,False,0,data discrepancy present. ,True
+emar_frequency_time_mapping,20,20,True,0,,False
+edi_inv_cpt,1378818,1378724,False,0,data discrepancy present. ,True
+soapheadings,50,50,True,0,,False
+structsocialhistory,506116,506116,False,0,"QC Failed on columns: value, value",True
+dl_cube_kpis_op_electroniclabs,1488,965,True,523,,True
+p_dsi,17,17,True,0,,False
+encounterdata,2208348,2208338,False,0,"data discrepancy present. QC Failed on columns: AsmtNotes, AsmtNotes, NextAppt, NextAppt, pastHistory, pastHistory, NextApptReason, NextApptReason",True
+vitalshistory,2455715,2455707,False,0,"data discrepancy present. QC Failed on columns: Value, Value, value2, value2",True
+case_details,626,622,True,4,,True
+vascular_finding_icon,8,8,True,0,,False
+usercategories,3350,3350,True,0,,False
+vaccines_sites,15,15,True,0,,False
+udstable_7ref,28,28,True,0,,False
+ecwstructoptions,5253,5253,True,0,,False
+uds_codes,126,126,True,0,,False
+trigger_codes_group,5,5,True,0,,True
+emar_frequency,20,20,True,0,,False
+therapyassessmentdetail,106,106,True,0,,False
+assessment_rx_history,291,291,False,0,"QC Failed on columns: RxStrengthValue, RxStrengthValue, RxFrequencyValue, RxFrequencyValue",True
+tcny_den,594,594,True,0,,True
+treatmentnotes,321447,321441,False,6,"QC Failed on columns: Notes, Notes, NotesHTML, NotesHTML",True
+schedule_grid_columns,11,11,True,0,,False
+vision_lens_cpt,217,217,True,0,,False
+ccmr_cpt_claim_codes,25,25,True,0,,False
+usazipcodes,80025,80025,True,0,,False
+taxonomycodes_del,854,854,False,0,"QC Failed on columns: Notes, Notes",True
+rxhub_followupactioncodes,8,8,True,0,,False
+problemlist,413250,413249,False,1,"QC Failed on columns: notes, notes",True
+sparcreportcountycodes,2543,2543,True,0,,False
+structdatadetail,4804,4804,False,0,"QC Failed on columns: name, name",True
+udstable_6aref,47,47,True,0,,False
+tmhp_county,258,258,True,0,,False
+labdata,700185,1400183,False,2,"data discrepancy present. QC Failed on columns: reason, reason, Notes, Notes, IntNotes, IntNotes, OrderInstructions, OrderInstructions, patientIdentifier, patientIdentifier",True
+state_race_codes,148,148,True,0,,False
+apptblocks,111955,111955,False,0,"QC Failed on columns: Description, Description, Notes, Notes",True
+rwvisittypeconfig,10,10,True,0,,False
+therapeutic,8,8,True,0,,True
+ptspecificalert,86,86,False,0,"QC Failed on columns: Name, Name",True
+groupcodes,154,154,False,0,"QC Failed on columns: Description, Description",True
+proceduredetail,8298,8298,True,0,,False
+ecwproperties,311,311,True,0,,False
+derm_diagrams,11,11,True,0,,False
+vaccinecontraindications,23,23,True,0,,False
+rwcptcodemapping,20,20,True,0,,False
+prisma_kpi_info,18,18,True,0,,True
+rpm_cpt_exclude,3,3,True,0,,False
+ub92_conditioncodes,105,105,True,0,,False
+cptcvx_cdc,268,268,True,0,,False
+trigger_code_system,2,2,True,0,,False
+speciality_forms,93041,93038,True,3,,True
+structpreventive,563405,563402,False,3,"QC Failed on columns: notes, notes",True
+visitcodes,207,207,True,0,,False
+tblwebmsg,204153,204153,False,0,"QC Failed on columns: SUBJECT, SUBJECT, Body, Body",True
+todo_type,13,13,True,0,,False
+todo_action,16,16,True,0,,False
+userprofile,576,0,False,0,data discrepancy present. ,True
+referral_unit_types,11,11,True,0,,False
+therapyassessment,10,10,True,0,,True
+rxhub_scriptlog,535389,585381,False,8,"data discrepancy present. QC Failed on columns: PayorSourceName, PayorSourceName",True
+race,7,7,True,0,,False
+familydata,1883210,1883194,False,16,,True
+thcic_ethnicity_race_mapping,10,10,True,0,,False
+era_parentfilesplit,40824,40824,False,0,"QC Failed on columns: FileName, FileName",True
+additionalnotes_logs,10829,10829,False,0,"QC Failed on columns: notes, notes, subjectData, subjectData",True
+msgsyncrefattachftp,2161,0,True,2161,,True
+additionalnotes,36900,36900,False,0,"QC Failed on columns: Message, Message",True
+tblobconfigsubmenu,19,19,True,0,,False
+providermobilesettings,42,42,True,0,,False
+measure_patientdata_430,4743,4743,True,0,,True
+zipcodezone,42327,42327,True,0,,True
+phm_cpt_codes_priority,51,51,True,0,,False
+tblobconfigmenu,9,9,True,0,,False
+rxhub_rejectreasoncodes,39,39,True,0,,False
+surescript_requestlog,345948,341368,False,4580,"QC Failed on columns: Comments, Comments, XMLData, XMLData, XMLResponseData, XMLResponseData, MD_Comments, MD_Comments",True
+smsmsglogs,268568,0,False,0,data discrepancy present. ,True
+structdataoptions,23378,23378,False,0,"QC Failed on columns: name, name",True
+socialdetail,91,91,True,0,,False
+prisma_encounter_problem,387805,387805,True,0,,True
+statecontroldruglist,26,26,True,0,,False
+splprgcodes,7,7,True,0,,False
+problemlistlog,757519,757517,True,2,,True
+physicalexamconfiguration,211,211,True,0,,False
+rulesinscpt,8,8,True,0,,False
+prisma_procedure_observation,220414,220414,True,0,,False
+logpatientdemographicsxml_archived1,3128849,3120842,False,8007,"QC Failed on columns: xmldata, xmldata",True
+referralpreference,930,930,True,0,,True
+servicetypecodes,142,142,True,0,,False
+script_common_denorm,14423,14423,True,0,,False
+physicalexam,16677,16676,False,1,"QC Failed on columns: value, value",True
+rvu,119787,119787,True,0,,False
+ordersetmessage,240,240,False,0,"QC Failed on columns: Message, Message",True
+routeofadministration,8,8,True,0,,False
+pnsections,36,36,True,0,,False
+problemlistnoteslog,50743,50743,False,0,"QC Failed on columns: specify, specify, notes, notes",True
+edi_batchqueue,201701,201701,False,0,"QC Failed on columns: JobResult, JobResult",True
+tcny_utilization_ex,1082,1082,True,0,,False
+registry_currentmeds,570156,570141,True,15,,True
+multum_frequency_multiplier,120,120,True,0,,False
+doctors,9756,9756,True,0,,True
+apptblocklog,91511,91511,False,0,"QC Failed on columns: logdetails, logdetails",True
+cdss_failed_attempts_logs,43,43,True,0,,True
+questcodes,4072,4072,True,0,,False
+prisma_allergy_reaction,16167,16167,True,0,,False
+medicationlogsdetail,81375137,81375137,True,0,,False
+zipcodecountymap,52896,52896,True,0,,True
+vision_worthdot_option,10,10,True,0,,False
+encounters,2372265,2372230,False,35,"QC Failed on columns: Notes, Notes, notes2, notes2",True
+examdefaultdetail,122,122,False,0,"QC Failed on columns: value, value, value2, value2",True
+structallergyoverride,3038,3038,True,0,,True
+pharmacy,4622,4622,True,0,,False
+ruleengine_table_pkmap,26,26,True,0,,False
+programtype,11,11,True,0,,False
+medhistoryicdmap,3,3,True,0,,False
+logrightpanelupdate,47,47,True,0,,True
+ruleengine_dataelements,288,288,True,0,,False
+proccommunityitems,37,37,True,0,,False
+prisma_immunization_details,41147,41147,True,0,,True
+measuredefinitions,378,378,True,0,,True
+zipcodes,3045,3045,True,0,,True
+prisma_medication_details,134360,134360,False,0,"QC Failed on columns: instruction, instruction",True
+race_codes,931,931,True,0,,False
+pqrs_numerator,138,138,True,0,,False
+epcs_monthlyreportstatus,543,543,True,0,,True
+questionnairemaster,4,4,True,0,,False
+questionnaireformdesign,92,92,True,0,,False
+questionnairecategories,7,7,True,0,,False
+questaoeans,3258,3258,False,0,"QC Failed on columns: answer, answer",True
+labparameters,411,411,True,0,,False
+prisma_procedure_details,120203,120203,True,0,,False
+nhxdoctors,248,248,True,0,,True
+measure_provider_configuration_logs_2018,68,68,False,0,"QC Failed on columns: old_json, old_json, new_json, new_json",True
+ntenppaclaimspeciality,124,124,True,0,,False
+prisma_allergy_details,42747,42747,False,0,"QC Failed on columns: comments, comments",True
+documentlog,10759627,10759627,True,0,,False
+pqrs_numerator_migrate,138,138,True,0,,False
+edi_inv_eob,2672435,2672435,True,0,,True
+labsplitorders,4072,4072,True,0,,False
+validcpts,20116,20116,True,0,,False
+superbill_categories,110,110,True,0,,False
+labcptmap,166,166,True,0,,False
+pqri_reports_migrate,141,141,True,0,,False
+icd10cm_chronic,24378,24378,True,0,,False
+flowsheetitems,426,426,True,0,,False
+pqri_reports,141,141,True,0,,False
+physicalexamdetail,8182,8182,True,0,,False
+familyicd,8,8,True,0,,False
+refxchangelogs,71330,71330,True,0,,True
+coc_contacts,3,3,True,0,,False
+pe_muscular_items,24,24,True,0,,False
+enctelemed,81,81,True,0,,True
+prisma_standard_vitalname_variants,2465,2465,True,0,,False
+txtenabledpatients,134700,134700,True,0,,True
+pqri_migrate,25,25,True,0,,False
+ordersettemplates,375,375,True,0,,True
+measureparadefinitions,43,43,True,0,,False
+migrationlogs,30206,30206,True,0,,True
+emaillogs,4312,4312,True,0,,True
+pqri,25,25,True,0,,False
+ordersets,501,501,True,0,,True
+ordersetlinkeddiagnoses,363,363,True,0,,True
+orderdocumentoptions,7,7,True,0,,False
+pe_muscular_exam_items,145,145,True,0,,False
+interactionnotes,36578,36577,False,0,"data discrepancy present. QC Failed on columns: Notes, Notes",True
+ndclookupcrosswalk,415,415,True,0,,False
+multum_frequency,120,120,True,0,,False
+opprocedures,7,7,False,0,"QC Failed on columns: details, details",True
+ooologs,9,9,True,0,,True
+mvx_codes,120,120,True,0,,False
+multumdrug,9240,9240,True,0,,False
+mu_codes,111,111,True,0,,False
+multum_drug_name_map,60752,60752,True,0,,False
+mips_submission_2017,17,17,True,0,,False
+lablist,95,95,True,0,,False
+prisma_table_sync_logs,2977,2977,True,0,,True
+uifieldheader,11421,11421,True,0,,False
+labdataex,326385,326385,True,0,,True
+mips_measure_detail,5657,5657,True,0,,False
+ethnicity,45,45,True,0,,False
+manufacturerndclabelermapping,71,71,True,0,,False
+loincordermaster,1532,1532,True,0,,False
+emcoder_mdm2021,8,8,True,0,,False
+claim_assignedto_historydetail,238411,6,True,238405,,True
+surescript_eprescription,314486,314486,False,0,"QC Failed on columns: comments, comments",True
+patient_registry_groups,4,4,True,0,,True
+mcmp_rxcode,16022,16022,True,0,,False
+mcmp_proccode,2009,2009,True,0,,False
+edi_mhla_raceethnicity_codes,8,8,True,0,,False
+enc,2439734,2439617,False,0,"data discrepancy present. QC Failed on columns: generalNotes, generalNotes, Dx, Dx",True
+dashboard_sticky_notes,24363,24363,False,0,"QC Failed on columns: PtNotes, PtNotes",True
+hcpcscode_base,8293,8293,True,0,,False
+mds_icdmappings,319,319,True,0,,False
+ecwfamilyhxitems,16,16,True,0,,False
+cpticdcodes,1121471,1121471,True,0,,False
+ecri_caret_logs,1532,1532,False,0,"QC Failed on columns: notes, notes",True
+laceration_length_range,11,11,True,0,,False
+cpt_cvx,129,129,True,0,,False
+document,2831509,2973901,False,27608,"data discrepancy present. QC Failed on columns: customName, customName, Description, Description, dirpath, dirpath",True
+tblportalcontacts,2065,0,True,2065,,True
+hpi,1163894,1163876,False,0,"data discrepancy present. QC Failed on columns: Notes, Notes, notes2, notes2",True
+taxonomycodes,855,855,False,0,"QC Failed on columns: Notes, Notes",True
+communityelements,68,68,True,0,,False
+clia_cpt_list,1290,1290,True,0,,False
+chronic_drug_class,117,117,True,0,,False
+structsocialhistory_recover,32972,32972,True,0,,True
+procedurespl,3265,3262,False,0,"data discrepancy present. QC Failed on columns: value, value",True
+ptinstruction,57403,57403,False,0,"QC Failed on columns: Notes, Notes, NotesHTML, NotesHTML",True
+rulesinsicd,30,30,True,0,,False
+immunizations,84856,84856,False,0,"QC Failed on columns: Notes, Notes",True
+familyhxdetails,1386251,1386251,True,0,,True
+printfaxsettings,88,88,True,0,,False
+dw_dim_psm_flat_tables,16,16,True,0,,True
+proceduresattachments,16,0,True,16,,True
+upgrade_sqlversions,5271,5271,True,0,,False
+provider_languages,282,282,True,0,,False
+letterfavorite,231,231,True,0,,False
+template_category,1572,1572,True,0,,False
+oldrxmain_addlinfo,484265,484261,False,0,"data discrepancy present. QC Failed on columns: RxNotes, RxNotes",True
+edi_invoice,698022,697928,False,0,data discrepancy present. ,True
+social,1039016,1039016,False,0,"QC Failed on columns: value, value",True
+structexam,148,148,True,0,,True
+emrreferralattachmentdocs,1297,1297,True,0,,True
+telenc,947269,947096,False,0,"data discrepancy present. QC Failed on columns: Caller, Caller, message, message, actiontaken, actiontaken",True
+items,384449,384449,True,0,,True
+encdualdiagnosis,38454,38454,True,0,,True
+aoeoptions,10015,10015,True,0,,False
+incomingreferrallogs,136619,136619,True,0,,True
+family,1883213,1883197,False,0,"data discrepancy present. QC Failed on columns: Notes, Notes",True
+oldrxmain,4921552,4921452,False,0,"data discrepancy present. QC Failed on columns: PreparedBy, PreparedBy",True
+users,274961,227313,False,0,data discrepancy present. ,True
+reviewdetail,11301,11301,True,0,,False
+edi_practicetypes,8,8,True,0,,False
+ecwloguri,43,43,True,0,,False
+facilitypermissions,310,310,True,0,,False
+soapitems,47,47,True,0,,False
+edi_dfr_cptdiagnosismap,4,4,True,0,,True
+review,12033943,12032487,False,0,data discrepancy present. ,True
+rulesins,450,450,True,0,,True
+insurance_refundaddress,1743,1743,True,0,,False
+edi_dfr_info,2,2,False,0,"QC Failed on columns: subComplaint, subComplaint, objePhyComp, objePhyComp",True
+allergies,391002,390994,False,0,data discrepancy present. ,True
+annualnotes,2999862,2999761,False,0,"data discrepancy present. QC Failed on columns: notes, notes, notesHTML, notesHTML",True
+laceration_cptcode,255,255,True,0,,False
+insuranceaddlinfo,1811,1811,True,0,,True
+assessment_notes_history,263,263,False,0,"QC Failed on columns: notes, notes",True
+cpt_validcodes,13263,13263,True,0,,False
+encaddendums,13628,13627,False,0,"data discrepancy present. QC Failed on columns: addendum, addendum",True
+icd_9,326262,326262,True,0,,False
+icd10cm_desc,98186,98186,True,0,,False
+failedloginattemptslogs,51867,51867,True,0,,True
+statements_pdfs_batches,15,15,True,0,,True
+ereferraltxlog,248,248,True,0,,False
+ecw_standardlist,54,54,True,0,,False
+faxaulogs,14079,14079,True,0,,True
+ebo_portal_defaults,34,34,False,0,"QC Failed on columns: report_path, report_path",True
+county,3235,3235,True,0,,False
+coc,2,2,False,0,"QC Failed on columns: description, description",True
+x12refs,486364,486364,True,0,,True
+dl_cube_kpis_ar,1402293,1402293,True,0,,True
+cdss_codes,236,236,False,0,"QC Failed on columns: description, description",True
+case_management,626,626,False,0,"QC Failed on columns: CaseName, CaseName",True
+pgm_kpi_visual,33,33,True,0,,True
+myfavouriteproviders,39,39,True,0,,False
+musclebalancevalues,25,25,True,0,,False
+measure_encounterdata_460,32429,32429,True,0,,True
+epcs_users,22,22,True,0,,True
+dw_dim_kpi_op,43,43,True,0,,True
+dl_cube_noshow_daily_data,1301,1301,True,0,,True
+interfacedashboardlogs,215,215,True,0,,True
+pmdbrptcodes,18,18,True,0,,False
+dl_cube_kpis_op_referraldata,1541,1541,True,0,,True
+dl_cube_kpis_op_documents,63323,63013,True,310,,True
+ediprintmap,1732,1732,True,0,,False
+phm_measures_list,127,127,True,0,,False
+countrycodes,244,244,True,0,,False
+nhxtelenc,1046,0,True,1046,,True
+pe_muscular,5,5,False,0,"QC Failed on columns: value, value, dispval, dispval",True
+faxlogs,764594,386218,False,318653,data discrepancy present. ,True
+pama_cpt,273,273,True,0,,False
+dl_cube_kpis_current_ar,27084,27084,True,0,,True
+rx_myfavorites,821,821,True,0,,True
+ordersetprocedure,548,548,True,0,,True
+ordersetnotes,12,12,False,0,"QC Failed on columns: GenericNotesHTML, GenericNotesHTML",True
+dl_cube_kpis_payments,101743,101743,True,0,,True
+ordersetimmunization,490,490,True,0,,True
+ordersetappts,1325,1325,True,0,,True
+problemlist_ext,85466,85466,True,0,,True
+occupation,59993,59993,True,0,,False
+dl_cube_kpis_visits,64311,64311,True,0,,True
+visitcodesdetails,2747,2747,True,0,,False
+eraheader,71746,71746,False,0,"QC Failed on columns: RawFileName, RawFileName, XML, XML",True
+psac_class_settings_logs,543,543,False,0,"QC Failed on columns: log, log",True
+workinghourssets,7027,7027,False,0,"QC Failed on columns: description, description",True
+eptstmtbatchsubmission_logs,2202,2202,True,0,,False
+celldynrangevalues,24,24,True,0,,False
+logfilter_20240501,4725,0,False,0,data discrepancy present. ,True
+x12addlpayersinfo,18066,18066,False,0,"QC Failed on columns: payermiscinfo, payermiscinfo",True
+rxhub_formulary,1178064,1168110,True,9954,,True
+paymentplanlogs,104,104,True,0,,True
+multum_drug_name,48976,48976,True,0,,False
+cpthcpcschanges,10787,10787,True,0,,False
+eradetail,72897,72897,True,0,,True
+ecwaccesslog,2769,2717,True,52,,True
+medicarecarriers,111,111,True,0,,False
+securitytemplatepermissions,815,815,True,0,,False
+telemed_call_connection_analytics,1,1,True,0,,True
+tags,10823,10823,True,0,,False
+statements_pdfs,15,15,False,0,"QC Failed on columns: fileName, fileName",True
+empiccrexportlog,4611,4611,True,0,,True
+mcmp_dxcode,7709,7709,True,0,,False
+prisma_encounter_details,94166,94166,False,0,"QC Failed on columns: encounterId, encounterId, encounterTypeName, encounterTypeName, encounterTypeText, encounterTypeText",True
+apptblockdetails,120889,120889,True,0,,False
+mcaid_va_fqhc_proccode,47,47,True,0,,False
+macro_keyword_triggerlogs,62052,62052,True,0,,True
+medicarefeeschimportlogdetail,50874,50874,True,0,,True
+logpatientlookup,1176,1176,True,0,,True
+loincmaster,99692,0,False,0,data discrepancy present. ,False
+labparameterdetails,849,849,True,0,,False
+labordersdetails,61492,61492,True,0,,True
+labinstructions,12,12,False,0,"QC Failed on columns: Notes, Notes",True
+labdataview,2529,2529,True,0,,True
+empi_qualityreport,3591858,3591858,True,0,,False
+labdatadetail,928473,928473,False,0,"QC Failed on columns: Value, Value",True
+labcommunityitems,4973,4973,True,0,,False
+logincheck,216,216,True,0,,True
+ptcommunicationlogs,10487,10487,False,0,"QC Failed on columns: notes, notes",True
+commonwellnetlink,79673,79673,True,0,,True
+dcf_encpts,2263,2182,True,81,,True
+userfiltersetting,229,229,True,0,,True
+labcommunityexternalmap,2293,2293,True,0,,False
+cdss_logs,30713,30713,True,0,,True
+labcategories,38,38,True,0,,False
+ucs_noshowcampaignmarker,10769,10769,True,0,,True
+interfacedatatruncationlogs,20,20,False,0,"QC Failed on columns: message, message",True
+labattachment_archive,82014,82014,False,0,"QC Failed on columns: ProcessedResult, ProcessedResult",True
+voicecheckinfacilitysettings,269,269,True,0,,True
+edi_ack999header,1355,1355,True,0,,True
+insurancedetail,265162,265161,False,1,"QC Failed on columns: groupName, groupName",True
+electroniclabresults,32733,8294,True,24439,,True
+keywords,5745,5745,True,0,,False
+inventory_product,2,0,False,0,data discrepancy present. ,False
+sws_attrib_mapper_master_normalization,7528,7528,True,0,,False
+interopccrcache,59998,59995,True,3,,True
+inscptrules,29,0,False,0,data discrepancy present. ,False
+tbladditionalinfo,1612,1612,True,0,,True
+importcptdatautilitytask,6,6,True,0,,False
+immunizationvismapping,62,62,True,0,,True
+immunizationstatus,8,8,True,0,,False
+dw_dim_psm,370,370,True,0,,True
+immitemkeys,20,20,True,0,,False
+labitemkeys,437,437,False,0,"QC Failed on columns: value, value",True
+imagingstudies,95,95,True,0,,True
+ecwschtaskstatus,128311,128311,True,0,,False
+empinewenclog,15592,15592,True,0,,True
+icd9gem,24860,24860,True,0,,False
+prisma_records,161572,161572,True,0,,True
+icd9_synonyms,34653,34653,True,0,,False
+refundposting,891,891,True,0,,True
+icd10gem,81593,81593,True,0,,False
+tcny_temp_ex,2464,2464,True,0,,True
+icd10cm_order_union,75719,75719,True,0,,False
+rxhub_eligibilityvalidationlogs,55920,55920,False,0,"QC Failed on columns: failurereason, failurereason",True
+referralrequestlog,1323,1323,True,0,,True
+icd10cm_order_inactive_revised,1038,1038,True,0,,False
+faxinboxfolder,133,133,True,0,,False
+prisma_labresult_details,91495,91495,True,0,,True
+icd10cm_order_addenda,3877,3877,True,0,,False
+ccdbatchdataportabilityencinfo_log,350996,350996,True,0,,True
+icd10bygemsimporttask,6,6,True,0,,False
+icd,93094,93094,True,0,,False
+referralex,16523,16523,True,0,,False
+patientpicdimensions,20,18,True,2,,True
+hospitalization,324097,324087,False,10,"QC Failed on columns: reason, reason",True
+portalaccountlogs,1131720,1131720,True,0,,True
+hcpcs,4006,4006,True,0,,False
+hcc_lookup,11855,11855,True,0,,False
+nhxmpiemr,981,981,True,0,,True
+x12837imapper5010,1282,1282,True,0,,True
+gynhistory,20,20,True,0,,True
+claimbatchlog,4895,4895,False,0,"QC Failed on columns: Errors, Errors",True
+user_token,2562,2562,True,0,,True
+uifielddb,59923,59923,True,0,,False
+groupinsurance,1176,1176,True,0,,True
+ecwuserdevice,359,359,True,0,,True
+emcoderdmo,70912,70911,True,1,,True
+verifypasswordlogs,125525,125525,True,0,,True
+payrejectstatlog,150504,150504,True,0,,False
+uncompensatedclaimssearch,54535,54535,True,0,,True
+globalkeywords,169,169,False,0,"QC Failed on columns: details, details, htmldetails, htmldetails",True
+psac_logging,921,0,False,11,data discrepancy present. ,True
+patient_casemanager,59,59,True,0,,True
+enc_ins_claimdata,22,22,True,0,,True
+patient_misc,3,3,True,0,,True
+gender_identity_options,7,7,True,0,,False
+emcoder_roc_icd,24,24,True,0,,False
+templ_permissions,597,597,True,0,,False
+edi_suppinsindicators,8,8,True,0,,False
+insurance,1810,1810,False,0,"QC Failed on columns: website, website, Notes, Notes",True
+formsource,40,40,False,0,"QC Failed on columns: fname, fname, source, source",True
+telemed_call_analytics,1,1,True,0,,True
+transactions,7046367,0,True,7046367,,True
+userfavoritetests,357,357,True,0,,True
+flowsheets,33,33,True,0,,False
+server_resource_utilization,29730,29730,True,0,,False
+preventive,623627,623527,True,100,,True
+users_additionalinfo,109089,109089,True,0,,True
+familydetail,435209,435205,True,4,,True
+surescript_changerxoptions,4114,4114,True,0,,True
+propertydetail,163787,163787,True,0,,True
+tcny_num,527,527,True,0,,True
+ecwstructoptions_loincmapping,155,155,True,0,,False
+uncompensatedclaims,54535,54535,True,0,,True
+commonwellptlink,198169,198169,True,0,,True
+registry_reports,22,22,True,0,,True
+updateduifielddblogs,17825,17825,True,0,,True
+tblportalcontactsdecrypted,2064,0,True,2064,,True
+userlonglat,8248,8248,True,0,,False
+epaystmtupload,178206,178206,False,0,"QC Failed on columns: filename, filename",True
+resp_party_logs,48477,48477,True,0,,True
+interface_archive_log,31063,31063,True,0,,False
+icd9exttemplate,30199,41,True,30158,,True
+enc_utctimes,85904,85904,True,0,,True
+accounts_assignedto_history,2527,2527,True,0,,True
+ccm_chronicgroup,54,54,True,0,,False
+structdemographics,10,10,True,0,,True
+edi_inv_diagnosis,1812570,1812477,False,0,"data discrepancy present. QC Failed on columns: Notes, Notes",True
+cptcode_base,11992,11992,True,0,,True
+pt_schedule_appt_log,83530,83530,True,0,,True
+socialhxdistask,37,0,True,37,,True
+rx_medication_alert_users,180,180,True,0,,True
+regsitry_temp_sort,716,716,True,0,,True
+prisma_providers,195315,195315,True,0,,True
+ehi_map,1085,1085,True,0,,False
+raceothers,154568,154565,True,3,,True
+prisma_encounter_reason,47386,47386,True,0,,True
+edi_tos_del,25,25,True,0,,True
+prisma_patient_data,154040,0,True,154040,,True
+reconciliation,164,0,True,164,,True
+oldrxmain_mu_exclude,57,57,True,0,,True
+edi_tos,229,229,True,0,,True
+pldualdiagnosis,194,194,True,0,,True
+emcoder,764,764,True,0,,False
+emar_medtype,10,10,True,0,,False
+edi_servauthexcodes,8,8,True,0,,False
+edi_ndc_uom,5,5,True,0,,False
+edi_maritalstatus,7,7,True,0,,False
+edi_icdcodes,94137,94137,True,0,,False
+edi_fingroup,10,10,True,0,,False
+edi_conditioncodetypes,7,7,True,0,,False
+edi_ambulance_contractcodes,10,10,True,0,,False
+edi_278_servicetypecodes,103,103,True,0,,False
+ecwstructitems,1852,1852,True,0,,False
+ecwstruct_loincmapping,133,133,True,0,,False
+ecwproceduremapper,153,153,True,0,,False
+ecwfamilyhxmapper,12,12,True,0,,False
+ebo_cptlevel_cascodes,278541,278541,True,0,,False
+prisma_socialhistory_details,36394,36394,False,0,"QC Failed on columns: obsId, obsId, codename, codename, value, value, valuename, valuename",True
+drugfrequency,120,120,True,0,,False
+docidtyperef,62,62,True,0,,False
+derm_structkeywords,6,6,True,0,,False
+derm_lesionusermap,16,16,True,0,,False
+dentalquickbuttonitems,19,19,True,0,,False
+dentalitems,636,636,True,0,,False
+cvxvismapping,452,452,True,0,,False
+customrx,430,430,True,0,,False
+cre_criteria_dataelements,65,65,True,0,,False
+cpc_ethnicity_lookup,39,39,True,0,,False
+cpthcpcsmodifiers_crosswalk,368209,368209,True,0,,False
+cptcodes,8262,8262,True,0,,False
+cpo_cpt_exclude,20,20,True,0,,False
+copyencountermapping,16230,16230,True,0,,True
+clinitekstrips,10,10,True,0,,False
+clinicianallergies,62216,62216,True,0,,False
+clearinghouseclaimactioncodes,10,10,True,0,,False
+cdss_lab_propids,605,605,True,0,,False
+cdss_cptcodes,9,9,True,0,,False
+ccm_chroniccodes,647,647,True,0,,False
+assignedpnenc,24281,24281,True,0,,True
+attachedpastorders,46190,46190,True,0,,True
+prisma_vital_values,172855,172855,False,0,"QC Failed on columns: vitalBatchId, vitalBatchId",True
+anesthesiamapping,1366,1366,True,0,,False
+allergy_general_setting,100,100,True,0,,False
+abncodes,4464,4464,True,0,,False
+surveillance_measures,35418,35418,True,0,,False
+provider_measureconfiguration,605,605,True,0,,False
+ruleblockvisittypes,8,8,True,0,,True
+rwstructdatamapping,23,23,True,0,,False
+rpm_device_measure,15,15,True,0,,False
+provider_measureconfiguration_2017,572,572,True,0,,False
+prisma_standard_uomname_master,10,10,True,0,,False
+ordersetrx,2592,2592,True,0,,True
+ordersetlab,3429,3429,True,0,,True
+ordersetdi,1184,1184,True,0,,True
+obhistory,20,20,True,0,,True
+mips_practice_settings_measure_conf,52,52,True,0,,False
+measure_reportdata_430,119,119,True,0,,False
+measure_reportdata_410,267,267,True,0,,False
+mips_exception_report,3299,0,False,0,data discrepancy present. ,False
+measureparaconfig,235,235,True,0,,False
+measure_reportdata_460,105,105,True,0,,False
+measure_provider_configuration_2021,567,567,True,0,,False
+measure_provider_configuration_2024,959,959,True,0,,False
+measure_provider_configuration_2023,710,710,True,0,,False
+measure_provider_configuration_2022,641,641,True,0,,False
+measure_provider_configuration,437,437,True,0,,False
+measure_provider_configuration_2020,797,797,True,0,,False
+measure_provider_configuration_2019,18,18,True,0,,False
+measure_provider_configuration_2018,419,419,True,0,,False
+laborders,32,32,False,0,"QC Failed on columns: MessageContent, MessageContent",True
+patientpharmacylist,126071,125994,True,77,,True
+measure_extract,223,223,True,0,,False
+patients_cca,10679,10614,False,65,"QC Failed on columns: vmid, vmid",True
+measure_compendium,5190,0,False,0,data discrepancy present. ,False
+maq_measure_provider_referal,2,2,True,0,,False
+idslistdetail,12986,12986,True,0,,False
+ia_measures,232,232,True,0,,False
+nhxp2precordstatus,227,227,True,0,,True
+favouritekeywords,100,100,False,0,"QC Failed on columns: favouriteText, favouriteText",True
+ecwitems,118,118,True,0,,False
+nt_worksheet_list,32,32,True,0,,True
+labdimismatchreport,147,147,True,0,,True
+nhxpatient,3639,1466,True,2173,,True
+dj_ctl_kpi_category,5,5,True,0,,False
+cqm_measures,135,135,True,0,,True
+billablelab,47,47,True,0,,False
+visitstscodes,22,22,True,0,,True
+rxhub_scriptxml,524375,524375,False,0,"QC Failed on columns: XMLScript, XMLScript",True
+message,133438,133438,False,0,"QC Failed on columns: subject, subject, message, message",True
+ndc_denorm,102369,0,False,0,data discrepancy present. ,True
+prisma_encounters,176263,176263,False,0,"QC Failed on columns: reasonForAppt, reasonForAppt",True
+questionnairedata,28318,74,False,28244,"QC Failed on columns: value, value",True
+oa_enc_fu,217047,217047,True,0,,True
+nhxreferral,3639,1,False,3638,"QC Failed on columns: referralXml, referralXml",True
+psac_break_glass,12344,12343,False,1,"QC Failed on columns: reason, reason",True
+fparlabsmapping,5,5,True,0,,True
+hcfa,44079,44079,False,0,"QC Failed on columns: Comment3, Comment3, Comment4, Comment4, NDCComment3, NDCComment3, NDCComment4, NDCComment4",True
+globalalertdetails,10898,10898,False,0,"QC Failed on columns: Notes, Notes",True
+epcs_reports,564,0,True,564,,True
+edi_cptcodes,31062,31062,True,0,,True
+cqm_lookup,154103,154103,True,0,,True
+employer,74,0,False,0,data discrepancy present. ,True
+dw_dim_kpis_master,20,20,True,0,,True
+dmportal,4909,4909,False,0,"QC Failed on columns: path, path, customName, customName",True
+deviceconfigdata,52,52,True,0,,True
+dcf_ptdemo,222926,222926,False,0,,True
+automapproblemlisticdtosnomed,341,341,True,0,,True
+alertdata,23231,23231,True,0,,True
+blbs_partcipatinglab,118,118,True,0,,True
+dl_cube_psms,62598,62598,True,0,,True
+dl_cube_kpis_op_labdata,15510,0,True,15510,,True
+emrprogressnoteimages,1284,1065,True,219,,True
+dl_cube_kpis_op_lsmactionsdata,130,130,True,0,,True
+ccmr_careplan,521,521,True,0,,True
+immforecastingcache,957,957,True,0,,True
+assessment_referral_history,7,0,True,7,,True
+measuretemp,183,183,True,0,,True
+addressmanager,8935,8935,True,0,,True
+dl_cube_kpis_op_medication,15992,15992,False,0,"QC Failed on columns: DrugDescription, DrugDescription",True
+descofservice,2018,2018,False,0,"QC Failed on columns: Name, Name",True
+asc_pnsectionmaster,44,44,True,0,,True
+measure_encounterdata_410,4609,4609,True,0,,True
+measure_encounterdata_430,5481,5481,True,0,,True
+reminderdata,2,0,True,2,,True
+ihe_document,89631,89631,False,0,"QC Failed on columns: DocumentName, DocumentName, source, source, filename, filename, contentFtpdirPath, contentFtpdirPath",True
+docsrefdata,154563,154562,False,1,"QC Failed on columns: name, name",True
+contacts,39568,39568,True,0,,True
+assessment_lab_history,216,0,True,216,,True
+dl_cube_noshow_appointment_data,6318,0,True,6318,,True
+dl_cube_kpis_op_encdata,70586,70586,True,0,,True
+statusnotifications,122966,122966,False,0,"QC Failed on columns: body, body",True
+measure_patientdata_410,3947,3947,False,0,"QC Failed on columns: measure_signature, measure_signature",True
+vitals_registry,407733,0,False,0,data discrepancy present. ,True
+pmorders,313576,313576,False,0,"QC Failed on columns: MessageContent, MessageContent",True
+prisma_ccd_document_section,1744392,1731364,False,13028,"QC Failed on columns: htmlText, htmlText",True
+edi_inspayments,419000,260335,False,158665,"QC Failed on columns: memo, memo",True

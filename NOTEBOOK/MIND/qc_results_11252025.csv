@@ -1,0 +1,701 @@
+autoqc_date,table_name,source_rows_count,dest_rows_count,status,ignore_rows_count,reason,is_phi
+2025-11-25,Person_Backup_Bug308620,176922,176922,False,0,"QC Failed on columns: PersonID, PersonID",True
+2025-11-25,ASCX12_835D_OtherRenderingID,62383,62383,True,0,,False
+2025-11-25,PatHistProblemListHistory,370001,370001,False,0,"QC Failed on columns: PatientID, PatientID, ProblemNote, ProblemNote",True
+2025-11-25,PatHistMedical,917703,917703,False,0,"QC Failed on columns: PatientID, PatientID, PMHNote, PMHNote",True
+2025-11-25,PersonSignatureVersion,112,112,False,0,"QC Failed on columns: PersonID, PersonID, Signature, Signature",True
+2025-11-25,StatementHistoryAging,3989920,3989920,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,ClinicalProcedureExport,3313689,3313689,True,0,,False
+2025-11-25,PatientHistory,2884036,2884036,False,0,"QC Failed on columns: PatientID, PatientID, PersonID, PersonID",True
+2025-11-25,CHCPerson,118443,118437,False,6,"QC Failed on columns: PersonID, PersonID",True
+2025-11-25,PDC_TableColumnInclude,1306,1306,True,0,,True
+2025-11-25,PatHistFamily,380128,380128,False,0,"QC Failed on columns: PatientID, PatientID, PFHNote, PFHNote",True
+2025-11-25,eligRequest,912905,912905,True,0,,True
+2025-11-25,RXBDetailInfo,222955,222955,False,0,"QC Failed on columns: Comment, Comment, Indication, Indication",True
+2025-11-25,AsciiCleanup,185,185,True,0,,False
+2025-11-25,EOBClaimDetailAdj,86708,86708,True,0,,True
+2025-11-25,ClaimDetailAdjustmentHistory,259071,259071,True,0,,True
+2025-11-25,fctPatientHistory,2388593,2388593,False,0,"QC Failed on columns: PatientID, PatientID, Description, Description, Note, Note",True
+2025-11-25,dsrsParameter,6,6,False,0,"QC Failed on columns: dsrsObjectID, dsrsObjectID",True
+2025-11-25,StatementHistoryDetail,6317455,6317455,False,0,"QC Failed on columns: PatientID, PatientID, PaymentToChargeNote, PaymentToChargeNote",True
+2025-11-25,DataSourceFacility,14,14,True,0,,True
+2025-11-25,CHCListVeteranStatus,3,3,True,0,,True
+2025-11-25,AdjustmentSubType,14,128,False,0,data discrepancy present. ,False
+2025-11-25,ReferenceDocumentAcknowledgementHistory,151,0,True,151,,True
+2025-11-25,UpgradeHistory,376,376,True,0,,True
+2025-11-25,Gender,4,4,True,0,,True
+2025-11-25,EOBClaimDetailAdjHistory,87942,87942,True,0,,True
+2025-11-25,VisitHistory,1757335,1757335,False,0,"QC Failed on columns: VisitID, VisitID, PatientID, PatientID, FinanciallyResponsiblePartyID, FinanciallyResponsiblePartyID, PrimaryComplaint, PrimaryComplaint, Comments, Comments",True
+2025-11-25,InterfaceFlag,4,12,False,0,data discrepancy present. ,True
+2025-11-25,MDNHistory,48,48,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,D_76519_ProcedureMasterInfo_Backup,2,2,True,0,,True
+2025-11-25,ProcedurePlanModifier,99901,3448,False,0,data discrepancy present. ,True
+2025-11-25,InsurancePreCert,166119,166119,False,0,"QC Failed on columns: PatientID, PatientID, VisitID, VisitID, Comments, Comments, ReferralReason, ReferralReason",True
+2025-11-25,VacRefusalReason,4,4,True,0,,False
+2025-11-25,CHCInsurance_Flag,69,69,True,0,,True
+2025-11-25,dsrsObject,4,4,False,0,"QC Failed on columns: dsrsObjectID, dsrsObjectID",True
+2025-11-25,TaskListNote,1525025,1525025,False,0,"QC Failed on columns: Note, Note",True
+2025-11-25,dsrsField,765,765,True,0,,True
+2025-11-25,PrimePatientInvitationStatus,285558,285557,False,1,"QC Failed on columns: AccountHolderPersonId, AccountHolderPersonId",True
+2025-11-25,AlcoholAmountUsed,5,5,True,0,,False
+2025-11-25,TaskHistory,5886670,5886670,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,InsurancePlanClass,9,9,True,0,,True
+2025-11-25,HWVendorHWDevice,123,123,True,0,,True
+2025-11-25,OrdersTrackingOrderNotes,867042,867042,False,0,"QC Failed on columns: Note, Note",True
+2025-11-25,VaccineManufacturer,52,52,True,0,,False
+2025-11-25,NQFConcept,855,855,True,0,,True
+2025-11-25,OrdReqDiagnosis,861663,861663,False,0,"QC Failed on columns: OrdReqDiagnosisDescription, OrdReqDiagnosisDescription",True
+2025-11-25,PatHistGeneticRelationHistory,9,9,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,FeeSchedule,6,6,True,0,,True
+2025-11-25,LogLogin,914003,914003,True,0,,True
+2025-11-25,CHCNextOfKin,353048,353040,False,8,"QC Failed on columns: PersonID, PersonID, NextOfKinPerID, NextOfKinPerID",True
+2025-11-25,eligRequestTransactionStatus,3849320,3849320,True,0,,True
+2025-11-25,ClinicalAlertPatientFlag,168031,168031,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,OrdersTracking,2662827,2662827,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,notifySubscriberArticle,1806,1806,True,0,,True
+2025-11-25,PatHistMedicalHistory,1083551,1083551,False,0,"QC Failed on columns: PatientID, PatientID, PMHNote, PMHNote",True
+2025-11-25,InsuranceProviders,1005,1005,True,0,,True
+2025-11-25,ClaimHeaderProviderInfoStage,381,381,True,0,,True
+2025-11-25,ClinicalERxNotificationUsers,147,147,True,0,,False
+2025-11-25,OBXManualHistory_Backup_D53959,1685587,1685587,False,0,"QC Failed on columns: PatientId, PatientId",True
+2025-11-25,OBROBX,1387147,1387147,True,0,,False
+2025-11-25,eligRSPGroup,885695,885695,True,0,,True
+2025-11-25,ClinicalSummaryProvidedHistory,173860,173580,False,280,"QC Failed on columns: VisitID, VisitID",True
+2025-11-25,RCMDataReplicationKeyType,3,3,True,0,,False
+2025-11-25,CDADocument,30,30,True,0,,False
+2025-11-25,ScheduleVisitLink,1081162,1081162,False,0,"QC Failed on columns: VisitID, VisitID",True
+2025-11-25,ASCX12_835D_ClaimContact,140089,140089,True,0,,True
+2025-11-25,PSSQLJob,9,9,True,0,,False
+2025-11-25,FlagCopay,2,2,True,0,,False
+2025-11-25,ClinicalAlertPatientStage,168031,168031,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,ProblemListStatus,3,3,True,0,,False
+2025-11-25,PatHistCatPatHistItemMaster,41168,41168,True,0,,False
+2025-11-25,ConceptHistory,2479234,2479234,True,0,,True
+2025-11-25,ASCX12_835D_Adjustment,3503316,3503316,True,0,,True
+2025-11-25,MasterID,106,106,True,0,,False
+2025-11-25,fctPersonEthnicity,405940,405935,False,5,"QC Failed on columns: PersonID, PersonID",True
+2025-11-25,ReferenceDocumentAction,4,4,True,0,,False
+2025-11-25,fctPersonRace,409175,409170,False,5,"QC Failed on columns: PersonID, PersonID",True
+2025-11-25,eligRSPReqValidation,409175,283895,False,0,data discrepancy present. ,False
+2025-11-25,ASCX12_835_ClaimID,1598933,1598933,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,ClaimEFileReportFiles,96497,96497,True,0,,True
+2025-11-25,LabTestResult,1317049,1317049,True,0,,True
+2025-11-25,ImmRequestType,2,2,True,0,,False
+2025-11-25,HistoryVocabEOrdersMigration_OrdReqOrder,17229,17229,False,0,"QC Failed on columns: OrdReqOrderDescription, OrdReqOrderDescription, Comment, Comment",True
+2025-11-25,PatHistFamilyHistory,531205,531205,False,0,"QC Failed on columns: PatientID, PatientID, PFHNote, PFHNote",True
+2025-11-25,ScheduleLocationTemplateLocations,107,107,True,0,,True
+2025-11-25,OrdReqOrderOrdReqDiagnosis,1694445,1694445,True,0,,False
+2025-11-25,HistoryVocabEOrdersMigration_OrdersTrackingHistory,97305,97305,False,0,"QC Failed on columns: PatientID, PatientID, Description, Description",True
+2025-11-25,VacPatNotTracked,3,3,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,ClinicalUnit,18,18,True,0,,False
+2025-11-25,ClientApp,796,796,True,0,,True
+2025-11-25,ClaimFollowUpReason,358,358,True,0,,True
+2025-11-25,OrdReq,293411,293411,True,0,,True
+2025-11-25,ClinicalPatMedsDiscontinued,409330,409330,True,0,,True
+2025-11-25,ColAdminConfig,1,1,True,0,,True
+2025-11-25,LabTestResultFlag,119698,119698,True,0,,False
+2025-11-25,B_133488_CDADocument_Backup,1,1,True,0,,True
+2025-11-25,ClaimPrintHistory,129523,129523,True,0,,True
+2025-11-25,ClaimPWKHistory,12,12,True,0,,True
+2025-11-25,FlowSheetHeaderHistory,259,259,True,0,,False
+2025-11-25,ActionsLU,408,408,True,0,,False
+2025-11-25,RXBGroup,209103,209103,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,CaseTypeGMTMapping,5,5,True,0,,False
+2025-11-25,Patient,418694,418694,False,0,"QC Failed on columns: PatientID, PatientID, PersonID, PersonID, DuplicatePatientID, DuplicatePatientID",True
+2025-11-25,ClinicalAlertFlag,27,27,True,0,,False
+2025-11-25,MenstrualFlow,4,4,True,0,,False
+2025-11-25,FlowSheetHistory,171,171,True,0,,True
+2025-11-25,ClinicalAlertPatientDetails,1471,1471,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,PrimePatientActivityHistory,317139,317139,False,0,"QC Failed on columns: AccountHolderPersonId, AccountHolderPersonId, PatientId, PatientId",True
+2025-11-25,ReferralAuthorizationType,27,27,True,0,,False
+2025-11-25,ClinicalPatMedComment,903176,903176,False,0,"QC Failed on columns: Comment, Comment, PharmacyNote, PharmacyNote",True
+2025-11-25,OBXAdminCategoryHistory,21971,21971,True,0,,True
+2025-11-25,D_74170_OBXConceptIDs_for_Vitals_Backup,3,3,True,0,,True
+2025-11-25,PatHistSurgicalHistory,440547,440547,False,0,"QC Failed on columns: PatientID, PatientID, PSHNote, PSHNote",True
+2025-11-25,PBMPatientInfo,79918,79918,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,PhoneType,62383,6,False,0,data discrepancy present. ,True
+2025-11-25,ClinicalRemovalReason,10,10,True,0,,False
+2025-11-25,CHCListIHSCommunityofResidence,8943,8943,True,0,,True
+2025-11-25,ASCX12_SegmentQualifiers,6,7,False,0,data discrepancy present. ,False
+2025-11-25,GroupRights,1918,1918,True,0,,False
+2025-11-25,Ethnicity,45,45,True,0,,True
+2025-11-25,Race,923,923,True,0,,True
+2025-11-25,CHCListProcedureCodeType,16,16,True,0,,True
+2025-11-25,PatHistAllergy,205495,205495,False,0,"QC Failed on columns: PatientID, PatientID, AllergyNote, AllergyNote",True
+2025-11-25,HistoryVocabEOrdersMigration_OrdersTracking,95561,95561,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,InsuranceCoverageHistory,393268,393267,False,1,"QC Failed on columns: PersonID, PersonID, Comment, Comment",True
+2025-11-25,WorkTriggerInterface,8,8,True,0,,True
+2025-11-25,ClaimDetailStage,508,508,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,ClinicalSummaryProvided,294180,281840,False,15,"data discrepancy present. QC Failed on columns: VisitID, VisitID",True
+2025-11-25,LabNote,294180,294180,True,0,,True
+2025-11-25,fctInsurance,1831856,1831856,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,ReferralCPTSingleCodes,48,48,True,0,,True
+2025-11-25,ProviderTypeOrganization,8,8,True,0,,False
+2025-11-25,fctPatientInsurance,422643,422643,False,0,"QC Failed on columns: PatientID, PatientID, PersonID, PersonID, FinRespPatientID, FinRespPatientID, DuplicatePatientID, DuplicatePatientID",True
+2025-11-25,fctPerAssociation,474800,474792,False,8,"QC Failed on columns: PersonID, PersonID, NextOfKinPerID, NextOfKinPerID",True
+2025-11-25,ProcedurePlanPOS,1277,1277,True,0,,True
+2025-11-25,fctVisitInsurance,1290757,1267856,False,22901,"QC Failed on columns: VisitID, VisitID",True
+2025-11-25,ClaimToBatch,1621107,1621107,True,0,,False
+2025-11-25,CTBProcedure,2467665,2467665,True,0,,True
+2025-11-25,FlowSheetPatientHistory,856,856,False,0,"QC Failed on columns: PatientID, PatientID, HistoryUser, HistoryUser",True
+2025-11-25,cust_rda_groups,1,1,True,0,,True
+2025-11-25,ChargeEntryEditProcedures,154,154,True,0,,False
+2025-11-25,Guarantor,418694,418694,False,0,"QC Failed on columns: PatientID, PatientID, GuarantorPersonID, GuarantorPersonID",True
+2025-11-25,HistoryVocabEOrdersMigration_OBX,261492,261492,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,ClinicalDocumentSaveSourceHistory,4121413,4121413,True,0,,True
+2025-11-25,ArmCheckOffset,4,4,True,0,,False
+2025-11-25,PACSPriority,440547,14,False,0,data discrepancy present. ,False
+2025-11-25,erxConfiguration,9,9,True,0,,False
+2025-11-25,CHCListIHSTribalEligibilityStatus,6,6,True,0,,True
+2025-11-25,OBRManualOBXManual,2,2,True,0,,False
+2025-11-25,StatementHistoryHeader,29,796765,False,0,"data discrepancy present. QC Failed on columns: PatientID, PatientID, FRPPatientID, FRPPatientID",True
+2025-11-25,PatHistSocialHistory,646213,646213,False,0,"QC Failed on columns: PatientID, PatientID, PHSNote, PHSNote",True
+2025-11-25,ClinicalAlertLog,910090,910090,True,0,,True
+2025-11-25,EOBClaimDetail,37059,37059,True,0,,True
+2025-11-25,ABNOrderStatus,6,6,True,0,,False
+2025-11-25,MUMeasurePatient,2457070,2457070,False,0,"QC Failed on columns: PatientID, PatientID, VisitID, VisitID",True
+2025-11-25,CHCListSFFormOfDeclaration,7,7,True,0,,True
+2025-11-25,MUPatientWork,1484,1484,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,CTBProcedureStatus,10,10,True,0,,False
+2025-11-25,MUPatientVisit,6048,6048,False,0,"QC Failed on columns: PatientID, PatientID, VisitID, VisitID",True
+2025-11-25,NextOfKin,475048,475040,False,8,"QC Failed on columns: PersonID, PersonID, NextOfKinPerID, NextOfKinPerID",True
+2025-11-25,MUService,276896,1864766,False,0,"data discrepancy present. QC Failed on columns: PatientID, PatientID, VisitID, VisitID",True
+2025-11-25,OBR_PreBug288167,475048,34565,False,0,"data discrepancy present. QC Failed on columns: PatientID, PatientID",True
+2025-11-25,OBX_Backup_D53959,1666924,1666924,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,Obx_Backup_Refactor_US306271,917720,917720,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,OBR,276896,276896,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,OBXManual_Backup_D53959,1676203,1676203,False,0,"QC Failed on columns: PatientId, PatientId",True
+2025-11-25,PatFaceSheetSectionStatus,12792,12792,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,CHCListIHSPatientClassification,12792,32,False,0,data discrepancy present. ,True
+2025-11-25,PatHistAccessHistory,148088,148088,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,PatHistAllergyReactionHistory,3843,3843,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,TaskListHistory,2411963,2410184,False,1779,"QC Failed on columns: PatientID, PatientID, Subject, Subject",True
+2025-11-25,D_76720_PersonEthnicity_Backup,3843,12219,False,0,"data discrepancy present. QC Failed on columns: PersonID, PersonID",True
+2025-11-25,PatHistFamilyRelationHistory,452139,452139,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,FlagIcons,458,458,True,0,,False
+2025-11-25,PatHistMenstrualHistory,775,775,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,PatHistPregnancy,634,634,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,ClinicalCorrDefaultTemplate,3,3,True,0,,False
+2025-11-25,CHCListToothSurface,7,7,True,0,,True
+2025-11-25,LookupList,139880,32,False,0,data discrepancy present. ,True
+2025-11-25,InsurancePlan,1570,1570,True,0,,True
+2025-11-25,PatHistSectionAccessHistory,139880,139880,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,PrimePatientPatientAccessStatusType,2,2,True,0,,False
+2025-11-25,PatientEmergencyContact,151848,151847,False,1,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,ClinicalAlertOverrideReason,5,5,True,0,,False
+2025-11-25,PatientFlags,827504,827501,False,3,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,CTBDiagnosis,2094402,2094402,True,0,,True
+2025-11-25,CTBDiagnosisDescriptionOverride,2094402,2094402,True,0,,False
+2025-11-25,ScheduleLocationBlock,345299,345299,True,0,,False
+2025-11-25,PatientFlagsHistory,580015,580013,False,2,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,PatientPreferredPharmacy,194084,194084,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,PatientToMessage,361570,361570,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,PBMPatientBenefitInfo,128051,128051,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,PaymentPlanMinimal,228,228,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,CTBClinicalDocumentExportProceduresHistory,928015,897030,False,30985,"QC Failed on columns: visitid, visitid, PatientID, PatientID",True
+2025-11-25,PatMedRecon,5526497,5526497,False,0,"QC Failed on columns: PatientID, PatientID, VisitID, VisitID",True
+2025-11-25,PersonPhone,321783,321783,False,0,"QC Failed on columns: PersonID, PersonID",True
+2025-11-25,PrimePatientPatientAccessStatus,115776,115776,False,0,"QC Failed on columns: AccountHolderPersonId, AccountHolderPersonId, PatientId, PatientId",True
+2025-11-25,ptHistory,1921012,1921012,False,0,"QC Failed on columns: PatientID, PatientID, ptResponsibleID, ptResponsibleID",True
+2025-11-25,InterfaceEventIntKeyMap_Bug191676,2884036,54318,False,0,data discrepancy present. ,False
+2025-11-25,ServiceGroup,1355703,1355703,False,0,"QC Failed on columns: PatientID, PatientID, VisitID, VisitID",True
+2025-11-25,StatementHistoryPatient,797984,797984,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,CHCSegment,514,514,True,0,,False
+2025-11-25,ScheduleBlockedTime,345299,345299,True,0,,True
+2025-11-25,TaskPatientCollectionHistory,102976,102976,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,ServiceGroupPWKInfoHistory,102976,2,False,0,data discrepancy present. ,True
+2025-11-25,TaskListExtRequest,105267,105267,True,0,,False
+2025-11-25,VisitInsurance,2440678,2396535,False,44143,"QC Failed on columns: VisitID, VisitID",True
+2025-11-25,MUCareProviderYear,56,54,False,2,"QC Failed on columns: CareProviderID, CareProviderID",True
+2025-11-25,PatHistFrailtyHistory,235,235,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,br_PaymentHistory,79816,79816,False,0,"QC Failed on columns: PatientID, PatientID, Note, Note",True
+2025-11-25,cust_rda_provider,25,25,True,0,,True
+2025-11-25,CDAImport,213,213,True,0,,True
+2025-11-25,eRxPharmacyEligibilityTransaction,463817,463817,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,ReferenceDocument,40,7985,False,14,"data discrepancy present. QC Failed on columns: PatientID, PatientID, OriginalContent, OriginalContent, ReconciliationContent, ReconciliationContent",True
+2025-11-25,ClaimSubmitStageEditsLog,3089,3089,True,0,,False
+2025-11-25,PatHistSocial,394001,394001,False,0,"QC Failed on columns: PatientID, PatientID, PHSNote, PHSNote",True
+2025-11-25,LabPatientLabNote,35011,35011,True,0,,False
+2025-11-25,CHCMasterID,40,40,True,0,,False
+2025-11-25,br_PaymentAllocationsCreditDetail,548692,548692,True,0,,True
+2025-11-25,br_ServiceDetailInsuranceHistory,2941676,2941676,True,0,,True
+2025-11-25,B_150201_Update_FHIRResource_Backup,3,3,True,0,,True
+2025-11-25,B_149508_ClinicalDocTypes_Backup,7,7,True,0,,True
+2025-11-25,ClinicalCorrAddressee,518740,53863,False,464877,"QC Failed on columns: CareProviderOrPatientID, CareProviderOrPatientID",True
+2025-11-25,ClinicalPatMedsAudit,831866,0,True,831866,,True
+2025-11-25,GeneticScanMedications,1,1,True,0,,True
+2025-11-25,DataClass,380128,68,False,0,data discrepancy present. ,False
+2025-11-25,B_150462_UserPasswords_Backup,1,1,True,0,,True
+2025-11-25,PatHistSurgical,389411,389411,False,0,"QC Failed on columns: PatientID, PatientID, PSHNote, PSHNote",True
+2025-11-25,D_77008_PatHistSocial_Backup,69250,69250,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,PrimeSuitePatch,1,1,True,0,,True
+2025-11-25,divHeader,1,1,True,0,,False
+2025-11-25,CDADPRAssignedAuthorNPIOverrideType,2,2,True,0,,True
+2025-11-25,TaskList,665699,665114,False,585,"QC Failed on columns: PatientID, PatientID, Subject, Subject",True
+2025-11-25,B_121919_InterfaceCredentialHistory_Backup,5,5,True,0,,True
+2025-11-25,MessageDraftRecipient,243,243,True,0,,True
+2025-11-25,ClinicalVitalLookup,23,23,True,0,,False
+2025-11-25,Concept,311548,311548,True,0,,True
+2025-11-25,fctImmunization,376,376,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,VacSeriesLocationDefault,5,5,True,0,,True
+2025-11-25,EOBClaimHeader,26678,26678,True,0,,True
+2025-11-25,BinaryAPIStatus,8,8,True,0,,False
+2025-11-25,ClinicalFormGroupSiteAuthentication,7,7,True,0,,True
+2025-11-25,LabPanel,272497,272497,True,0,,True
+2025-11-25,ClinicalSpecialty,31,31,True,0,,True
+2025-11-25,LabOrder,126964,126964,True,0,,True
+2025-11-25,LabPatient,84701,84701,True,0,,True
+2025-11-25,CTBDiagnosisHistory,419290,419290,True,0,,True
+2025-11-25,ClinicalSummaryProvidedType,4,4,True,0,,False
+2025-11-25,AllergySnomedCodeFact,402,402,True,0,,False
+2025-11-25,OrdAdminHistory,312218,312218,True,0,,True
+2025-11-25,NoteType,19,19,True,0,,False
+2025-11-25,BatchAR,426308,15944,False,0,data discrepancy present. ,True
+2025-11-25,PatHistGeneticRelation,9,9,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,D_70840_OBXConceptIDs_for_Vitals_Backup,3,3,True,0,,True
+2025-11-25,PatHistCatMaster,1965,1965,True,0,,True
+2025-11-25,StandingOrderSeries,1010,836,False,0,"data discrepancy present. QC Failed on columns: PatientID, PatientID",True
+2025-11-25,FHIRUserPermission,426308,1010,False,0,data discrepancy present. ,True
+2025-11-25,ProcedureMasterInfo,935,935,True,0,,True
+2025-11-25,CDAImportDocumentLocation,3,3,True,0,,False
+2025-11-25,MessageUser,996,996,True,0,,True
+2025-11-25,ClinicalFormCriteriaBundle,7,7,True,0,,False
+2025-11-25,VisitTypes,24,24,True,0,,False
+2025-11-25,TypeOfService,22,22,True,0,,False
+2025-11-25,FlagPage,13,13,True,0,,False
+2025-11-25,CHCListIHSRelationship,8,8,True,0,,True
+2025-11-25,filterConditionValue,8850,8850,True,0,,False
+2025-11-25,ClinicalDocuments_Backup_D39636,74495,74495,True,0,,True
+2025-11-25,cust_rda_provider_location,900,900,True,0,,True
+2025-11-25,CHCMap_Files_Data,70,70,True,0,,False
+2025-11-25,PatMedReconBackup_D58095,2,2,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,fctPerson,418694,418688,False,6,"QC Failed on columns: PersonID, PersonID, PatientID, PatientID, DuplicatePatientID, DuplicatePatientID",True
+2025-11-25,CDAImportDemographics,1094,1094,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,filterDataSource,10,10,True,0,,True
+2025-11-25,DocumentPortalStaging,8963,8963,False,0,"QC Failed on columns: PatientID, PatientID, FileName, FileName",True
+2025-11-25,PrimePatientPortalSettings,13,13,True,0,,False
+2025-11-25,AllergyTestDetail,227,227,True,0,,True
+2025-11-25,PracticeInformation,1,1,True,0,,True
+2025-11-25,PatientFlags_bak_PatientID_0,6,0,True,6,,True
+2025-11-25,CDAImportStatus,214,214,True,0,,False
+2025-11-25,ProcedureExplosion,11,11,True,0,,False
+2025-11-25,OBXAdminHistory,22589,22589,True,0,,True
+2025-11-25,ProblemListSort,23,23,True,0,,True
+2025-11-25,LabAccountPracticeServiceLocation,9,9,True,0,,False
+2025-11-25,VersionUpgradeUserNotification,146,146,True,0,,False
+2025-11-25,OrdReqClinicalDocuments,293411,293411,True,0,,False
+2025-11-25,MaritalStatus,16,16,True,0,,True
+2025-11-25,GenderIdentity,7,7,True,0,,True
+2025-11-25,CHCListSFHouseholdIncomeSource,11,11,True,0,,True
+2025-11-25,NextOfKin_Backup_D41450,101,101,False,0,"QC Failed on columns: PersonID, PersonID, NextOfKinPerID, NextOfKinPerID",True
+2025-11-25,InterfaceProtocol,9,9,True,0,,False
+2025-11-25,HistoryVocabEOrdersMigration_OrdAdminDataSource,40,40,True,0,,False
+2025-11-25,CTBDiagnosisStatus,5,5,True,0,,False
+2025-11-25,ClinicalVital,591521,591521,True,0,,True
+2025-11-25,ClinicalVitalConceptLU,15,15,True,0,,False
+2025-11-25,PatHistCatPatHistItem,36953,36953,True,0,,False
+2025-11-25,FormSuccessMsgMaster,1,1,True,0,,True
+2025-11-25,OBXCategory,104,104,True,0,,False
+2025-11-25,AllergenCodingSystem,13828,13828,True,0,,False
+2025-11-25,PatientRecord,1,0,True,1,,True
+2025-11-25,eRxeligRequestTransactionStatus,463828,463828,True,0,,True
+2025-11-25,ClaimBatchHistory,35553,35553,True,0,,True
+2025-11-25,SystemConfig,1,1,True,0,,True
+2025-11-25,GLTransactionCategory,5,5,True,0,,False
+2025-11-25,ClinicalAlertPatient,168031,168031,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,InsCoveragePatient,458989,458989,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,ColActionFlagHistory,100,100,True,0,,False
+2025-11-25,B_143591_ClinicalDocTypes_Backup,1,1,True,0,,True
+2025-11-25,CHCProcedureMasterInfo,556,556,True,0,,True
+2025-11-25,EmployerInsurancePlan,942,1884,False,0,data discrepancy present. ,True
+2025-11-25,ProgramWorkTriggerStatus,4,4,True,0,,False
+2025-11-25,ClinicalPatMedsFillStatus,961,961,True,0,,True
+2025-11-25,PatHistCat,1,86,False,0,data discrepancy present. ,True
+2025-11-25,ClaimAdjustmentHistory,31,31,True,0,,True
+2025-11-25,B_171659_erxProviderLocation_Backup,92,92,True,0,,True
+2025-11-25,OBXConcept,4645411,4645411,True,0,,False
+2025-11-25,D_70980_Address_Backup,3673,3673,True,0,,True
+2025-11-25,OrderCodeType,2,1,False,0,data discrepancy present. ,False
+2025-11-25,LabAccountType,2,2,True,0,,True
+2025-11-25,OrdReqTransactionStatus,4,4,True,0,,False
+2025-11-25,PlaceOfService,50,50,True,0,,True
+2025-11-25,ColAdminConfigHistory,8,8,True,0,,True
+2025-11-25,CHCFieldType,16,16,True,0,,False
+2025-11-25,CarePlanEvaluationOutcomeStatusLU,4,4,True,0,,False
+2025-11-25,ColAdminQualFlag,5,2,False,0,data discrepancy present. ,False
+2025-11-25,OBXSyn,5379,5379,True,0,,False
+2025-11-25,ClinicalContentType,4,4,True,0,,False
+2025-11-25,CareProviderLocation,36,36,True,0,,True
+2025-11-25,ClaimHeaderProviderInfoHistory,1500861,1500861,True,0,,True
+2025-11-25,ClinicalDocumentStatus,5,5,True,0,,False
+2025-11-25,PatHistAllergyHistory,231594,231594,False,0,"QC Failed on columns: PatientID, PatientID, AllergyNote, AllergyNote",True
+2025-11-25,CHCListProcedureNoteType,4,4,True,0,,True
+2025-11-25,LabAccountLabAccountType,84470,6,False,0,data discrepancy present. ,False
+2025-11-25,OrdReqQHistory,2,2,False,0,"QC Failed on columns: PatientID, PatientID, VisitID, VisitID",True
+2025-11-25,CHCSubmission_Number,1,1,True,0,,False
+2025-11-25,ERAProfileCode,18,7,False,11,"QC Failed on columns: CreatedBy, CreatedBy, ModifiedBy, ModifiedBy",True
+2025-11-25,LogSubComponents,224,224,True,0,,False
+2025-11-25,FHIRPatientConfidentiality,409491,409487,False,4,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,ReferralsPrimaryProvider,93125,93125,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,B_127439_ProbmleListPMHXModifiers_BackUp,10536,10536,True,0,,True
+2025-11-25,CriteriaType,27,5,False,0,data discrepancy present. ,False
+2025-11-25,ReferenceDocumentHistory,440547,25,False,0,"data discrepancy present. QC Failed on columns: VisitID, VisitID",True
+2025-11-25,D_67500_Person_Backup,22589,22589,False,0,"QC Failed on columns: PersonID, PersonID",True
+2025-11-25,MUMeasureGroup,422643,6,False,0,data discrepancy present. ,False
+2025-11-25,ColWorkList,4,4,True,0,,True
+2025-11-25,ASCX12_835H_OtherPayerInfo,62383,56310,False,0,data discrepancy present. ,True
+2025-11-25,InterfaceProviderRole,56,56,True,0,,True
+2025-11-25,OrdAdminConfig,237335,237335,True,0,,False
+2025-11-25,HomePregnancyTest,3,3,True,0,,True
+2025-11-25,cfbPaperBatchClaim,162445,162445,True,0,,False
+2025-11-25,AllergyRxNormFact,28657,28657,True,0,,False
+2025-11-25,CTBProcedureNDC,2462289,2462289,True,0,,False
+2025-11-25,ClaimStatus,8,8,True,0,,False
+2025-11-25,OrdReqOrderLabTestCode,2,2,True,0,,False
+2025-11-25,ClaimSuspendSubmission,5,5,True,0,,False
+2025-11-25,CHCListReferralSource,8,8,True,0,,True
+2025-11-25,FaceSheetSectionStatus,4,4,True,0,,False
+2025-11-25,MessageRecipientGroup,617,617,True,0,,False
+2025-11-25,TaskPatientCollectionFlag,168983,168983,True,0,,False
+2025-11-25,CHCListHomelessStatus,7,7,True,0,,True
+2025-11-25,CriteriaRuleValueOperator,8,8,True,0,,False
+2025-11-25,CHCLookupListField,265,265,True,0,,False
+2025-11-25,PACSModality,42,42,True,0,,True
+2025-11-25,ImgLibCategory,3,3,True,0,,True
+2025-11-25,CTBHoldReason,4,4,True,0,,False
+2025-11-25,CDADocumentProfile,2,2,True,0,,True
+2025-11-25,ProcedureExplosionToProcedureMaster,56,56,True,0,,False
+2025-11-25,D_81087_FHIRPatientConfidentiality_Backup,303390,303389,False,1,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,CHCListIHSIndianBloodQuantum,8,8,True,0,,True
+2025-11-25,ModuleList,19,19,True,0,,False
+2025-11-25,MenopauseStatus,4,4,True,0,,True
+2025-11-25,crStampPatient,1172,1172,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,CustomRptFieldValue,197876,197876,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,DiscreteElementDataType,3,3,True,0,,False
+2025-11-25,CHCListEthnicity,4,4,True,0,,True
+2025-11-25,DesktopLinks,2,2,True,0,,True
+2025-11-25,DelayMapDirection,2,2,True,0,,False
+2025-11-25,ScheduleApptTypeColorSchemes,31,31,True,0,,True
+2025-11-25,EFileTypes,3,3,True,0,,False
+2025-11-25,DataPortabilityScheduleType,2,2,True,0,,False
+2025-11-25,FlowSheetPatient,393268,612,False,0,"data discrepancy present. QC Failed on columns: PatientID, PatientID",True
+2025-11-25,HistoryVocabEOrdersMigration_OBR,1685587,417,False,0,"data discrepancy present. QC Failed on columns: PatientID, PatientID",True
+2025-11-25,PubSubConfig,3,3,True,0,,False
+2025-11-25,Contraceptive,15,15,True,0,,False
+2025-11-25,B_121924_ClinicalFormGroupSiteAuthentication_Backup,7,7,True,0,,True
+2025-11-25,MUPaymentYear,7,7,True,0,,True
+2025-11-25,divSetup,1,1,True,0,,False
+2025-11-25,CaseStatusGMTMapping,3,3,True,0,,False
+2025-11-25,ProcessDurationLog,3984670,3984670,True,0,,True
+2025-11-25,erxSunBurst,407,407,True,0,,False
+2025-11-25,dsSpecialDataSet,1,1,True,0,,True
+2025-11-25,eRxReSentPatMedList,902137,902137,True,0,,True
+2025-11-25,eRxSSTransactionAcknowledgeType,25,25,True,0,,False
+2025-11-25,CDADPRDateRestrictionType,2,2,True,0,,True
+2025-11-25,ASCX12_835H_OtherPayeeInfo,97450,97450,True,0,,False
+2025-11-25,PersonSignature,59,59,False,0,"QC Failed on columns: PersonID, PersonID, Signature, Signature",True
+2025-11-25,VacSeriesLocationDefaultHistory,7,7,True,0,,True
+2025-11-25,CHCListLivingArrangement,9,9,True,0,,True
+2025-11-25,VacSeriesVersionDoseCPT,88,88,True,0,,False
+2025-11-25,CHCLogon,1,1,True,0,,True
+2025-11-25,eRxSSAcknowledgeType,9,9,True,0,,False
+2025-11-25,Dose,21,21,True,0,,False
+2025-11-25,DrFirstRoutes,36,36,True,0,,False
+2025-11-25,VocabAnswerAdminDataSource,49,49,True,0,,True
+2025-11-25,CHCclearinghouse,2,2,True,0,,True
+2025-11-25,DeskTopPreference,808,808,True,0,,False
+2025-11-25,eligGovernmentServiceAffiliationCodes,20,20,True,0,,True
+2025-11-25,BillingTranMatrix,1053,1053,True,0,,False
+2025-11-25,MULogActivityTarget,5,5,True,0,,False
+2025-11-25,NQFConceptCode,37879,37879,True,0,,False
+2025-11-25,ColAdminQualFlagHistory,32,32,True,0,,False
+2025-11-25,SAMLVersion,2,2,True,0,,False
+2025-11-25,ClinicalDocumentStaging,11120,0,True,11120,,True
+2025-11-25,ClinicalMedStatus,3,3,True,0,,False
+2025-11-25,DisplayTypeStyleSheetPath,7,7,True,0,,False
+2025-11-25,CHCListPayorPlanSet,1,1,True,0,,True
+2025-11-25,ASCX12_835D_Service,2322507,2322507,True,0,,True
+2025-11-25,FaceSheetSection,16,16,True,0,,False
+2025-11-25,InsuranceCoverageManualBenefitEntry,261492,27704,False,0,"data discrepancy present. QC Failed on columns: PatientID, PatientID",True
+2025-11-25,FormControlMaster,3,3,True,0,,False
+2025-11-25,RSAKeyStorage,833,833,True,0,,True
+2025-11-25,FormDetailPopupItem,5,5,True,0,,False
+2025-11-25,ClaimBatchStage,3,3,True,0,,True
+2025-11-25,InsuranceCoverageManualBenefitEntryHistory,74398,74398,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,Role,15,15,True,0,,False
+2025-11-25,EFilePlanEligibilityVersion,2,2,True,0,,False
+2025-11-25,filterField,219,219,True,0,,True
+2025-11-25,CHCBaseClaim,201,201,True,0,,True
+2025-11-25,FeatureToggle,6,6,True,0,,True
+2025-11-25,OBRConcept,127497,127497,True,0,,False
+2025-11-25,EthnicitySub,44,44,True,0,,True
+2025-11-25,DataSourceFacilityInterfaceProviderRole,7,7,True,0,,True
+2025-11-25,ImplantedDevice,646213,1218,False,0,"data discrepancy present. QC Failed on columns: PatientID, PatientID, NOTES, NOTES",True
+2025-11-25,B_126741_erxProviderLocation_Backup,7,48,False,0,data discrepancy present. ,True
+2025-11-25,NoteOrderReason,1263,1263,True,0,,True
+2025-11-25,FeeScheduleContract,5,5,True,0,,True
+2025-11-25,AmbulatoryClassification,3,3,True,0,,True
+2025-11-25,MedicationRxNormFact,155769,155769,True,0,,False
+2025-11-25,VialInstruction,3,3,True,0,,False
+2025-11-25,PatientFlagsNote,6,6,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,ConceptUserFavoritesHistory,192510,192510,True,0,,True
+2025-11-25,EFileGreenwayClearingHouseStatus,3,3,True,0,,False
+2025-11-25,ScheduleRecallApptLinkHistory,475,475,True,0,,False
+2025-11-25,MUMeasurePatientWork,6048,6048,False,0,"QC Failed on columns: PatientID, PatientID, VisitID, VisitID",True
+2025-11-25,OrdReqDiagnosisStatus,3,3,True,0,,False
+2025-11-25,ColWorkListStatement,1,1,True,0,,True
+2025-11-25,HCPCSCodeLibrary,75,75,True,0,,False
+2025-11-25,CDADocumentProfileRestriction,2,2,True,0,,True
+2025-11-25,EHIExportTable,2161,2161,True,0,,False
+2025-11-25,ScheduleResourceCategoryLinks,70,70,True,0,,False
+2025-11-25,ClinicalDiagnosisFavoritesMaster,70773,70773,True,0,,False
+2025-11-25,ClinicalContentVersionHistory,120640,120640,True,0,,True
+2025-11-25,PatHistAllergyReaction,2164,2164,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,LabTestResultLabNote,402,147236,False,0,data discrepancy present. ,False
+2025-11-25,D_67500_Address_Backup,14538,14538,True,0,,True
+2025-11-25,BillingTran,27,27,True,0,,False
+2025-11-25,PatHistFamilyRelation,319995,319995,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,ClinicalPatMeds_Backup_D42991,16001,16001,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,InterfaceEndPoint_Backup_106MU,8,8,True,0,,True
+2025-11-25,PatHistMenstrual,647,647,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,CDAImportPatHistFamily,2,2,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,ImmACKResponse,2,2,True,0,,True
+2025-11-25,FlagToPage,3185,3185,True,0,,False
+2025-11-25,NumberText,35,35,True,0,,False
+2025-11-25,MUIncentiveType,2,2,True,0,,False
+2025-11-25,CTBPlanInfoHistory,52888,52888,True,0,,False
+2025-11-25,TaskListUnopen,250497,250497,True,0,,False
+2025-11-25,eligServiceTypeCodes,187,374,False,0,data discrepancy present. ,False
+2025-11-25,PatHistPregnancyHistory,738,738,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,notifySubscriber,258,258,True,0,,False
+2025-11-25,ClinicalConversions,4,80,False,0,data discrepancy present. ,False
+2025-11-25,CDAImportPatient,78,78,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,PatHistBehaviorQuestionCodingSystem,19,19,True,0,,True
+2025-11-25,PatHistURL,30625,30625,False,0,"QC Failed on columns: PatientID, PatientID, VisitID, VisitID",True
+2025-11-25,PatientPreviousName,45,45,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,Person,418694,418688,False,6,"QC Failed on columns: PersonID, PersonID",True
+2025-11-25,cust_rda_providers,25,25,True,0,,True
+2025-11-25,CHCListIHSTribalAffiliation,844,844,True,0,,True
+2025-11-25,PersonEthnicity,1676203,420391,False,5,"data discrepancy present. QC Failed on columns: PersonID, PersonID",True
+2025-11-25,PatientInfoQueue,144653,144653,False,0,"QC Failed on columns: VisitID, VisitID",True
+2025-11-25,Address,797984,870532,False,0,data discrepancy present. ,True
+2025-11-25,PersonRace,430591,430586,False,5,"QC Failed on columns: PersonID, PersonID",True
+2025-11-25,CHCListToothStatus,3,3,True,0,,True
+2025-11-25,ReferralsReferringProvider,279685,279685,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,ClaimFormats,25,25,True,0,,False
+2025-11-25,UserPatients,40701,40701,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,FormPageSectionDetails,36,36,True,0,,False
+2025-11-25,CDCPediatricWeightForLength,120,120,True,0,,True
+2025-11-25,ClinicalDocumentsCheckOut,2,2,True,0,,True
+2025-11-25,GLFileFormat,79816,2,False,0,data discrepancy present. ,False
+2025-11-25,CustomRptFieldSubField,6,6,True,0,,False
+2025-11-25,erxPharmacyImportLog,197758,197758,True,0,,True
+2025-11-25,OrdFavSubCatOrdFavItem,1412,1412,True,0,,False
+2025-11-25,NoteDiagnosisModifier,1769,1769,True,0,,True
+2025-11-25,ARSetting,33,33,True,0,,True
+2025-11-25,EMMethodology,3,3,True,0,,False
+2025-11-25,HistoricalVaccineSrcCodingSystem,9,9,True,0,,False
+2025-11-25,FlowSheetHeader,153,153,True,0,,False
+2025-11-25,GCSClaimReportDetailStatusLU,8,8,True,0,,False
+2025-11-25,ClinicalAdminFreq,35011,109,False,0,data discrepancy present. ,False
+2025-11-25,OrdReqOrderStatus,9,9,True,0,,False
+2025-11-25,ClinicalDocumentVitalGroup,817944,817944,True,0,,False
+2025-11-25,ClinicalForm,7,7,True,0,,True
+2025-11-25,D_60943_Schedule_Template_Backup,1,1,True,0,,True
+2025-11-25,fctVocabUOMAdmin,1101,1101,True,0,,False
+2025-11-25,PatHistPregnancyDetailHistory,68,9,False,0,"data discrepancy present. QC Failed on columns: PatientID, PatientID",True
+2025-11-25,B_113871_InterfaceEndpoint_Backup,1,1,True,0,,True
+2025-11-25,PrimeSuitePatchHistory,69250,53,False,0,data discrepancy present. ,True
+2025-11-25,OBXAdminDataSource,8065,8065,True,0,,False
+2025-11-25,GMTSystemDefaults,103,103,True,0,,True
+2025-11-25,D79358_VisitInsurance_Backup,11,11,False,0,"QC Failed on columns: VisitID, VisitID",True
+2025-11-25,ClinicalDocumentStagingLab,231,231,True,0,,False
+2025-11-25,CHCLookupList,33,33,True,0,,False
+2025-11-25,RaceSub,1010,923,False,0,data discrepancy present. ,True
+2025-11-25,QualityMeasure,24,24,True,0,,False
+2025-11-25,GPVisitReadyForBillingStatus,3,3,True,0,,False
+2025-11-25,PatHistFrailty,205,205,False,0,"QC Failed on columns: PatientID, PatientID, FrailtyStatusID, FrailtyStatusID",True
+2025-11-25,TaskListType,6,58,False,0,data discrepancy present. ,False
+2025-11-25,BackupOBXNote,154049,154049,True,0,,False
+2025-11-25,B_157088_Update_FHIRPatientConfidentiality_Backup,299296,299295,False,1,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,AllergyEdType,3,3,True,0,,True
+2025-11-25,Insurance,8,8,True,0,,True
+2025-11-25,HistoryVocabEOrdersMigration_ClinicalProcedureExport,131345,131345,False,0,"QC Failed on columns: Description, Description",True
+2025-11-25,CodingSystemVersion,5,39,False,0,data discrepancy present. ,True
+2025-11-25,ClinicalDocTypes,935,180,False,0,data discrepancy present. ,True
+2025-11-25,ClinicalDiagnosisFavoritesCategoriesMaster,826,826,True,0,,True
+2025-11-25,CHCListPrimaryInsType,22,6,False,0,data discrepancy present. ,True
+2025-11-25,crTemplateVersion,4015,4015,True,0,,True
+2025-11-25,erxEligibilityErrorResponse,56,56,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,FormSectionMap,36,36,True,0,,False
+2025-11-25,VaccineHistory,9,9,True,0,,True
+2025-11-25,PatHistMedicalModifier,10645,10645,True,0,,False
+2025-11-25,RaceCodingSystem,923,923,True,0,,True
+2025-11-25,GenderCodingSystem,4,4,True,0,,True
+2025-11-25,ScriptExecutionStatus,99,99,True,0,,True
+2025-11-25,OBXRangeAgeHistory,1,1,True,0,,False
+2025-11-25,OBXNote_Backup_Datafix_Iss321007,164,164,True,0,,False
+2025-11-25,PatHistURLType,2,2,True,0,,False
+2025-11-25,InterfaceProviderRoleInterfaceCredentialGroupHistory,3,3,True,0,,True
+2025-11-25,filterFilter,1737,1737,True,0,,True
+2025-11-25,FlowSheet,93,93,True,0,,True
+2025-11-25,InsurancePlanPolicyNumber,3,3,True,0,,True
+2025-11-25,Program,5,5,True,0,,True
+2025-11-25,MinutesOfADay,1440,1440,True,0,,True
+2025-11-25,MUCareProviderYearMUSubMeasure,987,987,True,0,,True
+2025-11-25,ColAdminConfigAlertUserHistory,2,2,False,0,"QC Failed on columns: UserID, UserID",True
+2025-11-25,EOBClaimHeaderHistory,35352,35352,True,0,,True
+2025-11-25,MUIncentive,8,8,True,0,,False
+2025-11-25,ClinicalDiscontinuedReason,15,15,True,0,,False
+2025-11-25,CHCListOralCavityDesignation,10,10,True,0,,True
+2025-11-25,OBRManualHistory,138,138,False,0,"QC Failed on columns: PatientID, PatientID, OrderDescription, OrderDescription",True
+2025-11-25,ClinicalCorr,501401,501401,True,0,,True
+2025-11-25,HistoryVocabEOrdersMigration_FilterconditionValue,6,2734,False,0,data discrepancy present. ,False
+2025-11-25,GMTPollingServicesPriority,5,5,True,0,,True
+2025-11-25,CareProviderToSpecialty,1,609,False,0,data discrepancy present. ,True
+2025-11-25,cfbPaperBatch,79638,79638,True,0,,True
+2025-11-25,MessageUserFolders,6,6,True,0,,True
+2025-11-25,FlowSheetMember,351,351,True,0,,False
+2025-11-25,InterfaceProviderRoleInterfaceCredentialGroup,22,22,True,0,,False
+2025-11-25,ColAdminQualHistory,37,11,False,26,"QC Failed on columns: LastChangedBy, LastChangedBy",True
+2025-11-25,CredentialsToPerson,80,13753,False,0,"data discrepancy present. QC Failed on columns: PersonID, PersonID",True
+2025-11-25,ColAdminConfigAlertUser,1,0,True,1,,True
+2025-11-25,GreenwayWebServices,21986,8,False,0,data discrepancy present. ,True
+2025-11-25,UpgradeDatabaseDetailsHistory,8981,8981,True,0,,True
+2025-11-25,GuarantorPatientTypes,4,4,True,0,,True
+2025-11-25,OrdAdminCategoryHistory,239312,239312,True,0,,True
+2025-11-25,InsCompanyPSEPOS,281,281,True,0,,True
+2025-11-25,OrdersTrackingGeneralFindingsLU,3,3,True,0,,False
+2025-11-25,InterfaceEventIntKeyMap,358,358,True,0,,False
+2025-11-25,OrderSet,168,168,True,0,,True
+2025-11-25,HistoryVocabEOrdersMigration_OBXAdminDataSource,8062,8062,True,0,,False
+2025-11-25,OrdReqTransaction,301391,301391,True,0,,True
+2025-11-25,CTBHeaderStatus,9,9,True,0,,False
+2025-11-25,PDC_InstanceConfig,48,1,False,0,data discrepancy present. ,True
+2025-11-25,LabAccountBillingMethod,265,5,False,0,data discrepancy present. ,False
+2025-11-25,OrderSetMemberProcedure,7,7,True,0,,False
+2025-11-25,CHCListFPLSchedule,15,15,True,0,,True
+2025-11-25,D_65303_AuditLog_Backup,20,20,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,Countries,195,5,False,0,data discrepancy present. ,True
+2025-11-25,DoseCompletionStatus,4,4,True,0,,False
+2025-11-25,MUMeasureCareProviderYear,1336,1336,True,0,,False
+2025-11-25,CHCListPriorMedical,1,1,True,0,,True
+2025-11-25,CHCInsurance_ScrubRule,5,1,False,0,data discrepancy present. ,True
+2025-11-25,VialStatus,2,5,False,0,data discrepancy present. ,False
+2025-11-25,InjectionPatientDose,2,2,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,dsrsCategory,11631,28,False,0,"data discrepancy present. QC Failed on columns: dsrsObjectID, dsrsObjectID",True
+2025-11-25,eRxTransactionHistoryFilter,6,1,False,5,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,eRxSSDEASchedule,8,8,True,0,,False
+2025-11-25,DataSource,11,11,True,0,,True
+2025-11-25,CHCListAgriculturalWorkStatus,76,5,False,0,data discrepancy present. ,True
+2025-11-25,PrimeEnterpriseSetup,1,1,True,0,,True
+2025-11-25,ClinicalContentVersionLookup,120,120,True,0,,True
+2025-11-25,ASCX12_835D_OtherClaimServiceRefID,4699663,4699663,True,0,,False
+2025-11-25,CTBProcedureDescriptionOverride,2467665,2467665,False,0,"QC Failed on columns: CTBProcedureDescription, CTBProcedureDescription",True
+2025-11-25,EventStatus,3989920,9,False,0,data discrepancy present. ,False
+2025-11-25,ScheduleApptRequest,163966,163966,False,0,"QC Failed on columns: PatientId, PatientId",True
+2025-11-25,ImgLibGroupImgLibType,7,7,True,0,,False
+2025-11-25,MUStage,4,4,True,0,,False
+2025-11-25,StatementStaggering,5,5,False,0,"QC Failed on columns: StatementStaggeringID, StatementStaggeringID",True
+2025-11-25,BillingReasonCode,13,13,True,0,,False
+2025-11-25,Codingsystem,185,29,False,0,data discrepancy present. ,False
+2025-11-25,GenderIdentityCodingSystem,5,5,True,0,,True
+2025-11-25,Lab,84701,84701,True,0,,True
+2025-11-25,D_60943_ScheduleLocationTemplate_Backup,1,1,True,0,,True
+2025-11-25,OBXChangeReason,2,2,True,0,,False
+2025-11-25,FeeScheduleProviderLocation,66,0,True,66,,True
+2025-11-25,OrdAdmin,237386,237386,True,0,,True
+2025-11-25,br_ServiceDetailVoid,64891,64891,True,0,,True
+2025-11-25,BillingConfigurationOptions,1,1,True,0,,True
+2025-11-25,B_121929_CHCLogon_Backup,1,1,True,0,,True
+2025-11-25,D_80293_Update_ProcedureMasterInfo_Backup,855,855,True,0,,True
+2025-11-25,OBXCodingSystem,58583,58583,True,0,,False
+2025-11-25,OrdSynHistory,137162,137162,False,0,"QC Failed on columns: OrdSynonymText, OrdSynonymText",True
+2025-11-25,OBXCategoryHistory,80,80,True,0,,True
+2025-11-25,EFileTransferTypes,3448,5,False,0,data discrepancy present. ,False
+2025-11-25,erxsspharmacyrequest_73773,765,25,False,1,"data discrepancy present. QC Failed on columns: MatchedPatientID, MatchedPatientID, ClinicalPatMedID, ClinicalPatMedID, PatientID, PatientID, Description, Description, RequestXML, RequestXML, RenPharmacyNotes, RenPharmacyNotes",True
+2025-11-25,OBXCodingSystemHistory,21986,21986,True,0,,False
+2025-11-25,D_77315_AddressHistory_Backup,918606,918606,True,0,,True
+2025-11-25,PatReminderFilterDateUnit,4,4,True,0,,False
+2025-11-25,OrdAdmin_Backup,99901,193240,False,0,data discrepancy present. ,True
+2025-11-25,ColActionFlag,2,2,True,0,,True
+2025-11-25,ConceptType,8,8,True,0,,False
+2025-11-25,CaseType,5,5,True,0,,True
+2025-11-25,DenyNewRxClinicalPatMed,11631,11631,True,0,,False
+2025-11-25,erxProviderLocation,195,195,True,0,,True
+2025-11-25,CriteriaInformationType,6,6,True,0,,False
+2025-11-25,VocabAnswerSetVocabAnswerAdmin,94,94,True,0,,False
+2025-11-25,ColAdminQual,1,1,True,0,,True
+2025-11-25,AssociationTypes,10,10,True,0,,True
+2025-11-25,CDCPediatricHeadCircumference,76,76,True,0,,True
+2025-11-25,CaseStatusGMT,3,3,True,0,,True
+2025-11-25,CHCLoop270,2,13,False,0,data discrepancy present. ,False
+2025-11-25,NotePlanModifier,9,9,True,0,,False
+2025-11-25,EFilePlanFileNames,34,34,True,0,,False
+2025-11-25,ConceptVersion,2,2,True,0,,False
+2025-11-25,ExceptionAction,3,3,True,0,,False
+2025-11-25,eligFollowUpCode,8,8,True,0,,False
+2025-11-25,dsPrefillLookup,148,148,True,0,,True
+2025-11-25,NoteDiagnosisModifierHistory,1947,1947,True,0,,True
+2025-11-25,eligHSDFrequencyCodes,39,39,True,0,,False
+2025-11-25,SBDocuments,1,1,True,0,,True
+2025-11-25,CareProviderInsurancePayTo,4,4,True,0,,True
+2025-11-25,notifyAlert,898,898,True,0,,False
+2025-11-25,CHCListStatementFormat,855,1,False,0,data discrepancy present. ,True
+2025-11-25,CDADPRAssignedAuthorType,2,2,True,0,,False
+2025-11-25,crTemplate,974,974,True,0,,False
+2025-11-25,VocabQuestionAdminOrderCode,2,2,True,0,,False
+2025-11-25,CCDAPurposeOfUse,7,7,True,0,,False
+2025-11-25,BatchClaims,67320,67320,True,0,,True
+2025-11-25,dsrsMain,2,2,True,0,,False
+2025-11-25,OBXAdminDataSourceHistory,3,3,True,0,,False
+2025-11-25,B103414_SureScriptDosageForm_BackUp,217,217,True,0,,False
+2025-11-25,erxssreasons,24,24,True,0,,True
+2025-11-25,OBRManualOBXManualHistory,2,2,True,0,,True
+2025-11-25,FeeScheduleAllowedType,5,5,True,0,,False
+2025-11-25,CHCMap_File_Detail,12259,12259,False,0,"QC Failed on columns: Notes, Notes, Segment_Notes, Segment_Notes, Loop_Notes, Loop_Notes",True
+2025-11-25,TaskPatientCollection,789,789,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,ChargeEntryEditDiagnosis,42,42,True,0,,False
+2025-11-25,ColWorkListHistory,12,4,False,8,"QC Failed on columns: LastChangedBy, LastChangedBy",True
+2025-11-25,CCDAValidatorConfig,475,1,False,0,data discrepancy present. ,True
+2025-11-25,CHCSegment270,48,48,True,0,,False
+2025-11-25,zz_ClinicalProcedureExport_D33423_Backup,1007,1007,True,0,,False
+2025-11-25,CHCMap_Files1500,1,1,True,0,,False
+2025-11-25,CHCMap_Files1500_Field,189,189,True,0,,True
+2025-11-25,ClinicalDocumentsImgLibGroup,35992,35992,True,0,,False
+2025-11-25,VocabQuestionAdminQuestionCode,48,48,True,0,,True
+2025-11-25,CHCVersionInfo,1,1,True,0,,True
+2025-11-25,InjectionPatientDoseHistory,1032,2,False,0,"data discrepancy present. QC Failed on columns: PatientID, PatientID",True
+2025-11-25,OBXRangeComparisonOperators,5,5,True,0,,False
+2025-11-25,Injection,3,3,True,0,,False
+2025-11-25,InsuranceTypeCodingSystem,394,20,False,0,data discrepancy present. ,False
+2025-11-25,MULogActivityAction,6,12,False,0,data discrepancy present. ,False
+2025-11-25,OBRManual,126,252,False,0,"data discrepancy present. QC Failed on columns: PatientID, PatientID",True
+2025-11-25,HWDevice,61,122,False,0,data discrepancy present. ,False
+2025-11-25,RXBHeaderInfo,209103,209103,True,0,,True
+2025-11-25,NotePlanAUCGCode,20,40,False,0,data discrepancy present. ,True
+2025-11-25,PrimePatientAction,10,20,False,0,data discrepancy present. ,False
+2025-11-25,PrimePatientAccountHolderStatusType,2,2,True,0,,False
+2025-11-25,EventType,7,7,True,0,,False
+2025-11-25,Employers,1009,2018,False,0,data discrepancy present. ,True
+2025-11-25,PatHistPregnancyDetail,5,10,False,0,"data discrepancy present. QC Failed on columns: PatientID, PatientID",True
+2025-11-25,CDAImportPatHistSurgical,1,1,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,notifyArticle,7,7,True,0,,False
+2025-11-25,PatHistBehaviorAnswer,64,64,True,0,,False
+2025-11-25,OBROBX_Backup_Datafix_Iss321007,4,4,True,0,,False
+2025-11-25,ERAProcessedCheck,35526,35526,True,0,,True
+2025-11-25,FormPageMap,24,24,True,0,,False
+2025-11-25,D_75472_LanguageCodingSystem_Backup,7,7,True,0,,True
+2025-11-25,FormPatHistItemAliasName,1135,1135,True,0,,False
+2025-11-25,OBX_Backup_Datafix_Iss321007,4,4,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,eligRSPDetailSettings,17,17,True,0,,False
+2025-11-25,PatHistFrailtyStatus,3,3,False,0,"QC Failed on columns: PatHistFrailtyStatusID, PatHistFrailtyStatusID",True
+2025-11-25,PatHistGeneticHistory,43,25,False,18,"QC Failed on columns: PatHistGeneticHistoryID, PatHistGeneticHistoryID, PatientID, PatientID, PatHistGeneticID, PatHistGeneticID",True
+2025-11-25,ExternalDocumentAction,1,1,True,0,,False
+2025-11-25,ChargeActions,4,4,True,0,,False
+2025-11-25,OldPreRegAccount,1,1,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,DataSourceCodeException,7029,10,False,0,data discrepancy present. ,False
+2025-11-25,Users,1010,1010,True,0,,True
+2025-11-25,PatientFlags_bak_03989743,172797,172797,False,0,"QC Failed on columns: PatientID, PatientID",True
+2025-11-25,Pharmacy,73825,73825,True,0,,True
+2025-11-25,RXBGroupPatMeds,223251,223251,True,0,,False

@@ -1,0 +1,5 @@
+TABLE_NAME,COLUMN_NAME,IS_PHI,DE_IDENTIFICATION_RULE,MASK_VALUE,REFERENCE_PATIENT_ID,REFERENCE_ENCOUNTER_ID
+biogen,id,No,,,,
+biogen,patientid,Yes,PATIENT_ID,,,
+biogen,filename,No,,,,
+biogen,content,Yes,NOTES,,,

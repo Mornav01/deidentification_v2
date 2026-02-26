@@ -1,0 +1,6 @@
+TABLE_NAME,COLUMN_NAME,IS_PHI,DE_IDENTIFICATION_RULE,MASK_VALUE,REFERENCE_PATIENT_ID,REFERENCE_ENCOUNTER_ID
+patient_payer_type,PatientID,Yes,PATIENT_ID,,,
+patient_payer_type,payer_name,No,,,,
+patient_payer_type,plan_name,No,,,,
+patient_payer_type,plan_type,No,,,,
+patient_payer_type,FromDate,Yes,DATE_OFFSET,,,

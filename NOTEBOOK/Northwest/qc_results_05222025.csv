@@ -1,0 +1,89 @@
+table_name,source_rows_count,dest_rows_count,qc_status,ignore_rows_count,reason,is_phi
+questaoeans,3057,3057,False,0,"QC Failed on columns: answer, answer",True
+encounters,2286298,2286263,False,35,"QC Failed on columns: Notes, Notes, notes2, notes2",True
+structallergyoverride,2426,2426,True,0,,True
+measure_provider_configuration,437,437,True,0,,True
+measure_patientdata_430,4743,4743,True,0,,True
+ndclookupenteries,95,95,True,0,,True
+measure_provider_configuration_2021,567,567,True,0,,True
+measure_extract,221,221,True,0,,True
+measure_reportdata_54024,3,3,True,0,,True
+mips_submission_2017,17,17,True,0,,True
+asc_vitals_images_master,37,37,True,0,,True
+contacts,39347,39347,True,0,,True
+dl_cube_echeckin_data,87646,87646,False,0,"QC Failed on columns: batchIdentifier, batchIdentifier",True
+cpthcpcschanges,10787,10787,True,0,,True
+dj_ctl_kpi_category,5,5,True,0,,True
+derm_lesionusermap,16,16,True,0,,True
+dw_dim_psm_flat_tables,16,16,True,0,,True
+dw_dim_kpi_op,43,43,True,0,,True
+cqm_measure_trees,23,23,True,0,,True
+edi_inv_diagnosis,1725195,1725195,False,0,"QC Failed on columns: Specify, Specify, Notes, Notes",True
+edi_tos,229,229,True,0,,True
+hcfa,42762,42762,False,0,"QC Failed on columns: Comment3, Comment3, Comment4, Comment4, NDCComment1, NDCComment1, NDCComment3, NDCComment3, NDCComment4, NDCComment4",True
+pnattachments,820,2,False,818,"QC Failed on columns: document, document",True
+social,993859,993859,False,0,"QC Failed on columns: value, value",True
+x12837imapper5010,1282,1282,False,0,"QC Failed on columns: ValidValues, ValidValues",True
+assignedpnenc,24270,24270,False,0,"QC Failed on columns: Notes, Notes",True
+globalkeywords,154,154,False,0,"QC Failed on columns: details, details, htmldetails, htmldetails",True
+measure_reportdata_59024,4,4,True,0,,True
+measure_rxnorm_mapping,19745,19745,True,0,,True
+inscptrules,29,29,True,0,,True
+labdataview,2529,2529,True,0,,True
+measure_provider_configuration_2018,419,419,True,0,,True
+measure_provider_configuration_2022,641,641,True,0,,True
+mips_practice_settings_measure_conf,52,52,True,0,,True
+questionnairemaster,4,4,True,0,,True
+opprocedures,7,7,False,0,"QC Failed on columns: details, details",True
+phm_measures_list,126,126,True,0,,True
+provider_measureconfiguration,602,602,True,0,,True
+provider_measureconfiguration_2017,572,572,True,0,,True
+obhistory,20,20,True,0,,True
+cqm_pcfmeasureconfig,18,18,True,0,,False
+trigger_codes_group,5,5,True,0,,True
+medsnotfoundlist,74,74,True,0,,True
+itemkeys,4010,4010,False,0,"QC Failed on columns: value, value, supportRemarks, supportRemarks, displayname, displayname",True
+ebo_portal_defaults,34,34,True,0,,False
+imagingstudies,94,94,True,0,,True
+prisma_socialhistory_details,73659,0,True,73659,,True
+formsource,40,40,False,0,"QC Failed on columns: fname, fname, source, source",True
+interactionnotes,28138,28137,False,1,"QC Failed on columns: EncounterId, EncounterId, patient_id, patient_id, Notes, Notes",True
+surescript_eprescription,297289,297289,False,0,"QC Failed on columns: comments, comments, XMLData, XMLData, XMLResponseData, XMLResponseData",True
+validcpts,20116,20116,True,0,,True
+cpc_measure_config,93,93,True,0,,True
+prisma_vital_values,381435,0,True,381435,,True
+structpreventive,551666,551663,False,3,"QC Failed on columns: value, value, notes, notes",True
+taxonomycodes,855,855,False,0,"QC Failed on columns: Notes, Notes",True
+taxonomycodes_del,854,854,False,0,"QC Failed on columns: Notes, Notes",True
+ordersets,500,500,True,0,,True
+emrereferralattachments,1373,1373,False,0,"QC Failed on columns: progressnotes, progressnotes, medicalsummary, medicalsummary, labreports, labreports, xrays, xrays, ccr, ccr",True
+surveillance_measures,35418,35418,True,0,,True
+measure_provider_configuration_2023,710,710,True,0,,True
+dl_cube_psms,62157,62157,True,0,,True
+cpo_cpt_exclude,20,20,True,0,,True
+docsrefdata,138270,138269,False,1,"QC Failed on columns: name, name",True
+edi_tos_del,25,25,True,0,,True
+structdemographics,10,10,True,0,,True
+hpi,1109961,1109943,False,18,"QC Failed on columns: Notes, Notes, notes2, notes2",True
+measure_provider_configuration_2024,959,959,True,0,,True
+surgicalhistory,798549,798531,False,18,"QC Failed on columns: reason, reason, date, date",True
+examdefaultdetail,122,122,False,0,"QC Failed on columns: value, value, value2, value2",True
+groupinsurance,1050,1050,True,0,,True
+groupcodes,154,154,False,0,"QC Failed on columns: Description, Description",True
+ptinstruction,42707,42707,False,0,"QC Failed on columns: Notes, Notes, NotesHTML, NotesHTML",True
+sunoh_assessment_medical_terms,117,117,True,0,,True
+dw_dim_psm,370,370,True,0,,True
+tblportalcontactsdecrypted,1935,0,True,1935,,True
+doctors,9354,9354,True,0,,True
+structdatadetail,4792,4792,False,0,"QC Failed on columns: name, name",True
+statecontroldruglist,26,26,True,0,,True
+structsocialhistory_recover,32972,32972,True,0,,True
+ndclookupcrosswalk,415,415,True,0,,True
+cvxvismapping,452,452,True,0,,True
+edi_icdcodes,93378,93378,True,0,,True
+empi_qualityreport,3591858,3591858,True,0,,True
+coc,2,2,False,0,"QC Failed on columns: description, description",True
+measure_provider_configuration_2020,797,797,True,0,,True
+prisma_allergy_details,111832,0,True,111832,,True
+measure_provider_configuration_2019,18,18,True,0,,True
+dw_dim_kpis_master,20,20,True,0,,True
