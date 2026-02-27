@@ -1,0 +1,118 @@
+import pytest
+import yaml
+from pathlib import Path
+
+
+def _write_yaml(tmp_path: Path, content: dict) -> Path:
+    p = tmp_path / "config.yaml"
+    p.write_text(yaml.dump(content))
+    return p
+
+
+def _minimal_config() -> dict:
+    return {
+        "source_db": {
+            "type": "mysql",
+            "host": "localhost",
+            "port": 3306,
+            "database": "test_src",
+            "username": "user",
+            "password": "pass",
+        },
+        "destination_db": {
+            "type": "postgresql",
+            "host": "localhost",
+            "port": 5432,
+            "database": "test_dest",
+            "username": "user",
+            "password": "pass",
+        },
+        "state_db_path": "./state.db",
+        "mappings_db_path": "./mappings.db",
+        "redis_url": "redis://localhost:6379/0",
+        "deidentification": {
+            "batch_size": 1000,
+            "date_offset_days": 34,
+            "patient_id_prefix": 10000000,
+            "parallel_tasks_per_table": 4,
+            "large_table_threshold": 500000,
+        },
+        "tables": [
+            {"name": "patients", "rules": {"patient_id": "PATIENT_ID", "name": "MASK"}}
+        ],
+        "mapping_tables": {
+            "patient": {
+                "source_column": "patient_id",
+                "destination_column": "nd_patient_id",
+            }
+        },
+        "phases": ["setup", "deidentify", "qc"],
+        "workers": {"concurrency": 2, "max_retries": 1, "task_timeout": 3600},
+        "qc": {"sample_size": 100, "scan_for_residual_pii": True},
+    }
+
+
+def test_load_valid_config(tmp_path):
+    from deid.config.loader import load_config
+
+    p = _write_yaml(tmp_path, _minimal_config())
+    config = load_config(p)
+    assert config.source_db.type == "mysql"
+    assert config.destination_db.database == "test_dest"
+    assert config.deidentification.batch_size == 1000
+    assert len(config.tables) == 1
+    assert config.tables[0].rules["patient_id"] == "PATIENT_ID"
+    assert config.phases == ["setup", "deidentify", "qc"]
+
+
+def test_env_var_interpolation(tmp_path, monkeypatch):
+    from deid.config.loader import load_config
+
+    monkeypatch.setenv("TEST_DB_PASS", "secret123")
+    cfg = _minimal_config()
+    cfg["source_db"]["password"] = "${TEST_DB_PASS}"
+    p = _write_yaml(tmp_path, cfg)
+    config = load_config(p)
+    assert config.source_db.password == "secret123"
+
+
+def test_missing_required_field(tmp_path):
+    from deid.config.loader import load_config
+
+    cfg = _minimal_config()
+    del cfg["source_db"]
+    p = _write_yaml(tmp_path, cfg)
+    with pytest.raises(Exception):
+        load_config(p)
+
+
+def test_invalid_db_type(tmp_path):
+    from deid.config.loader import load_config
+
+    cfg = _minimal_config()
+    cfg["source_db"]["type"] = "oracle"
+    p = _write_yaml(tmp_path, cfg)
+    with pytest.raises(Exception):
+        load_config(p)
+
+
+def test_rules_csv_alternative(tmp_path):
+    from deid.config.loader import load_config
+
+    cfg = _minimal_config()
+    del cfg["tables"]
+    cfg["rules_csv"] = str(tmp_path / "rules.csv")
+    p = _write_yaml(tmp_path, cfg)
+    config = load_config(p)
+    assert config.rules_csv == str(tmp_path / "rules.csv")
+    assert config.tables is None
+
+
+def test_default_phases(tmp_path):
+    from deid.config.loader import load_config
+
+    cfg = _minimal_config()
+    del cfg["phases"]
+    p = _write_yaml(tmp_path, cfg)
+    config = load_config(p)
+    assert config.phases == ["setup", "deidentify", "qc"]

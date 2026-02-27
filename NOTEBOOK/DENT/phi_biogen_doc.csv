@@ -1,9 +1,0 @@
-TABLE_NAME,COLUMN_NAME,IS_PHI,DE_IDENTIFICATION_RULE,MASK_VALUE,REFERENCE_PATIENT_ID,REFERENCE_ENCOUNTER_ID
-rwe_moca_mmse_patient_bboxes_text_feb_11,id,No,,,,
-rwe_moca_mmse_patient_bboxes_text_feb_11,patientid,Yes,PATIENT_ID,,,
-rwe_moca_mmse_patient_bboxes_text_feb_11,filename,Yes,NOTES,,,
-rwe_moca_mmse_patient_bboxes_text_feb_11,text,Yes,NOTES,,,
-rwe_moca_mmse_patient_bboxes_text_feb_12,id,No,,,,
-rwe_moca_mmse_patient_bboxes_text_feb_12,patientid,Yes,PATIENT_ID,,,
-rwe_moca_mmse_patient_bboxes_text_feb_12,filename,Yes,NOTES,,,
-rwe_moca_mmse_patient_bboxes_text_feb_12,text,Yes,NOTES,,,

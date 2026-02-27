@@ -1,58 +1,47 @@
-# ============================================================================
-# Apache Airflow 3.x (Latest Stable)
-# ============================================================================
-# apache-airflow==3.1.7
-apache-airflow-providers-mysql>=6.0.0
-apache-airflow-providers-google>=11.0.0
-apache-airflow-providers-fab>=2.0.0  # Note: FAB is now a separate provider in AF3
-apache-airflow-providers-standard>=1.0.0  # BashOperator, PythonOperator (replaces deprecated core operators)
+# CLI & Config
+typer>=0.9.0
+pyyaml>=6.0
+pydantic>=2.0
+pydantic-settings>=2.0
 
-# ============================================================================
-# Django & Utilities (3.13 Compatible)
-# ============================================================================
-Django==5.1.5
-djangorestframework==3.15.2
-pydantic==2.12.5      # Airflow 3 relies heavily on Pydantic v2
-SQLAlchemy==2.0.37    # Essential for AF3 database migrations
-psycopg2-binary==2.9.10
-numpy>=2.1.0          # Required for Python 3.13
-pandas>=2.2.3
+# Task Queue
+celery[redis]>=5.3.0
+redis>=5.0.0
+
+# Async
+aioredis>=2.0.0
+
+# Database
+SQLAlchemy>=2.0.30
+psycopg2-binary>=2.9.10
+PyMySQL>=1.1.1
+pyodbc>=5.2.0
+pymssql>=2.3.2
+snowflake-connector-python>=3.12.0
+snowflake-sqlalchemy>=1.7.0
+
+# Data Processing
 polars>=1.0.0
-google-re2>=1.1          # RE2 engine: no catastrophic backtracking, Python 3.13 compatible
-django_extensions
-django-cors-headers
+numpy>=2.1.0
+pandas>=2.2.3
+google-re2>=1.1
 
-# ============================================================================
-# Database Drivers & ORM
-# ============================================================================
-SQLAlchemy==2.0.37
-PyMySQL==1.1.1
-psycopg2-binary==2.9.10
-mysql-connector-python==9.1.0
-pyodbc==5.2.0
-pymssql==2.3.2
+# NLP & PII
+spacy>=3.8.0
+presidio-analyzer>=2.2.355
+presidio-anonymizer>=2.2.355
+pyahocorasick>=2.1.0
 
-# ============================================================================
-# Cloud, NLP & Utilities
-# ============================================================================
-google-cloud-storage==2.19.0
-snowflake-connector-python==3.12.4
-snowflake-sqlalchemy==1.7.3
-spacy==3.8.8
-# After install: python -m spacy download en_core_web_lg
+# Utilities
+requests>=2.32.0
+dateparser>=1.2.0
+rapidfuzz>=3.10.0
+pycryptodome>=3.21.0
+lxml>=5.3.0
+faker>=33.0.0
+jsonpickle>=3.0.0
+beautifulsoup4>=4.12.0
+tqdm>=4.67.0
 
-# General Utilities
-requests==2.32.3
-dateparser==1.2.0
-rapidfuzz==3.10.1
-presidio-analyzer==2.2.355
-presidio-anonymizer==2.2.355
-pycryptodome==3.21.0
-lxml==5.3.0
-pyahocorasick==2.1.0
-redis==5.2.1
-faker==33.3.0
-jupyter_server
-jsonpickle
-beautifulsoup4==4.12.3
-tqdm==4.67.1
+# Cloud
+google-cloud-storage>=2.19.0
