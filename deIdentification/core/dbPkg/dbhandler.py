@@ -10,9 +10,51 @@ from sqlalchemy import (
     Integer,
     String
 )
+import datetime
+import decimal
 import pandas as pd
 import polars as pl
 from typing import Iterator, List, Dict, Union
+
+
+def _normalize_value(v):
+    """Convert Python objects that Polars can't handle uniformly to plain scalars.
+
+    SQLAlchemy returns typed Python objects for certain DB column types:
+      - DATE / DATETIME  → ``datetime.date`` / ``datetime.datetime``
+      - DECIMAL / NUMERIC → ``decimal.Decimal``
+      - BLOB / BINARY     → ``bytes``
+
+    Within a single batch the same column may contain a mix of these objects
+    *and* plain strings (e.g. when the DB stores dates as VARCHAR) or None.
+    Polars infers the column dtype from the first non-None value it sees; if
+    a later row carries a different Python type Polars raises::
+
+        ComputeError: could not append value: 2024-09-18 of type: date …
+
+    Normalising every cell to ``str | float | int | None`` before handing
+    the batch to Polars avoids the ambiguity entirely.
+    """
+    if v is None:
+        return v
+    if isinstance(v, datetime.datetime):
+        # datetime before date because datetime IS a date (subclass)
+        return v.isoformat(sep=" ")
+    if isinstance(v, datetime.date):
+        return v.isoformat()
+    if isinstance(v, decimal.Decimal):
+        return float(v)
+    if isinstance(v, bytes):
+        try:
+            return v.decode("utf-8", errors="replace")
+        except Exception:
+            return str(v)
+    return v
+
+
+def _normalize_rows(rows) -> list:
+    """Apply _normalize_value to every cell in every row."""
+    return [[_normalize_value(cell) for cell in row] for row in rows]
 
 
 class NDDBHandler:
@@ -450,7 +492,7 @@ class NDDBHandler:
                 if not rows:
                     break
                 yield pl.DataFrame(
-                    [list(row) for row in rows],
+                    _normalize_rows(rows),
                     schema=columns,
                     orient="row",
                     infer_schema_length=len(rows),
@@ -485,7 +527,7 @@ class NDDBHandler:
                 if not rows:
                     break
                 yield pl.DataFrame(
-                    [list(row) for row in rows],
+                    _normalize_rows(rows),
                     schema=columns,
                     orient="row",
                     # Scan every row in the batch before fixing column dtypes.
@@ -533,15 +575,50 @@ class NDDBHandler:
         Polars uses typed nulls (None) rather than float NaN, so no sanitization
         step is needed — `to_dicts()` already converts null cells to Python None.
         Only columns that exist in the destination table schema are inserted.
+
+        String values are automatically truncated to the destination column's
+        declared max-length to prevent MySQL 1265 "Data truncated" errors that
+        occur when a de-identification placeholder is longer than the original
+        column definition (e.g. VARCHAR(10) receiving "((UNIT_OF_MEASURE))").
         """
         if df.is_empty():
             nd_logger.warning(f"[DBHandler] Empty DataFrame. Nothing to insert into '{table_name}'.")
             return
 
-        valid_columns = self.get_column_names(table_name)
-        # Select only columns present in both the DataFrame and the destination table.
+        # ── 1. Keep only columns that exist in the destination table ──────────
+        col_defs = self.get_columns(table_name)
+        valid_columns = [c["name"] for c in col_defs]
         select_cols = [c for c in valid_columns if c in df.columns]
         df = df.select(select_cols)
+
+        # ── 2. Build a {col_name: max_len} map for bounded-string columns ─────
+        # SQLAlchemy returns String / VARCHAR types with a `.length` attribute.
+        # We only truncate columns that are (a) present in the DataFrame AND
+        # (b) have a non-null, positive length declared in the schema.
+        max_lengths: dict[str, int] = {}
+        for col_def in col_defs:
+            col_name = col_def["name"]
+            if col_name not in df.columns:
+                continue
+            col_type = col_def.get("type")
+            length = getattr(col_type, "length", None)
+            if length and length > 0:
+                max_lengths[col_name] = int(length)
+
+        # ── 3. Truncate Utf8 columns that exceed the declared max-length ──────
+        if max_lengths:
+            truncate_exprs = []
+            for col_name, max_len in max_lengths.items():
+                if df[col_name].dtype in (pl.Utf8, pl.String):
+                    truncate_exprs.append(
+                        pl.col(col_name).str.slice(0, max_len).alias(col_name)
+                    )
+            if truncate_exprs:
+                df = df.with_columns(truncate_exprs)
+                nd_logger.debug(
+                    f"[DBHandler] Truncated {len(truncate_exprs)} string column(s) "
+                    f"to their max lengths for table '{table_name}'."
+                )
 
         total_rows = df.height
         nd_logger.info(f"[DBHandler] Starting insertion of {total_rows} rows into '{table_name}' in batches of {batch_size}.")
