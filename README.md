@@ -8,6 +8,7 @@ The platform reads a YAML configuration, dispatches de-identification tasks via 
 
 ## Table of Contents
 
+- [Migration from v1 (Django)](#migration-from-v1-django)
 - [Quick Start](#quick-start)
 - [Installation](#installation)
 - [Configuration](#configuration)
@@ -17,6 +18,154 @@ The platform reads a YAML configuration, dispatches de-identification tasks via 
 - [Quality Control](#quality-control)
 - [CDC (Change Data Capture)](#cdc-change-data-capture)
 - [Development](#development)
+
+---
+
+## Migration from v1 (Django)
+
+This is a ground-up rewrite of the orchestration, task queue, configuration, and state management layers. The core de-identification engine (rules, NLP pipeline, database streaming) is preserved unchanged. The table below summarizes every major change and how the old functionality maps to the new implementation.
+
+### What Changed
+
+| Area | v1 (Django) | v2 (Current) | Why |
+|------|-------------|--------------|-----|
+| **Framework** | Django (full web framework) | No framework — pure Python + Typer CLI | Django was heavyweight for a batch processing tool; no web UI or REST API was needed |
+| **API** | REST API via Django views (`nd_api/views/`) | No API — single CLI entry point (`deid run`) | The tool runs as a batch job, not a service; API added complexity without benefit |
+| **Task Queue** | Custom PostgreSQL queue (`SELECT FOR UPDATE SKIP LOCKED` + `NOTIFY`/`LISTEN`) | Celery + Redis (prefork pool, Canvas for DAG) | Celery provides mature retry logic, monitoring, parallel workers, and task chaining out of the box |
+| **Workers** | Custom `TaskWorker` class polling PostgreSQL in a `while True` loop | Celery prefork pool — spawned automatically by `deid run` | Celery's prefork pool handles process management, signal handling, and prefetch tuning |
+| **State DB** | PostgreSQL (Django ORM: `DbDetailsModel`, `TableDetailsModel`, task/chain tables) | SQLite via SQLAlchemy 2.0 (`state.db` for run tracking, `mappings.db` for ID maps) | SQLite is zero-config, portable (just two files), and sufficient for state tracking; no external DB dependency |
+| **ORM** | Django ORM (`models.py` in `nd_api/`) | SQLAlchemy 2.0 with `mapped_column` syntax | SQLAlchemy is framework-agnostic and supports all target databases natively |
+| **Configuration** | Django `settings.py` + environment variables + database-stored config (`DbDetailsModel`, `TableDetailsModel`) | Single YAML file with Pydantic v2 validation and `${ENV_VAR}` interpolation | One file to version-control, review, and reproduce a run; no config scattered across DB rows and env vars |
+| **Authentication** | Keycloak integration (`DISABLE_AUTHENTICATION` toggle) | Dropped entirely | A CLI batch tool doesn't need user authentication |
+| **Operations** | Jupyter notebooks (`NOTEBOOK/DENT/setup.ipynb`, `run.ipynb`, `db-config-setup.ipynb`) | CLI commands: `deid run`, `deid status`, `deid cdc` | Notebooks were fragile for production use; CLI is scriptable, auditable, and CI/CD friendly |
+| **Worker Scripts** | `start_workers.sh` (screen sessions + conda env activation) | `deid run` spawns workers automatically as a subprocess | Single command replaces manual screen management |
+| **Progress** | Task status stored in PostgreSQL, polled by API | Redis pub/sub real-time events + SQLite state persistence | Sub-second progress updates; `deid status` reads state.db without connecting to Redis |
+| **Task Dependencies** | Custom `Chain` model with DAG-based dependency tracking | Celery Canvas (`group`, `chord`, `chain`) | Celery Canvas is battle-tested for task DAGs and handles error propagation |
+| **Logging** | `deIdentification.nd_logger` (custom Django logger) | Standard Python `logging.getLogger("deid")` | No Django dependency; same log output with standard library |
+
+### Component-by-Component Migration Map
+
+#### Task Queue & Workers
+
+**Before (v1):**
+```
+Django management command → start_worker
+  → TaskWorker.run() polls PostgreSQL every 5s
+    → SELECT id FROM tasks WHERE status='pending' FOR UPDATE SKIP LOCKED LIMIT 1
+    → Execute task function
+    → UPDATE tasks SET status='completed'
+    → Chain model triggers dependent tasks
+```
+- `worker/worker.py` — `TaskWorker` class with exponential backoff retry
+- `worker/models/task.py` — PostgreSQL task table with status state machine and expiry
+- `worker/models/chain.py` — DAG-based task dependency resolution
+
+**After (v2):**
+```
+deid run → spawns `celery worker --pool=prefork`
+  → Celery pulls tasks from Redis broker
+  → Execute shared_task function
+  → Result stored in Redis backend
+  → Canvas (group/chord) handles dependencies
+```
+- `deid/tasks/celery_app.py` — Celery app factory with `task_acks_late`, `worker_prefetch_multiplier=1`
+- `deid/tasks/deidentify.py` — `deidentify_table` and `deidentify_table_range` as `@shared_task`
+- `deid/tasks/qc.py` — `run_qc` as `@shared_task`
+- `deid/orchestrator/task_graph.py` — Builds `celery.group()` of tasks; large tables split into range tasks
+
+#### Configuration & Database Models
+
+**Before (v1):**
+```python
+# Django settings.py
+DEFAULT_OFFSET_VALUE = int(os.environ.get("DEFAULT_OFFSET_VALUE", 34))
+BATCH_SIZE_DURING_DE_IDENTIFICATION = int(os.environ.get("BATCH_SIZE_DURING_DE_IDENTIFICATION", 100000))
+
+# Django ORM models (nd_api/models/)
+class DbDetailsModel(models.Model):     # PostgreSQL
+    db_name, source_conn_str, dest_conn_str, ...
+class TableDetailsModel(models.Model):  # PostgreSQL
+    table_name, db, columns_config (JSON), ...
+class MappingTable(models.Model):       # PostgreSQL
+class PHITable(models.Model):           # PostgreSQL
+class IgnoreRowsDeIdentificaiton(models.Model):  # PostgreSQL
+```
+
+**After (v2):**
+```python
+# config.yaml (Pydantic-validated)
+deidentification:
+  date_offset_days: 34
+  batch_size: 100000
+
+# SQLAlchemy 2.0 models
+class DbConfig(StateBase):           # state.db (SQLite)
+class TableState(StateBase):         # state.db (SQLite)
+class RunLog(StateBase):             # state.db (SQLite)
+class PatientMapping(MappingsBase):  # mappings.db (SQLite)
+class EncounterMapping(MappingsBase): # mappings.db (SQLite)
+```
+
+Key differences:
+- `DbDetailsModel` → split into `DbConfig` (in state.db) and `source_db`/`destination_db` sections in YAML
+- `TableDetailsModel` → `TableState` (runtime state) + `tables[].rules` (config in YAML)
+- `IgnoreRowsDeIdentificaiton` → removed; invalid rows are now logged by `InvalidRowHandler` and row counts passed as parameters
+- All mapping tables (`MappingTable`, `PHITable`) → `PatientMapping`, `EncounterMapping`, `AppointmentMapping`, `PhiStaging` in `mappings.db`
+
+#### REST API → CLI
+
+**Before (v1):** 15+ Django views handling DB registration, de-identification control, config upload/download, QC, stats, and cloud upload.
+
+**After (v2):** Four CLI commands replace the entire API surface:
+
+| Old API Endpoint | New CLI Equivalent |
+|-----------------|-------------------|
+| `POST /register-db/` | `source_db:` / `destination_db:` sections in config.yaml |
+| `POST /upload-config/` | `tables:` section in config.yaml |
+| `POST /start-deidentification/` | `deid run --config config.yaml` |
+| `GET /status/` | `deid status --state-db ./state.db` |
+| `POST /start-qc/` | `deid run --config config.yaml --phase qc` |
+| `POST /run-cdc/` | `deid cdc --config cdc.yaml --db-type mysql` |
+| `GET /download-config/` | The config is a version-controlled YAML file |
+| `POST /upload-to-cloud/` | Not yet migrated (planned) |
+
+#### Operational Notebooks → CLI
+
+**Before (v1):**
+```
+NOTEBOOK/DENT/setup.ipynb       → Register DBs, create tables
+NOTEBOOK/DENT/run.ipynb         → Set PARALLEL_TASKS_COUNT, trigger de-identification
+NOTEBOOK/db-config-setup.ipynb  → Configure source/destination connections
+NOTEBOOK/uploadconfig.ipynb     → Upload column mapping rules
+```
+
+**After (v2):**
+```bash
+# All of the above is now a single command:
+deid run --config config.yaml
+
+# The YAML file replaces all notebook cells:
+# - DB connections → source_db / destination_db
+# - Parallel tasks → deidentification.parallel_tasks_per_table
+# - Column rules  → tables[].rules
+# - Phases        → phases: [setup, deidentify, qc]
+```
+
+#### Core Engine Changes
+
+The core de-identification engine (`process_df/`, `dbPkg/`, `ops_df/`) is functionally unchanged. The only modifications were import path updates and removing Django model dependencies from function signatures:
+
+| Function / Class | What Changed |
+|-----------------|--------------|
+| `start_de_identification_for_table()` | Signature changed from `(table_details_obj, db_details_obj)` Django models to explicit parameters: `(table_config, source_conn_str, dest_conn_str, batch_size, offset_days, ...)` |
+| `DeIdentifier.__init__()` | `offset_days` passed as parameter instead of reading `django.conf.settings.DEFAULT_OFFSET_VALUE` |
+| `StaticDateOffsetRule` | `offset_days` passed as constructor parameter instead of `settings.DEFAULT_OFFSET_VALUE` |
+| `NotesRule.__init__()` | Changed from `(db_details_obj, key_phi_columns)` to `(pii_config, pii_db_conn_str, secondary_pii_configs, key_phi_columns)` — config dicts instead of Django model |
+| `InvalidRowHandler.handle()` | No longer writes to `IgnoreRowsDeIdentificaiton` Django model; logs ignored rows instead |
+| `is_data_discrepancy_present()` | Takes `table_name` and `ignore_row_count` as parameters instead of querying `TableDetailsModel.objects.get()` and `IgnoreRowsDeIdentificaiton.objects.filter()` |
+| All imports | `from deIdentification.nd_logger` → `from deid.core.logger`; `from core.*` → `from deid.core.*`; `from nd_api.schemas.*` → `from deid.config.table_schemas` |
+
+No changes were made to: rule logic, NLP pipeline, regex patterns, Polars DataFrame operations, SQLAlchemy database streaming, reference table joining, or QC detector algorithms.
 
 ---
 
