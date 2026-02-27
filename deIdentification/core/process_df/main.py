@@ -365,14 +365,63 @@ class JoinMapping:
 # Column schema mapping (unchanged — used to CREATE destination table)
 # ---------------------------------------------------------------------------
 
-def _get_columns_schema_mapping(table_config: TableDetailsForUI):
-    schema_mapping = {}
+def _get_columns_schema_mapping(
+    table_config: TableDetailsForUI,
+    source_col_lengths: dict | None = None,
+) -> dict:
+    """Build the {col_name: type_dict} map used to create the destination table.
+
+    For every PHI column the function returns a type override that matches
+    what the de-identification pipeline will actually write:
+
+    Rule            Destination type
+    ─────────────── ────────────────────────────────────────────────────────
+    MASK            VARCHAR(max(source_length, longest_placeholder) + 10)
+                    The placeholder written by MaskRule is "<<{mask_value}>>".
+                    We ensure the destination column is always wide enough to
+                    hold it, even if the source column was very narrow (e.g.
+                    VARCHAR(5) for a unit-of-measure column).
+    PATIENT_ID /    BIGINT  ← ND integer IDs are always 64-bit
+    ENCOUNTER_ID /
+    REFERENCE_PID /
+    APPOINTMENT_ID
+    PATIENT_DOB     INTEGER  ← year-only after masking
+    DATE_OFFSET /   DATETIME
+    STATIC_OFFSET
+    ZIP_CODE        VARCHAR(50)
+    NOTES /         LONGTEXT
+    GENERIC_NOTES
+
+    ``source_col_lengths`` — optional {column_name: declared_length} dict
+    fetched from the source table via ``NDDBHandler.get_columns()``.  When
+    provided, MASK columns use ``max(source_length, MIN_MASK_LEN) + BUFFER``
+    instead of the static 200-char fallback.
+    """
+    MIN_MASK_LEN = 50    # always wide enough for any "((...))" placeholder
+    MASK_BUFFER  = 10    # extra headroom
+
+    source_col_lengths = source_col_lengths or {}
+    schema_mapping: dict = {}
     rule_to_schema = ColumnsTypeDetector.get_columns_definations(table_config)
+
     for col_conf in table_config["columns_details"]:
-        if col_conf["is_phi"]:
-            schema_mapping[col_conf["column_name"]] = rule_to_schema[
-                Rules[col_conf["de_identification_rule"]]
-            ]
+        if not col_conf.get("is_phi"):
+            continue
+
+        col_name = col_conf["column_name"]
+        rule     = Rules[col_conf["de_identification_rule"]]
+
+        if rule == Rules.MASK:
+            # Compute the placeholder width:  "(({mask_value}))"
+            mask_val      = col_conf.get("mask_value", "(())")
+            placeholder_w = len(f"(({mask_val}))")
+            source_w      = source_col_lengths.get(col_name, 0) or 0
+
+            dest_len = max(source_w, placeholder_w, MIN_MASK_LEN) + MASK_BUFFER
+            schema_mapping[col_name] = {"type": String, "length": dest_len, "null": True}
+        else:
+            schema_mapping[col_name] = rule_to_schema[rule]
+
     return schema_mapping
 
 
@@ -447,7 +496,22 @@ def start_de_identification_for_table(
     source_db_connection: NDDBHandler = db_details_obj.get_source_db_connection()
     destination_db: NDDBHandler = db_details_obj.get_destination_db_connection()
 
-    column_schema_mapping = _get_columns_schema_mapping(table_config)
+    # Fetch source column lengths so _get_columns_schema_mapping can size
+    # MASK-rule destination columns correctly (avoids MySQL 1265 truncation).
+    try:
+        _src_col_info = source_db_connection.get_columns(table_details_obj.table_name)
+        _source_col_lengths: dict = {
+            c["name"]: int(getattr(c.get("type"), "length", 0) or 0)
+            for c in _src_col_info
+        }
+    except Exception as _e:
+        nd_logger.warning(
+            f"[{table_details_obj.table_name}] Could not fetch source column lengths "
+            f"(will use static defaults): {_e}"
+        )
+        _source_col_lengths = {}
+
+    column_schema_mapping = _get_columns_schema_mapping(table_config, _source_col_lengths)
 
     mapping_obj: JoinMapping | None = None
     deidentifier: DeIdentifier | None = None

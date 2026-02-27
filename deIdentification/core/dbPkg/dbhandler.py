@@ -605,19 +605,32 @@ class NDDBHandler:
             if length and length > 0:
                 max_lengths[col_name] = int(length)
 
-        # ── 3. Truncate Utf8 columns that exceed the declared max-length ──────
+        # ── 3. Truncate string columns that exceed the declared max-length ────
+        # This is a last-resort safety net.  Ideally the destination table was
+        # already created with the correct (wider) VARCHAR length via
+        # _get_columns_schema_mapping in main.py.  But if the table already
+        # existed from a previous run with the original narrow source schema,
+        # this prevents MySQL error 1265 "Data truncated for column …".
+        _STRING_DTYPES = {pl.Utf8, pl.String, pl.Categorical}
         if max_lengths:
             truncate_exprs = []
             for col_name, max_len in max_lengths.items():
-                if df[col_name].dtype in (pl.Utf8, pl.String):
+                try:
+                    col_dtype = df[col_name].dtype
+                except Exception:
+                    continue
+                if col_dtype in _STRING_DTYPES or str(col_dtype) in ("Utf8", "String"):
                     truncate_exprs.append(
-                        pl.col(col_name).str.slice(0, max_len).alias(col_name)
+                        pl.col(col_name)
+                        .cast(pl.Utf8)
+                        .str.slice(0, max_len)
+                        .alias(col_name)
                     )
             if truncate_exprs:
                 df = df.with_columns(truncate_exprs)
                 nd_logger.debug(
-                    f"[DBHandler] Truncated {len(truncate_exprs)} string column(s) "
-                    f"to their max lengths for table '{table_name}'."
+                    f"[DBHandler] Safety-truncated {len(truncate_exprs)} string "
+                    f"column(s) to their declared max lengths for '{table_name}'."
                 )
 
         total_rows = df.height
