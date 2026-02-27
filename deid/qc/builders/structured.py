@@ -4,34 +4,47 @@ from datetime import datetime, timedelta
 from deid.qc.builders.base import Detector
 from deid.qc.schema import ColumnQCResult
 
+
+def _parse_date(value: Any) -> datetime | None:
+    """Parse a date string, returning None if the value is not a valid date."""
+    s = str(value).strip()
+    if not s or s.lower() in ("none", "null", "nat", ""):
+        return None
+    parts = s.split("-")
+    if len(parts) != 3:
+        return None
+    if not all(p.isdigit() for p in parts):
+        return None
+    return datetime(int(parts[0]), int(parts[1]), int(parts[2]))
+
+
 class SZipCodeDetector(Detector):
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
         passed_count = sum(1 for row in after_rows if len(str(row[self.column_name])) <= 3 or str(row[self.column_name]).lower() in ["none", "null"])
         failed_count = len(after_rows) - passed_count
         return ColumnQCResult(passed_count=passed_count, failed_count=failed_count, remarks={})
 
-            
+
 class SDobDetector(Detector):
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
         passed_count = sum(
-            1 for row in after_rows 
+            1 for row in after_rows
             if (value := str(row[self.column_name]).lower()) in {None, '', 'null', 'none'} or (value.isdigit() and len(value) == 4)
         )
         failed_count = len(after_rows) - passed_count
         return ColumnQCResult(passed_count=passed_count, failed_count=failed_count, remarks={})
-    
+
 DEFAULT_OFFSET_VALUE = 34
 
 
 class SStaticOffestDetector(Detector):
     def get_offset(self, row: dict):
         return self.qc_config.get("default_offset_value", DEFAULT_OFFSET_VALUE)
-    
+
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
         column_qc_result = ColumnQCResult(passed_count=0, failed_count=0, remarks={})
         column_name = self.column_config["column_name"]
 
-        # Convert before_rows to dictionary for O(1) lookup
         before_dict = {row['nd_auto_increment_id']: row for row in before_rows}
 
         remarks = []
@@ -41,17 +54,16 @@ class SStaticOffestDetector(Detector):
             before_row = before_dict.get(nd_id)
 
             if not before_row:
-                continue  # Skip if there's no matching row
+                continue
 
-            try:
-                before_date = datetime.strptime(str(before_row.get(column_name, '')), '%Y-%m-%d')
-                after_date = datetime.strptime(str(after_row.get(column_name, '')), '%Y-%m-%d')
-            except (ValueError, TypeError):
-                continue  # Skip invalid dates
-            
+            before_date = _parse_date(before_row.get(column_name, ''))
+            after_date = _parse_date(after_row.get(column_name, ''))
+            if before_date is None or after_date is None:
+                continue
+
             offset_value = self.get_offset(after_row)
             date_diff = (after_date - before_date).days
-            
+
             if date_diff == offset_value:
                 column_qc_result['passed_count'] += 1
             else:
@@ -60,13 +72,14 @@ class SStaticOffestDetector(Detector):
                     'source date': str(before_date),
                     'dest date': str(after_date)
                 })
-                column_qc_result['failed_count'] += 1 
+                column_qc_result['failed_count'] += 1
 
         column_qc_result['remarks'] = {'remarks': remarks}
         return column_qc_result
 
 class SMaskDetector(Detector):
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
+        assert "mask_value" in self.column_config, "column_config must contain 'mask_value'"
         mask_value = self.column_config["mask_value"]
         passed_count = sum(1 for row in after_rows if row[self.column_name] == f'<<{mask_value}>>')
         failed_count = len(after_rows) - passed_count
@@ -83,12 +96,11 @@ class SDateOffestDetector(Detector):
             pid = self.enc_mapping_dict[encid]['patient_id']
             return  self.patient_mapping_dict[pid]['offset']
         return self.qc_config.get("default_offset_value", DEFAULT_OFFSET_VALUE)
-    
+
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
         column_qc_result = ColumnQCResult(passed_count=0, failed_count=0, remarks={})
         column_name = self.column_config["column_name"]
 
-        # Convert before_rows to dictionary for O(1) lookup
         before_dict = {row['nd_auto_increment_id']: row for row in before_rows}
 
         remarks = []
@@ -98,17 +110,16 @@ class SDateOffestDetector(Detector):
             before_row = before_dict.get(nd_id)
 
             if not before_row:
-                continue  # Skip if there's no matching row
+                continue
 
-            try:
-                before_date = datetime.strptime(str(before_row.get(column_name, '')), '%Y-%m-%d')
-                after_date = datetime.strptime(str(after_row.get(column_name, '')), '%Y-%m-%d')
-            except (ValueError, TypeError):
-                continue  # Skip invalid dates
-            
+            before_date = _parse_date(before_row.get(column_name, ''))
+            after_date = _parse_date(after_row.get(column_name, ''))
+            if before_date is None or after_date is None:
+                continue
+
             offset_value = self.get_offset(after_row)
             date_diff = (after_date - before_date).days
-            
+
             if date_diff == offset_value:
                 column_qc_result['passed_count'] += 1
             else:
@@ -117,7 +128,7 @@ class SDateOffestDetector(Detector):
                     'source date': str(before_date),
                     'dest date': str(after_date)
                 })
-                column_qc_result['failed_count'] += 1 
+                column_qc_result['failed_count'] += 1
 
         column_qc_result['remarks'] = {'remarks': remarks}
         return column_qc_result
@@ -129,13 +140,13 @@ class SPatientIdDetector(Detector):
         if length_of_value is not None:
             return len(str(col_value)) == length_of_value
         return True
-    
+
     def _verify_prefix(self, col_value: Any, ignore_condition: dict) -> bool:
         prefix_value = self.qc_config.get("PATIENT_ID", {}).get("prefix_value", None)
         if prefix_value is not None:
             return str(col_value).startswith(prefix_value)
         return True
-    
+
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
         column_qc_result = ColumnQCResult(passed_count=0, failed_count=0, remarks={"length_verification_failed": 0, "prefix_verification_failed": 0})
         column_name = self.column_config["column_name"]
@@ -160,13 +171,13 @@ class SReferencePIDDetector(Detector):
         if length_of_value is not None:
             return len(str(col_value)) == length_of_value
         return True
-    
+
     def _verify_prefix(self, col_value: Any, ignore_condition: dict) -> bool:
         prefix_value = self.qc_config.get("PATIENT_ID", {}).get("prefix_value", None)
         if prefix_value is not None:
             return str(col_value).startswith(prefix_value)
         return True
-    
+
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
         column_qc_result = ColumnQCResult(passed_count=0, failed_count=0, remarks={"length_verification_failed": 0, "prefix_verification_failed": 0})
         column_name = self.column_config["column_name"]
@@ -185,19 +196,19 @@ class SReferencePIDDetector(Detector):
         return column_qc_result
 
 class SEncounterIDDetector(Detector):
-    
+
     def _verify_length(self, col_value: Any, ignore_condition: dict) -> bool:
         length_of_value = self.qc_config.get("ENCOUNTER_ID", {}).get("length_of_value", None)
         if length_of_value is not None:
             return len(str(col_value)) == length_of_value
         return True
-    
+
     def _verify_prefix(self, col_value: Any, ignore_condition: dict) -> bool:
         prefix_value = self.qc_config.get("ENCOUNTER_ID", {}).get("prefix_value", None)
         if prefix_value is not None:
             return str(col_value).startswith(prefix_value)
         return True
-    
+
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
         column_qc_result = ColumnQCResult(passed_count=0, failed_count=0, remarks={"length_verification_failed": 0, "prefix_verification_failed": 0})
         column_name = self.column_config["column_name"]
@@ -214,5 +225,5 @@ class SEncounterIDDetector(Detector):
                 column_qc_result["passed_count"] += 1
             else:
                 column_qc_result["failed_count"] += 1
-            
+
         return column_qc_result

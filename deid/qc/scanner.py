@@ -1,4 +1,5 @@
 from deid.config.table_schemas import TableDetailsForUI
+from deid.config.task_models import DataCountResult
 from deid.qc.generator import DataGenerator
 from deid.qc.builders import DectorMapping, Detector
 from deid.qc.schema import OutputSchemaForTable, FinalQCResult, ColumnQCResult
@@ -8,9 +9,12 @@ from deid.core.dbPkg.pii_loader import PIITableLoader
 
 
 class LoadMappingData:
-    
+
     @classmethod
     def load(cls, sample_data: list[dict], table_config: TableDetailsForUI, mapping_db_config: dict):
+        assert isinstance(sample_data, list), "sample_data must be a list"
+        assert isinstance(table_config, dict), "table_config must be a dict"
+
         patient_dict, enc_dict = {}, {}
         if table_config["reference_patient_id_column"] is not None:
             col_name = table_config["reference_patient_id_column"]
@@ -25,6 +29,9 @@ class LoadMappingData:
 
 class DbScanner:
     def __init__(self, source_connection_string: str, dest_connection_string: str, mapping_db_config: dict, qc_config: dict):
+        assert source_connection_string, "source_connection_string must not be empty"
+        assert dest_connection_string, "dest_connection_string must not be empty"
+
         self.source_handler = NDDBHandler(source_connection_string)
         self.dest_handler = NDDBHandler(dest_connection_string)
         self.mapping_db_config = mapping_db_config
@@ -37,7 +44,7 @@ class DbScanner:
             if col_conf["is_phi"]:
                 important_cols.append(col_conf["column_name"])
         return important_cols
-    
+
     def _load_mapping_data(self, sample_data: list[dict], table_config: TableDetailsForUI):
         if table_config["reference_patient_id_column"] is not None:
             pass
@@ -49,7 +56,7 @@ class DbScanner:
             all_pids = [row[self.patient_id_column] for row in sample_data]
         if table_config["reference_enc_id_column"]:
             all_enc_ids = [row[self.enc_id_column] for row in sample_data] #ndid
-            
+
         pii_loader = PIITableLoader(self.pii_db_config)
         pii_data = pii_loader.load_pii_table()
 
@@ -63,7 +70,7 @@ class DbScanner:
                 detector_obj = detector_cls(patient_mapping_dict=patinet_dict, enc_mapping_dict=enc_dict, qc_config=self.qc_config, column_config=col_conf, patient_id_column=table_config["reference_patient_id_column"], enc_id_column=table_config["reference_enc_id_column"])
                 detectors.append((col_conf["column_name"], detector_obj))
         return detectors
-    
+
     def get_unstructured_detectors(self, sample_data, table_config: TableDetailsForUI) -> list[tuple[str, Detector]]:
         detectors = []
         patinet_dict, enc_dict = LoadMappingData.load(sample_data, table_config, self.mapping_db_config)
@@ -73,12 +80,15 @@ class DbScanner:
                 detector_obj = detector_cls(patient_mapping_dict=patinet_dict, enc_mapping_dict=enc_dict, qc_config=self.qc_config, column_config=col_conf, patient_id_column=table_config["reference_patient_id_column"], enc_id_column=table_config["reference_enc_id_column"])
                 detectors.append((col_conf["column_name"], detector_obj))
         return detectors
-    
+
     def get_pii_info(self):
         return {}
 
 
     def scan_table(self, table_name: str, table_config: TableDetailsForUI, ignore_row_count: int = 0) -> OutputSchemaForTable:
+        assert table_name, "table_name must not be empty"
+        assert table_config, "table_config must not be empty"
+
         data_generator = DataGenerator(self.source_handler.engine, self.dest_handler.engine)
 
         important_cols = self.get_important_columns(table_config)
@@ -88,26 +98,27 @@ class DbScanner:
         for col_name, detector in detectors:
             result = detector.is_deidentified(before_rows=source_data, after_rows=sample_data, ignore_condition=table_config.get("ignore_config",{}))
             columns_qc_result[col_name] = result
-        
+
         sample_size, source_data, sample_data = data_generator.generate_sample(table_name, important_cols, is_structured=False)
         unstructured_detectors = self.get_unstructured_detectors(sample_data, table_config)
         pii_info = self.get_pii_info()
         for col_name, detector in unstructured_detectors:
             result = detector.is_deidentified(before_rows=source_data, after_rows=sample_data, ignore_condition=table_config.get("ignore_config",{}), pii_info=pii_info)
             columns_qc_result[col_name] = result
-        
 
-        data_count_result = is_data_discrepancy_present(self.source_handler, self.dest_handler, table_name, ignore_row_count)
-        final_qc_result = self.get_final_result(data_count_result, columns_qc_result)
+
+        data_count = is_data_discrepancy_present(self.source_handler, self.dest_handler, table_name, ignore_row_count)
+        data_count_dict = data_count.model_dump()
+        final_qc_result = self.get_final_result(data_count_dict, columns_qc_result)
         output_result = OutputSchemaForTable(
             unstruct_sample_size=len(sample_data),
             table_name=table_name,
-            **data_count_result,
+            **data_count_dict,
             ColumnsQCResult=columns_qc_result,
             final_qc_result=final_qc_result
         )
         return output_result
-    
+
     def get_final_result(self, data_count_result: dict, columns_qc_result: dict[str: ColumnQCResult]):
         final_qc_result = FinalQCResult(
             is_qc_passed=True,
@@ -117,7 +128,7 @@ class DbScanner:
         ):
             final_qc_result["is_qc_passed"] = False
             final_qc_result["reason"] += f"data discrepancy present. "
-        
+
         columns_failed = []
         for colname, result in columns_qc_result.items():
             if result["failed_count"] > 0:
@@ -128,11 +139,13 @@ class DbScanner:
             final_qc_result["reason"] += "QC Failed on columns: " + ", ".join(columns_failed)
 
         return final_qc_result
-        
 
 
 
-def is_data_discrepancy_present(source_handler: NDDBHandler, dest_handler: NDDBHandler, table_name: str, ignore_row_count: int = 0):
+
+def is_data_discrepancy_present(source_handler: NDDBHandler, dest_handler: NDDBHandler, table_name: str, ignore_row_count: int = 0) -> DataCountResult:
+    assert table_name, "table_name must not be empty"
+
     actual_count = source_handler.get_rows_count(table_name)
     dest_count = dest_handler.get_rows_count(table_name)
-    return {"source_rows_count": actual_count, "dest_rows_count": dest_count, "ignore_rows_count": ignore_row_count}
+    return DataCountResult(source_rows_count=actual_count, dest_rows_count=dest_count, ignore_rows_count=ignore_row_count)

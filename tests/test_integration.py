@@ -85,6 +85,7 @@ def test_celery_task_callable():
             "table_name": "test",
             "source_conn_str": "sqlite:///nonexistent.db",
             "dest_conn_str": "sqlite:///nonexistent.db",
+            "table_details_for_ui": {"columns_details": []},
             "batch_size": 100,
             "offset_days": 34,
         })

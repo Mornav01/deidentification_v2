@@ -8,8 +8,9 @@ from presidio_analyzer import AnalyzerEngine
 analyzer = AnalyzerEngine()
 
 class UnstructuredDetector(Detector):
-    
+
     def _exact_match(self, text: str, pii_info: dict):
+        assert isinstance(pii_info, dict), "pii_info must be a dict"
         found_pii_values = []
         for key, value in pii_info.items():
             if value in text:
@@ -26,8 +27,11 @@ class UnstructuredDetector(Detector):
                     found_entities.append((result.entity_type, text[result.start:result.end]))
         return found_entities
 
-    
+
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict, pii_info: dict) -> ColumnQCResult:
+        assert isinstance(after_rows, list), "after_rows must be a list"
+        assert isinstance(pii_info, dict), "pii_info must be a dict"
+
         column_qc_result = ColumnQCResult(passed_count=0, failed_count=0, remarks={})
         all_failed_remarks = {"exact_match_remarks": [], "presidio_remarks": []}
         for row in after_rows:

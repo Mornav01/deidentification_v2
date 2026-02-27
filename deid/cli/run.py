@@ -30,11 +30,7 @@ def run_command(
 
     from deid.config.loader import load_config
 
-    try:
-        cfg = load_config(config_path)
-    except Exception as exc:
-        typer.echo(f"Error: Invalid config: {exc}", err=True)
-        raise typer.Exit(code=1)
+    cfg = load_config(config_path)
 
     if phase:
         cfg.phases = [phase]
@@ -51,9 +47,6 @@ def run_command(
         typer.echo("De-identification completed successfully.")
     except KeyboardInterrupt:
         typer.echo("\nInterrupted — shutting down...")
-    except Exception as exc:
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(code=1)
     finally:
         _stop_worker(worker_proc)
 
@@ -80,7 +73,4 @@ def _stop_worker(proc: subprocess.Popen | None):
     """Gracefully terminate the Celery worker subprocess."""
     if proc and proc.poll() is None:
         proc.send_signal(signal.SIGTERM)
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+        proc.wait(timeout=10)

@@ -10,6 +10,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from deid.config.schema import DeidConfig
+from deid.config.task_models import ProgressEvent, QCTaskConfig
 from deid.models.base import (
     create_all_mappings_tables,
     create_all_state_tables,
@@ -23,6 +24,8 @@ logger = logging.getLogger("deid.orchestrator")
 
 async def run(config: DeidConfig, config_path: str):
     """Main async entry point — runs phases from config."""
+    assert config.phases, "config.phases must not be empty"
+
     state_engine = create_state_engine(config.state_db_path)
     create_all_state_tables(state_engine)
     mappings_engine = create_mappings_engine(config.mappings_db_path)
@@ -35,41 +38,34 @@ async def run(config: DeidConfig, config_path: str):
         session.commit()
         run_log_id = run_log.id
 
-    try:
-        table_row_counts = {}
-        table_id_ranges = {}
+    table_row_counts = {}
+    table_id_ranges = {}
 
-        if "setup" in config.phases:
-            logger.info("Phase: setup")
-            table_row_counts, table_id_ranges = await _setup_phase(
-                config, state_engine
-            )
+    if "setup" in config.phases:
+        logger.info("Phase: setup")
+        table_row_counts, table_id_ranges = await _setup_phase(
+            config, state_engine
+        )
 
-        if "deidentify" in config.phases:
-            logger.info("Phase: deidentify")
-            await _deidentify_phase(config, state_engine, table_row_counts, table_id_ranges)
+    if "deidentify" in config.phases:
+        logger.info("Phase: deidentify")
+        await _deidentify_phase(config, state_engine, table_row_counts, table_id_ranges)
 
-        if "qc" in config.phases:
-            logger.info("Phase: qc")
-            await _qc_phase(config, state_engine)
+    if "qc" in config.phases:
+        logger.info("Phase: qc")
+        await _qc_phase(config, state_engine)
 
-        with Session(state_engine) as session:
-            log = session.get(RunLog, run_log_id)
-            log.status = "completed"
-            log.completed_at = datetime.now(timezone.utc)
-            session.commit()
-
-    except Exception:
-        with Session(state_engine) as session:
-            log = session.get(RunLog, run_log_id)
-            log.status = "failed"
-            log.completed_at = datetime.now(timezone.utc)
-            session.commit()
-        raise
+    with Session(state_engine) as session:
+        log = session.get(RunLog, run_log_id)
+        log.status = "completed"
+        log.completed_at = datetime.now(timezone.utc)
+        session.commit()
 
 
 async def _setup_phase(config: DeidConfig, state_engine):
     """Discover tables, create destination schemas, persist state."""
+    assert config.tables, "config.tables must not be empty for setup phase"
+
     from deid.core.dbPkg.dbhandler import NDDBHandler
 
     source = NDDBHandler(config.source_db.connection_string())
@@ -78,7 +74,7 @@ async def _setup_phase(config: DeidConfig, state_engine):
     table_id_ranges = {}
 
     loop = asyncio.get_event_loop()
-    for table_cfg in config.tables or []:
+    for table_cfg in config.tables:
         row_count = await loop.run_in_executor(None, source.get_rows_count, table_cfg.name)
         table_row_counts[table_cfg.name] = row_count
 
@@ -121,27 +117,22 @@ async def _deidentify_phase(config, state_engine, table_row_counts, table_id_ran
     graph = build_task_graph(config, table_row_counts, table_id_ranges)
     result = graph.apply_async()
 
-    try:
-        from deid.orchestrator.progress import listen_progress
+    from deid.orchestrator.progress import listen_progress
 
-        async for event in listen_progress(config.redis_url):
-            table_name = event.get("table", "")
-            status = event.get("status", "")
-            logger.info("Progress: %s — %s", table_name, status)
+    async for event in listen_progress(config.redis_url):
+        progress = ProgressEvent(**event)
+        logger.info("Progress: %s — %s", progress.table, progress.status)
 
-            with Session(state_engine) as session:
-                ts = session.query(TableState).filter_by(table_name=table_name).first()
-                if ts:
-                    ts.status = status
-                    if status == "failed":
-                        ts.failure_remarks = event.get("detail", "")
-                    session.commit()
+        with Session(state_engine) as session:
+            ts = session.query(TableState).filter_by(table_name=progress.table).first()
+            if ts:
+                ts.status = progress.status
+                if progress.status == "failed":
+                    ts.failure_remarks = progress.detail
+                session.commit()
 
-            if result.ready():
-                break
-    except Exception as exc:
-        logger.warning("Progress monitoring interrupted: %s", exc)
-        result.get(timeout=config.workers.task_timeout)
+        if result.ready():
+            break
 
 
 async def _qc_phase(config, state_engine):
@@ -159,13 +150,15 @@ async def _qc_phase(config, state_engine):
 
     qc_tasks = []
     for tname in table_names:
-        qc_tasks.append(run_qc.s({
-            "table_name": tname,
-            "source_conn_str": config.source_db.connection_string(),
-            "dest_conn_str": config.destination_db.connection_string(),
-            "offset_days": config.deidentification.date_offset_days,
-            "sample_size": config.qc.sample_size,
-        }))
+        qc_config = QCTaskConfig(
+            table_name=tname,
+            source_conn_str=config.source_db.connection_string(),
+            dest_conn_str=config.destination_db.connection_string(),
+            offset_days=config.deidentification.date_offset_days,
+            sample_size=config.qc.sample_size,
+            table_config={},
+        )
+        qc_tasks.append(run_qc.s(qc_config.model_dump()))
 
     qc_group = celery_group(qc_tasks)
     result = qc_group.apply_async()
