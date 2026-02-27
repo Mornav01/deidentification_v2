@@ -21,6 +21,17 @@ from core.process_df.unstruct.xml_utils import xml_tag_replacements
 Base = declarative_base()
 
 
+def _normalize_pid(val):
+    """Coerce patient_id to int so PII-dict keys and source-df values
+    always use the same type regardless of Float64/Utf8/Int64 origin."""
+    if val is None:
+        return None
+    try:
+        return int(float(val))
+    except (ValueError, TypeError):
+        return val
+
+
 # ---------------------------------------------------------------------------
 # PII table loader (returns Polars DataFrame)
 # ---------------------------------------------------------------------------
@@ -258,7 +269,11 @@ class NotesRule(RuleBase):
 
         lookup_col = "_resolved_patient_id"
         has_pid = lookup_col in df.columns
-        pid_list = df[lookup_col].to_list() if has_pid else [None] * df.height
+        pid_list = (
+            [_normalize_pid(v) for v in df[lookup_col].to_list()]
+            if has_pid
+            else [None] * df.height
+        )
 
         mask_config   = self.pii_config.get("mask", {})
         dob_config    = self.pii_config.get("dob", {})
@@ -267,14 +282,31 @@ class NotesRule(RuleBase):
         # ── Determine which PII-table columns are actually needed ─────────────
         pii_cols     = [c for c in mask_config     if c in pii_df.columns]
         dob_cols     = [c for c in dob_config      if c in pii_df.columns]
-        combine_rules = {
-            rule_name: {
-                "cols": [c for c in rule.get("combine", []) if c in pii_df.columns],
-                "masking_value": rule.get("masking_value", ""),
-            }
-            for rule_name, rule in combine_config.items()
-        }
-        combine_rules = {k: v for k, v in combine_rules.items() if v["cols"]}
+        combine_rules = {}
+        for rule_name, rule in combine_config.items():
+            requested_cols = rule.get("combine", [])
+            matched_cols = [c for c in requested_cols if c in pii_df.columns]
+            missing_cols = [c for c in requested_cols if c not in pii_df.columns]
+            if missing_cols:
+                nd_logger.warning(
+                    f"[{self.__class__.__name__}] combine rule '{rule_name}': "
+                    f"columns {missing_cols} NOT found in pii_data_table "
+                    f"(available: {pii_df.columns}). Only using {matched_cols}."
+                )
+            if matched_cols:
+                combine_rules[rule_name] = {
+                    "cols": matched_cols,
+                    "masking_value": rule.get("masking_value", ""),
+                }
+            else:
+                nd_logger.warning(
+                    f"[{self.__class__.__name__}] combine rule '{rule_name}' DROPPED: "
+                    f"none of {requested_cols} exist in pii_data_table."
+                )
+        nd_logger.info(
+            f"[{self.__class__.__name__}] combine_config has {len(combine_config)} rule(s), "
+            f"{len(combine_rules)} survived column filtering."
+        )
 
         all_select = list(
             {"patient_id"}
@@ -302,7 +334,7 @@ class NotesRule(RuleBase):
             .with_columns([pl.col(c).cast(pl.Utf8).fill_null("") for c in cast_to_utf8])
             .to_dicts()
         ):
-            pid = row.get("patient_id")
+            pid = _normalize_pid(row.get("patient_id"))
 
             # --- exact-match mask patterns ---
             if pii_cols:
@@ -311,9 +343,8 @@ class NotesRule(RuleBase):
                     val = row[col].strip()
                     if not val:
                         continue
-                    word_count = len(val.split())
-                    min_words = max(mask_config[col].get("min_length", 0), 3)
-                    if word_count < min_words:
+                    min_len = mask_config[col].get("min_length", 2)
+                    if len(val) <= min_len:
                         continue
                     entry[rf"(?i)\b{re2.escape(val)}\b"] = mask_config[col]["masking_value"]
 
@@ -371,16 +402,63 @@ class NotesRule(RuleBase):
                             )
                 pid_to_compiled_combine[pid] = rule_list
 
+        # Log mask diagnostic: how many patterns per sample patient
+        if pid_to_mask:
+            sample_pid = next(iter(pid_to_mask))
+            sample_patterns = pid_to_mask[sample_pid]
+            nd_logger.info(
+                f"[{self.__class__.__name__}] [MASK DIAGNOSTIC] "
+                f"Sample patient_id={sample_pid} has {len(sample_patterns)} mask pattern(s). "
+                f"Preview: {dict(list(sample_patterns.items())[:3])}"
+            )
+            total_patterns = sum(len(v) for v in pid_to_mask.values())
+            nd_logger.info(
+                f"[{self.__class__.__name__}] [MASK DIAGNOSTIC] "
+                f"Total: {total_patterns} patterns across {len(pid_to_mask)} patients."
+            )
+        else:
+            nd_logger.warning(
+                f"[{self.__class__.__name__}] [MASK DIAGNOSTIC] "
+                f"pid_to_mask is EMPTY — no exact-match mask patterns built!"
+            )
+
         nd_logger.info(
             f"[{self.__class__.__name__}] PII maps ready — "
             f"mask={len(pid_to_mask)}, dob={len(pid_to_dobs)}, "
             f"combine={len(pid_to_compiled_combine)} patients."
         )
 
+        # Log a sample of combine patterns for verification
+        if pid_to_compiled_combine:
+            sample_pid = next(iter(pid_to_compiled_combine))
+            sample_rules = pid_to_compiled_combine[sample_pid]
+            nd_logger.info(
+                f"[{self.__class__.__name__}] [COMBINE DIAGNOSTIC] "
+                f"Sample patient_id={sample_pid} (type={type(sample_pid).__name__}) "
+                f"has {len(sample_rules)} combine regex(es). "
+                f"Pattern preview: {sample_rules[0][0].pattern[:200] if sample_rules else 'N/A'}"
+            )
+        else:
+            nd_logger.warning(
+                f"[{self.__class__.__name__}] [COMBINE DIAGNOSTIC] "
+                f"pid_to_compiled_combine is EMPTY — no combine patterns built. "
+                f"combine_rules={combine_rules}, pid_to_combine has {len(pid_to_combine)} pids."
+            )
+
+        # Log source pid_list sample types for type-mismatch detection
+        if has_pid:
+            sample_src_pids = [p for p in pid_list[:5] if p is not None]
+            nd_logger.info(
+                f"[{self.__class__.__name__}] [COMBINE DIAGNOSTIC] "
+                f"Source _resolved_patient_id sample: {sample_src_pids} "
+                f"(types: {[type(p).__name__ for p in sample_src_pids]})"
+            )
+
         # ── Phase 2: ONE pass over source rows ────────────────────────────────
         date_re = re2.compile(DATE_PATTERN_NOTES) if dob_cols else None
         text_list = df[text_column].to_list()
         result: list = []
+        combine_hit_count = 0
 
         for text, pid in zip(text_list, pid_list):
             if not isinstance(text, str):
@@ -407,13 +485,21 @@ class NotesRule(RuleBase):
                     text = date_re.sub(_dob_replacer, text)
 
             # combine
+            text_before = text
             for compiled_re, masking_value in pid_to_compiled_combine.get(pid, []):
                 try:
                     text = compiled_re.sub(masking_value, text)
                 except Exception:
                     pass
+            if text != text_before:
+                combine_hit_count += 1
 
             result.append(text)
+
+        nd_logger.info(
+            f"[{self.__class__.__name__}] [COMBINE DIAGNOSTIC] "
+            f"Combine replacements applied to {combine_hit_count}/{len(text_list)} rows."
+        )
 
         masked_col = pl.Series(result, dtype=pl.Utf8)
         masked_col = self._apply_regex(masked_col)
@@ -436,7 +522,11 @@ class NotesRule(RuleBase):
 
         lookup_col = "_resolved_patient_id"
         has_pid = lookup_col in df.columns
-        pid_list = df[lookup_col].to_list() if has_pid else [None] * df.height
+        pid_list = (
+            [_normalize_pid(v) for v in df[lookup_col].to_list()]
+            if has_pid
+            else [None] * df.height
+        )
 
         for table_config in self.secondary_pii_configs:
             table_name = table_config.get("table_name")
@@ -459,12 +549,6 @@ class NotesRule(RuleBase):
                 )
                 continue
 
-            # ── Build pid → merged replacement map (ALL records per patient) ─
-            # Old approach: row_num loop → max_N × source_rows ops (e.g. 5 × 100k).
-            # New approach: scan the PII table ONCE (e.g. 33k × avg_N records) to
-            # build a flat {pid: {pattern: masking_value}} dict, then do ONE pass
-            # over the source rows.  For insurance tables with 5 records/patient
-            # this cuts the inner work from 500k to ~100k operations.
             nd_logger.info(
                 f"[{self.__class__.__name__}] [{table_name}] "
                 f"Building merged PII maps from {pii_df_raw.height} records…"
@@ -478,16 +562,14 @@ class NotesRule(RuleBase):
                 .fill_null("")
                 .to_dicts()
             ):
-                pid = row["patient_id"]
+                pid = _normalize_pid(row["patient_id"])
                 entry = pid_to_map.setdefault(pid, {})
                 for col in pii_cols:
                     val = row[col].strip()
                     if not val:
                         continue
-                    word_count = len(val.split())
-                    config_min_words = mask_config[col].get("min_length", 0)
-                    min_allowed_words = max(config_min_words, 3)
-                    if word_count < min_allowed_words:
+                    min_len = mask_config[col].get("min_length", 2)
+                    if len(val) <= min_len:
                         continue
                     pattern = rf"(?i)\b{re2.escape(val)}\b"
                     entry[pattern] = mask_config[col]["masking_value"]
@@ -568,10 +650,8 @@ class NotesRule(RuleBase):
                 val = row[col].strip()
                 if not val:
                     continue
-                word_count = len(val.split())
-                config_min_words = mask_config[col].get("min_length", 0)
-                min_allowed_words = max(config_min_words, 3)
-                if word_count < min_allowed_words:
+                min_len = mask_config[col].get("min_length", 2)
+                if len(val) <= min_len:
                     continue
                 pattern = rf"(?i)\b{re2.escape(val)}\b"
                 replacement_map[pattern] = mask_config[col]["masking_value"]
@@ -744,17 +824,21 @@ class NotesRule(RuleBase):
             return masked_col
 
         for key, conf in regex_config.items():
-            patterns = conf["regex"] if isinstance(conf["regex"], list) else [conf["regex"]]
+            raw_patterns = conf["regex"]
+            if raw_patterns is None:
+                continue
+            patterns = raw_patterns if isinstance(raw_patterns, list) else [raw_patterns]
             masking_value = conf["masking_value"]
             for pat in patterns:
+                if not pat:
+                    continue
                 try:
                     normalized_pat = pat.lstrip() if isinstance(pat, str) else pat
-                    # Polars str.replace_all is Rust-native — significantly faster
-                    # than Pandas str.replace() for large note columns.
                     masked_col = masked_col.str.replace_all(normalized_pat, masking_value)
                 except Exception as e:
                     nd_logger.warning(
-                        f"[{self.__class__.__name__}] Regex failed for '{pat}': {e}"
+                        f"[{self.__class__.__name__}] Regex failed for key='{key}', "
+                        f"pattern='{pat[:80]}…': {e}"
                     )
         return masked_col
 
@@ -851,9 +935,10 @@ class NotesRule(RuleBase):
 
         # Step 3 ── PII table masking (patient-specific)
         if "_resolved_patient_id" in df.columns:
-            patient_ids = (
-                df["_resolved_patient_id"].drop_nulls().unique().to_list()
-            )
+            patient_ids = [
+                _normalize_pid(v)
+                for v in df["_resolved_patient_id"].drop_nulls().unique().to_list()
+            ]
             if self.pii_data_df is None:
                 self._get_pii_data_table(patient_ids)
             if not self.secondary_pii_data_dfs:
