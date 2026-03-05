@@ -28,6 +28,8 @@ from sqlalchemy import create_engine, event, inspect
 
 from deid.config.schema import DbConfig
 
+from dotenv import load_dotenv
+load_dotenv()
 
 # ── Auto-assignment patterns ────────────────────────────────────────────────
 # Each entry: (compiled regex on column name, assigned rule)

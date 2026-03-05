@@ -84,19 +84,22 @@ class DeidConfig(BaseModel):
         if not self.tables and not self.rules_csv:
             raise ValueError("Either 'tables' or 'rules_csv' must be provided")
         if not self.tables and self.rules_csv:
-            self.tables = _load_tables_from_csv(self.rules_csv)
+            self.tables = _load_tables_from_csv(self.rules_csv, self.source_db)
         return self
 
 
-def _load_tables_from_csv(csv_path: str) -> list[TableConfig]:
+def _load_tables_from_csv(csv_path: str, source_db: "DbConfig") -> list[TableConfig]:
     """Parse a rules CSV into TableConfig objects.
+
+    If the CSV doesn't exist, auto-generates it by introspecting the source DB.
 
     CSV columns: table_name, column_name, data_type, rule
     Rows with an empty 'rule' are skipped (non-PHI columns).
     """
     path = Path(csv_path)
     if not path.exists():
-        raise FileNotFoundError(f"rules_csv not found: {csv_path}")
+        from deid.config.rules_generator import generate_rules_csv
+        generate_rules_csv(source_db, csv_path)
 
     tables: dict[str, dict[str, str]] = {}
     with open(path, newline="") as f:
