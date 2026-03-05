@@ -5,6 +5,7 @@ from sqlalchemy.sql import select
 from sqlalchemy.exc import SQLAlchemyError
 from datetime import datetime, timezone
 import logging
+from deid.core.dbPkg.dbhandler import create_read_only_engine
 
 logger = logging.getLogger(__file__)
 
@@ -22,7 +23,7 @@ class MappingTable:
     USERNAME = "nd-admin"
 
     def __init__(self, mapping_config: MappingTableConfig):
-        self.source_engine = create_engine(mapping_config['source_connection_str'])
+        self.source_engine = create_read_only_engine(mapping_config['source_connection_str'])
         self.dest_engine = create_engine(mapping_config['dest_connection_str'])
 
         self.patient_start_value = mapping_config['patient_start_value'] #100100030000001

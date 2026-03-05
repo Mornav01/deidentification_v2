@@ -7,6 +7,7 @@ from typing import TypedDict
 from deid.core.logger import nd_logger
 from typing import Optional
 from sqlalchemy.dialects.mysql import insert as mysql_insert
+from deid.core.dbPkg.dbhandler import create_read_only_engine
 
 class OnePHITableConfig(TypedDict):
     primary_col: str
@@ -24,7 +25,7 @@ class PIITable:
         """Initialize the PII Data Manager with source and destination database URLs."""
         self.src_db_url = src_db_url
         self.dest_db_url = dest_db_url
-        self.src_engine = create_engine(src_db_url)
+        self.src_engine = create_read_only_engine(src_db_url)
         self.dest_engine = create_engine(dest_db_url)
         self.metadata = MetaData()
 

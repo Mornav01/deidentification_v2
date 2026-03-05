@@ -501,7 +501,7 @@ def start_de_identification_for_table(
     nd_logger.info(
         f"[{table_name}{range_tag}] Opening source and destination connections."
     )
-    source_db_connection: NDDBHandler = NDDBHandler(source_conn_str)
+    source_db_connection: NDDBHandler = NDDBHandler(source_conn_str, read_only=True)
     destination_db: NDDBHandler = NDDBHandler(dest_conn_str)
 
     # Fetch source column lengths so _get_columns_schema_mapping can size

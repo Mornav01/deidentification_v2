@@ -29,7 +29,7 @@ class LoadUniversalTables:
         self.tables_config = tables_config
     
     def _load_table(self, table_config: UniversalTableConfig):
-        connection = NDDBHandler(table_config['connection_str'])
+        connection = NDDBHandler(table_config['connection_str'], read_only=True)
         try:
             all_rows = connection.get_all_rows(table_config['table_name'])
             return {"rows": all_rows, "metadata": table_config["column_mapping"]}

@@ -68,7 +68,7 @@ async def _setup_phase(config: DeidConfig, state_engine):
 
     from deid.core.dbPkg.dbhandler import NDDBHandler
 
-    source = NDDBHandler(config.source_db.connection_string())
+    source = NDDBHandler(config.source_db.connection_string(), read_only=True)
 
     table_row_counts = {}
     table_id_ranges = {}

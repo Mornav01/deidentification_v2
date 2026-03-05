@@ -25,6 +25,7 @@ polars>=1.0.0
 numpy>=2.1.0
 pandas>=2.2.3
 google-re2>=1.1
+regex
 
 # NLP & PII
 spacy>=3.8.0

@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, MetaData, Table, text, func, Index
+from sqlalchemy import create_engine, event, MetaData, Table, text, func, Index
 from sqlalchemy.engine import reflection
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import ProgrammingError
@@ -57,9 +57,34 @@ def _normalize_rows(rows) -> list:
     return [[_normalize_value(cell) for cell in row] for row in rows]
 
 
+def create_read_only_engine(connection_string: str, **kwargs):
+    """Create a SQLAlchemy engine that enforces read-only at the DB session level."""
+    engine = create_engine(connection_string, **kwargs)
+
+    @event.listens_for(engine, "connect")
+    def _set_read_only(dbapi_conn, connection_record):
+        cursor = dbapi_conn.cursor()
+        dialect = engine.dialect.name
+        if dialect == "mysql":
+            cursor.execute("SET SESSION TRANSACTION READ ONLY")
+        elif dialect == "postgresql":
+            cursor.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
+        elif dialect == "mssql":
+            cursor.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED")
+        cursor.close()
+
+    return engine
+
+
 class NDDBHandler:
-    def __init__(self, connection_string: str):
-        self.engine = create_engine(connection_string, pool_size=100, max_overflow=10, pool_timeout=30, pool_recycle=1800, pool_pre_ping=True)
+    def __init__(self, connection_string: str, read_only: bool = False):
+        self.read_only = read_only
+        engine_kwargs = dict(pool_size=100, max_overflow=10, pool_timeout=30, pool_recycle=1800, pool_pre_ping=True)
+        if read_only:
+            self.engine = create_read_only_engine(connection_string, **engine_kwargs)
+        else:
+            self.engine = create_engine(connection_string, **engine_kwargs)
+
         self.metadata = MetaData()
         self.metadata.bind = self.engine
         self.Session = sessionmaker(bind=self.engine)
@@ -89,7 +114,15 @@ class NDDBHandler:
     #     table = Table(table_name, self.metadata, autoload_with=self.engine)
     #     self.session.execute(table.insert(), rows)
     #     self.session.commit()
+    def _assert_writable(self, operation: str):
+        if self.read_only:
+            raise RuntimeError(
+                f"Refusing to {operation}: this NDDBHandler is read-only (source database). "
+                "Write operations must target the destination database."
+            )
+
     def insert_to_db(self, rows: list[dict], table_name: str, batch_size: int = 10000):
+        self._assert_writable(f"INSERT into {table_name}")
         import pymysql
         if not rows:
             nd_logger.warning(f"No rows to insert into {table_name}.")
@@ -126,8 +159,9 @@ class NDDBHandler:
         dest_table_name: str = None,
         column_type_mapping: dict = {},
     ):
+        dest_handler._assert_writable(f"CREATE TABLE {dest_table_name or source_table_name}")
         dest_table_name = dest_table_name or source_table_name
-        
+
         source_table = Table(
             source_table_name, self.metadata, autoload_with=self.engine
         )
@@ -418,16 +452,6 @@ class NDDBHandler:
                     )
         return fks_to_map, fks_from_map
 
-    def drop_table(self, table_name: str):
-        if self._table_exists(self, table_name):
-            self.session.execute(text(f"DROP TABLE {table_name}"))
-            self.session.commit()
-            nd_logger.info(f"Table {table_name} dropped from the database.")
-        else:
-            nd_logger.warning(
-                f"Table {table_name} does not exist and cannot be dropped."
-            )
-    
     def get_keyset_pagination_ranges(self, table_name: str, id_column: str = "nd_auto_increment_id", batch_size: int = 100000) -> List[Dict[str, int]]:
         # Fast O(1) approach: MIN and MAX are pure index lookups on an auto-increment column.
         # The old ROW_NUMBER() OVER () window function was O(N) — it materialized and sorted
@@ -581,6 +605,7 @@ class NDDBHandler:
         occur when a de-identification placeholder is longer than the original
         column definition (e.g. VARCHAR(10) receiving "((UNIT_OF_MEASURE))").
         """
+        self._assert_writable(f"INSERT into {table_name}")
         if df.is_empty():
             nd_logger.warning(f"[DBHandler] Empty DataFrame. Nothing to insert into '{table_name}'.")
             return

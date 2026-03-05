@@ -32,7 +32,7 @@ class DbScanner:
         assert source_connection_string, "source_connection_string must not be empty"
         assert dest_connection_string, "dest_connection_string must not be empty"
 
-        self.source_handler = NDDBHandler(source_connection_string)
+        self.source_handler = NDDBHandler(source_connection_string, read_only=True)
         self.dest_handler = NDDBHandler(dest_connection_string)
         self.mapping_db_config = mapping_db_config
         self.pii_db_config = {}

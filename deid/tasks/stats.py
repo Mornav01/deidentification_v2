@@ -18,6 +18,6 @@ def generate_table_stats(raw_config: dict) -> dict:
 
     from deid.core.dbPkg.dbhandler import NDDBHandler
 
-    handler = NDDBHandler(config.source_conn_str)
+    handler = NDDBHandler(config.source_conn_str, read_only=True)
     row_count = handler.get_rows_count(config.table_name)
     return {"table": config.table_name, "row_count": row_count}
