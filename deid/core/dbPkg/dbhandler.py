@@ -165,6 +165,9 @@ class NDDBHandler:
         MSSQL types like MONEY, SMALLMONEY, IMAGE, etc. have no direct
         equivalent in MySQL/PostgreSQL.  This converts them to standard
         SQL types so cross-dialect CREATE TABLE works.
+
+        Also strips MSSQL-specific collations (e.g. SQL_Latin1_General_CP1_CI_AS)
+        from string columns so MySQL doesn't reject them.
         """
         from sqlalchemy import Numeric, LargeBinary, UnicodeText
         type_name = type(col_type).__name__.upper()
@@ -176,6 +179,10 @@ class NDDBHandler:
             return UnicodeText()
         if type_name in ("SQL_VARIANT", "UNIQUEIDENTIFIER"):
             return String(255)
+        # Strip MSSQL collations from string-like types
+        if hasattr(col_type, "collation") and col_type.collation:
+            col_type = col_type.copy()
+            col_type.collation = None
         return col_type
 
     def create_table_in_dest(
