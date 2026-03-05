@@ -243,22 +243,51 @@ class NDDBHandler:
         return inspector.get_columns(table_name)
 
     def get_rows_count(self, table_name: str) -> int:
-        # For MySQL: use information_schema.TABLES which is near-instant (no full scan).
-        # information_schema.TABLE_ROWS is an estimate maintained by InnoDB; accurate
-        # enough for stats display and batch planning. Falls back to COUNT(*) for other DBs.
-        if self.engine.dialect.name == "mysql":
-            query = text(
-                "SELECT TABLE_ROWS FROM information_schema.TABLES "
-                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :table_name"
-            )
-            result = self.session.execute(query, {"table_name": table_name})
-            count = result.scalar()
-            if count is not None:
-                return int(count)
-        table = Table(table_name, self.metadata, autoload_with=self.engine)
-        query = func.count().select().select_from(table)
-        result = self.session.execute(query)
-        return result.scalar()
+        """Fast estimated row count using catalog metadata (no full table scan).
+
+        MySQL  → information_schema.TABLES  (InnoDB estimate, instant)
+        MSSQL  → sys.dm_db_partition_stats  (heap/clustered index, instant)
+        PG     → pg_class.reltuples         (ANALYZE estimate, instant)
+        Other  → COUNT(*) fallback
+
+        Uses engine.connect() (not self.session) so it is safe to call from
+        multiple threads concurrently (e.g. asyncio.gather + run_in_executor).
+        """
+        dialect = self.engine.dialect.name
+
+        with self.engine.connect() as conn:
+            if dialect == "mysql":
+                result = conn.execute(text(
+                    "SELECT TABLE_ROWS FROM information_schema.TABLES "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :table_name"
+                ), {"table_name": table_name})
+                count = result.scalar()
+                if count is not None:
+                    return int(count)
+
+            elif dialect == "mssql":
+                result = conn.execute(text(
+                    "SELECT SUM(p.row_count) FROM sys.dm_db_partition_stats p "
+                    "JOIN sys.tables t ON p.object_id = t.object_id "
+                    "WHERE t.name = :table_name AND p.index_id IN (0, 1)"
+                ), {"table_name": table_name})
+                count = result.scalar()
+                if count is not None:
+                    return int(count)
+
+            elif dialect == "postgresql":
+                result = conn.execute(text(
+                    "SELECT reltuples::bigint FROM pg_class "
+                    "WHERE relname = :table_name"
+                ), {"table_name": table_name})
+                count = result.scalar()
+                if count is not None and count >= 0:
+                    return int(count)
+
+            # Fallback: exact COUNT(*)
+            table = Table(table_name, MetaData(), autoload_with=self.engine)
+            result = conn.execute(func.count().select().select_from(table))
+            return result.scalar()
 
     def get_table_size(self, table_name: str) -> str:
         return "1 GB"
@@ -451,6 +480,21 @@ class NDDBHandler:
                         }
                     )
         return fks_to_map, fks_from_map
+
+    def get_min_max_id(self, table_name: str, id_column: str = "nd_auto_increment_id") -> tuple[int, int] | None:
+        """Return (min_id, max_id) for the given table's ID column, or None."""
+        query = text(
+            f"SELECT MIN(`{id_column}`), MAX(`{id_column}`) "
+            f"FROM `{table_name}` WHERE `{id_column}` IS NOT NULL"
+        )
+        with self.engine.connect() as conn:
+            try:
+                row = conn.execute(query).fetchone()
+                if not row or row[0] is None:
+                    return None
+                return int(row[0]), int(row[1])
+            except Exception:
+                return None
 
     def get_keyset_pagination_ranges(self, table_name: str, id_column: str = "nd_auto_increment_id", batch_size: int = 100000) -> List[Dict[str, int]]:
         # Fast O(1) approach: MIN and MAX are pure index lookups on an auto-increment column.

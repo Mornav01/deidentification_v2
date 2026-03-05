@@ -99,13 +99,24 @@ def test_invalid_db_type(tmp_path):
 def test_rules_csv_alternative(tmp_path):
     from deid.config.loader import load_config
 
+    # Write a minimal rules CSV
+    csv_path = tmp_path / "rules.csv"
+    csv_path.write_text(
+        "table_name,column_name,data_type,rule\n"
+        "patients,patient_id,INTEGER,PATIENT_ID\n"
+        "patients,name,VARCHAR(100),MASK\n"
+        "patients,age,INTEGER,\n"  # no rule → skipped
+    )
+
     cfg = _minimal_config()
     del cfg["tables"]
-    cfg["rules_csv"] = str(tmp_path / "rules.csv")
+    cfg["rules_csv"] = str(csv_path)
     p = _write_yaml(tmp_path, cfg)
     config = load_config(p)
-    assert config.rules_csv == str(tmp_path / "rules.csv")
-    assert config.tables is None
+    assert config.rules_csv == str(csv_path)
+    assert len(config.tables) == 1
+    assert config.tables[0].name == "patients"
+    assert config.tables[0].rules == {"patient_id": "PATIENT_ID", "name": "MASK"}
 
 
 def test_default_phases(tmp_path):

@@ -9,8 +9,33 @@ from deid.config.schema import DeidConfig
 from deid.config.task_models import DeidentifyTaskConfig
 
 
+def _rules_to_table_details(rules: dict[str, str]) -> dict:
+    """Convert a flat {column: rule} dict to the TableDetailsForUI format.
+
+    Columns with a rule are marked as PHI; the mask_value defaults to
+    the column name uppercased (e.g. ``<<PATIENT_NAME>>``).
+    """
+    columns_details = []
+    for col_name, rule in rules.items():
+        columns_details.append({
+            "column_name": col_name,
+            "is_phi": True,
+            "de_identification_rule": rule,
+            "mask_value": col_name.upper(),
+        })
+    return {
+        "columns_details": columns_details,
+        "ignore_rows": {},
+        "batch_size": 0,
+        "reference_patient_id_column": None,
+        "reference_enc_id_column": None,
+        "reference_mapping": "",
+    }
+
+
 def _build_table_config(config: DeidConfig, table_name: str, rules: dict) -> dict:
     """Build a validated config dict that gets passed to each Celery task."""
+    table_details = _rules_to_table_details(rules)
     task_config = DeidentifyTaskConfig(
         table_name=table_name,
         source_conn_str=config.source_db.connection_string(),
@@ -19,7 +44,7 @@ def _build_table_config(config: DeidConfig, table_name: str, rules: dict) -> dic
         batch_size=config.deidentification.batch_size,
         offset_days=config.deidentification.date_offset_days,
         redis_url=config.redis_url,
-        table_details_for_ui=rules,
+        table_details_for_ui=table_details,
     )
     return task_config.model_dump()
 

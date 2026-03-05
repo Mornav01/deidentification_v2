@@ -1,7 +1,9 @@
 """Pydantic models for config.yaml validation."""
 from __future__ import annotations
 
+import csv
 from enum import Enum
+from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel, Field, model_validator
@@ -81,4 +83,33 @@ class DeidConfig(BaseModel):
     def require_tables_or_csv(self) -> "DeidConfig":
         if not self.tables and not self.rules_csv:
             raise ValueError("Either 'tables' or 'rules_csv' must be provided")
+        if not self.tables and self.rules_csv:
+            self.tables = _load_tables_from_csv(self.rules_csv)
         return self
+
+
+def _load_tables_from_csv(csv_path: str) -> list[TableConfig]:
+    """Parse a rules CSV into TableConfig objects.
+
+    CSV columns: table_name, column_name, data_type, rule
+    Rows with an empty 'rule' are skipped (non-PHI columns).
+    """
+    path = Path(csv_path)
+    if not path.exists():
+        raise FileNotFoundError(f"rules_csv not found: {csv_path}")
+
+    tables: dict[str, dict[str, str]] = {}
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            rule = (row.get("rule") or "").strip()
+            if not rule:
+                continue
+            table_name = row["table_name"].strip()
+            column_name = row["column_name"].strip()
+            tables.setdefault(table_name, {})[column_name] = rule
+
+    if not tables:
+        raise ValueError(f"No rules found in {csv_path}")
+
+    return [TableConfig(name=name, rules=rules) for name, rules in tables.items()]

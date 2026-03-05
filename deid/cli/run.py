@@ -12,6 +12,9 @@ from typing import Optional
 
 import typer
 
+from dotenv import load_dotenv
+load_dotenv()
+
 logger = logging.getLogger("deid.cli")
 
 
@@ -55,7 +58,7 @@ def _start_worker(cfg) -> subprocess.Popen:
     """Spawn a Celery worker as a child process."""
     cmd = [
         sys.executable, "-m", "celery",
-        "-A", "deid.tasks.celery_app:get_celery_app()",
+        "-A", "deid.tasks.celery_app",
         "worker",
         "--pool=prefork",
         f"--concurrency={cfg.workers.concurrency}",
@@ -64,8 +67,14 @@ def _start_worker(cfg) -> subprocess.Popen:
         "--without-mingle",
         "--without-gossip",
     ]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    time.sleep(2)
+    logger.info("Starting Celery worker: %s", " ".join(cmd))
+    proc = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr)
+    time.sleep(3)
+    if proc.poll() is not None:
+        raise RuntimeError(
+            f"Celery worker exited immediately with code {proc.returncode}"
+        )
+    logger.info("Celery worker started (pid=%d)", proc.pid)
     return proc
 
 

@@ -38,3 +38,8 @@ def get_celery_app() -> Celery:
     if _app is None:
         _app = create_celery_app()
     return _app
+
+
+# Module-level instance so `celery -A deid.tasks.celery_app worker` works.
+# Celery auto-discovers an attribute named `celery` or `app`.
+celery = get_celery_app()

@@ -70,43 +70,62 @@ async def _setup_phase(config: DeidConfig, state_engine):
 
     source = NDDBHandler(config.source_db.connection_string(), read_only=True)
 
-    table_row_counts = {}
+    loop = asyncio.get_event_loop()
+
+    # ── 1. Gather row counts for all tables in parallel ──────────────────
+    async def _get_count(table_name: str) -> tuple[str, int]:
+        count = await loop.run_in_executor(None, source.get_rows_count, table_name)
+        logger.info("  %s: %s rows", table_name, f"{count:,}")
+        return table_name, count
+
+    table_names = [t.name for t in config.tables]
+    logger.info("Setup: fetching row counts for %d tables...", len(table_names))
+    count_results = await asyncio.gather(*[_get_count(n) for n in table_names])
+    table_row_counts = dict(count_results)
+
+    # ── 2. Gather min/max IDs for large tables in parallel ───────────────
+    threshold = config.deidentification.large_table_threshold
+    large_tables = [n for n, c in table_row_counts.items() if c > threshold]
     table_id_ranges = {}
 
-    loop = asyncio.get_event_loop()
-    for table_cfg in config.tables:
-        row_count = await loop.run_in_executor(None, source.get_rows_count, table_cfg.name)
-        table_row_counts[table_cfg.name] = row_count
+    if large_tables:
+        logger.info("Setup: fetching ID ranges for %d large tables...", len(large_tables))
 
-        if row_count > config.deidentification.large_table_threshold:
-            min_max = await loop.run_in_executor(
-                None, source.get_min_max_id, table_cfg.name
+        async def _get_range(table_name: str) -> tuple[str, tuple[int, int] | None]:
+            mm = await loop.run_in_executor(None, source.get_min_max_id, table_name)
+            return table_name, mm
+
+        range_results = await asyncio.gather(*[_get_range(n) for n in large_tables])
+        for name, mm in range_results:
+            if mm:
+                table_id_ranges[name] = mm
+
+    # ── 3. Persist state (sequential — SQLite writes) ────────────────────
+    with Session(state_engine) as session:
+        db_cfg = session.query(DbConfig).first()
+        if not db_cfg:
+            db_cfg = DbConfig(
+                name="default",
+                source_conn_str=config.source_db.connection_string(),
+                dest_conn_str=config.destination_db.connection_string(),
             )
-            if min_max:
-                table_id_ranges[table_cfg.name] = min_max
+            session.add(db_cfg)
+            session.commit()
 
-        with Session(state_engine) as session:
+        for table_cfg in config.tables:
             existing = session.query(TableState).filter_by(table_name=table_cfg.name).first()
             if not existing:
-                db_cfg = session.query(DbConfig).first()
-                if not db_cfg:
-                    db_cfg = DbConfig(
-                        name="default",
-                        source_conn_str=config.source_db.connection_string(),
-                        dest_conn_str=config.destination_db.connection_string(),
-                    )
-                    session.add(db_cfg)
-                    session.commit()
                 ts = TableState(
                     db_config_id=db_cfg.id,
                     table_name=table_cfg.name,
                     status="pending",
-                    row_count=row_count,
+                    row_count=table_row_counts.get(table_cfg.name, 0),
                     rules_config=table_cfg.rules,
                 )
                 session.add(ts)
-                session.commit()
+        session.commit()
 
+    logger.info("Setup: complete — %d tables registered.", len(config.tables))
     return table_row_counts, table_id_ranges
 
 
