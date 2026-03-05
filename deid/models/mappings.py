@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String
+from sqlalchemy import JSON, DateTime, Integer, String
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from deid.models.base import MappingsBase
@@ -14,34 +14,34 @@ def _utcnow():
 
 
 class PatientMapping(MappingsBase):
-    __tablename__ = "patient_mappings"
+    __tablename__ = "patient_mapping_table"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    nd_patient_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     patient_id: Mapped[str] = mapped_column(String, unique=True, index=True)
-    nd_patient_id: Mapped[int] = mapped_column(Integer, unique=True)
-    date_offset: Mapped[int] = mapped_column(Integer, default=0)
+    offset: Mapped[int] = mapped_column(Integer, default=0)
+    reference_mapping: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class EncounterMapping(MappingsBase):
-    __tablename__ = "encounter_mappings"
+    __tablename__ = "encounter_mapping_table"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    patient_id: Mapped[str] = mapped_column(String, index=True)
     encounter_id: Mapped[str] = mapped_column(String, unique=True, index=True)
     nd_encounter_id: Mapped[int] = mapped_column(Integer, unique=True)
-    patient_mapping_id: Mapped[int] = mapped_column(ForeignKey("patient_mappings.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class AppointmentMapping(MappingsBase):
-    __tablename__ = "appointment_mappings"
+    __tablename__ = "appointment_mapping_table"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    patient_id: Mapped[str] = mapped_column(String, index=True)
     appointment_id: Mapped[str] = mapped_column(String, unique=True, index=True)
     nd_appointment_id: Mapped[int] = mapped_column(Integer, unique=True)
-    patient_mapping_id: Mapped[int] = mapped_column(ForeignKey("patient_mappings.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
@@ -72,7 +72,7 @@ def get_or_create_patient_mapping(
 
 
 def get_or_create_encounter_mapping(
-    session: Session, encounter_id: str, patient_mapping_id: int
+    session: Session, encounter_id: str, patient_id: str
 ) -> int:
     """Return nd_encounter_id for an encounter, creating mapping if it doesn't exist."""
     existing = session.query(EncounterMapping).filter_by(encounter_id=encounter_id).first()
@@ -83,7 +83,7 @@ def get_or_create_encounter_mapping(
     mapping = EncounterMapping(
         encounter_id=encounter_id,
         nd_encounter_id=new_nd_id,
-        patient_mapping_id=patient_mapping_id,
+        patient_id=patient_id,
     )
     session.add(mapping)
     session.commit()

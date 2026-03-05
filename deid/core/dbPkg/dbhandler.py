@@ -89,6 +89,12 @@ class NDDBHandler:
         self.metadata.bind = self.engine
         self.Session = sessionmaker(bind=self.engine)
         self.session = self.Session()
+
+    def _qi(self, identifier: str) -> str:
+        """Quote a table or column identifier for the current dialect."""
+        if self.engine.dialect.name == "mssql":
+            return f"[{identifier}]"
+        return f"`{identifier}`"
     
     def close(self):
         self.session.close()
@@ -136,7 +142,7 @@ class NDDBHandler:
             columns = rows[0].keys()
             placeholders = ", ".join(["%s"] * len(columns))
             # sql = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders})"
-            sql = f"INSERT INTO `{table_name}` ({', '.join(f'`{col}`' for col in columns)}) VALUES ({placeholders})"
+            sql = f"INSERT INTO {self._qi(table_name)} ({', '.join(self._qi(col) for col in columns)}) VALUES ({placeholders})"
 
             # Convert rows to tuple format
             data = [tuple(row.values()) for row in rows]
@@ -152,6 +158,26 @@ class NDDBHandler:
             cursor.close()
             connection.close()
 
+    @staticmethod
+    def _portable_type(col_type):
+        """Map dialect-specific column types to portable generic types.
+
+        MSSQL types like MONEY, SMALLMONEY, IMAGE, etc. have no direct
+        equivalent in MySQL/PostgreSQL.  This converts them to standard
+        SQL types so cross-dialect CREATE TABLE works.
+        """
+        from sqlalchemy import Numeric, LargeBinary, UnicodeText
+        type_name = type(col_type).__name__.upper()
+        if type_name in ("MONEY", "SMALLMONEY"):
+            return Numeric(19, 4)
+        if type_name == "IMAGE":
+            return LargeBinary()
+        if type_name == "NTEXT":
+            return UnicodeText()
+        if type_name in ("SQL_VARIANT", "UNIQUEIDENTIFIER"):
+            return String(255)
+        return col_type
+
     def create_table_in_dest(
         self,
         source_table_name: str,
@@ -165,6 +191,7 @@ class NDDBHandler:
         source_table = Table(
             source_table_name, self.metadata, autoload_with=self.engine
         )
+        cross_dialect = self.engine.dialect.name != dest_handler.engine.dialect.name
         mapped_columns = []
         for column in source_table.columns:
             col_name = column.name
@@ -176,8 +203,9 @@ class NDDBHandler:
                     Column(col_name, new_type, nullable=col_nullable)
                 )
             else:
+                col_type = self._portable_type(column.type) if cross_dialect else column.type
                 mapped_columns.append(
-                    Column(col_name, column.type, nullable=column.nullable)
+                    Column(col_name, col_type, nullable=column.nullable)
                 )
 
         dest_table = Table(dest_table_name, dest_handler.metadata, *mapped_columns)
@@ -483,9 +511,10 @@ class NDDBHandler:
 
     def get_min_max_id(self, table_name: str, id_column: str = "nd_auto_increment_id") -> tuple[int, int] | None:
         """Return (min_id, max_id) for the given table's ID column, or None."""
+        qi = self._qi
         query = text(
-            f"SELECT MIN(`{id_column}`), MAX(`{id_column}`) "
-            f"FROM `{table_name}` WHERE `{id_column}` IS NOT NULL"
+            f"SELECT MIN({qi(id_column)}), MAX({qi(id_column)}) "
+            f"FROM {qi(table_name)} WHERE {qi(id_column)} IS NOT NULL"
         )
         with self.engine.connect() as conn:
             try:
@@ -502,9 +531,10 @@ class NDDBHandler:
         # the entire table, taking 60–300s on 20–50M row tables.
         # Since nd_auto_increment_id is an auto-increment column, ID distribution is dense
         # and uniform, so MIN/MAX splitting gives batches close to batch_size rows.
+        qi = self._qi
         min_max_query = text(
-            f"SELECT MIN(`{id_column}`), MAX(`{id_column}`) "
-            f"FROM `{table_name}` WHERE `{id_column}` IS NOT NULL"
+            f"SELECT MIN({qi(id_column)}), MAX({qi(id_column)}) "
+            f"FROM {qi(table_name)} WHERE {qi(id_column)} IS NOT NULL"
         )
         with self.engine.connect() as conn:
             try:
@@ -544,9 +574,10 @@ class NDDBHandler:
         No row count is required; the server cursor stops when the range is
         exhausted, keeping memory at O(batch_size).
         """
+        qi = self._qi
         query = text(
-            f"SELECT * FROM `{table_name}` "
-            f"WHERE `{id_column}` BETWEEN :start_id AND :end_id"
+            f"SELECT * FROM {qi(table_name)} "
+            f"WHERE {qi(id_column)} BETWEEN :start_id AND :end_id"
         )
         conn = self.engine.connect().execution_options(
             stream_results=True,
@@ -582,7 +613,7 @@ class NDDBHandler:
         Yields Polars DataFrames rather than Pandas to exploit Polars' faster
         joins, column expressions, and lower memory footprint downstream.
         """
-        query = text(f"SELECT * FROM `{table_name}`")
+        query = text(f"SELECT * FROM {self._qi(table_name)}")
         conn = self.engine.connect().execution_options(
             stream_results=True,
             max_row_buffer=batch_size,
