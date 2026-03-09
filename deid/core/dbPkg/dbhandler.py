@@ -77,15 +77,21 @@ def create_read_only_engine(connection_string: str, **kwargs):
 def dump_table_to_ipc_cache(
     stream: Iterator[pl.DataFrame],
     cache_dir: str,
-) -> str | None:
+    table_name: str = "",
+    estimated_rows: int = 0,
+) -> dict | None:
     """Write a DataFrame stream to Arrow IPC batch files in *cache_dir*.
 
     Each DataFrame yielded by *stream* is written as a separate
-    ``batch_NNNNN.arrow`` file.  Returns *cache_dir* on success, or
+    ``batch_NNNNN.arrow`` file.  Returns a summary dict on success, or
     ``None`` if the stream was empty.
     """
+    import time
+
     batch_count = 0
     total_rows = 0
+    t0 = time.monotonic()
+
     for df in stream:
         if df.is_empty():
             continue
@@ -94,11 +100,25 @@ def dump_table_to_ipc_cache(
         df.write_ipc(os.path.join(cache_dir, f"batch_{batch_count:05d}.arrow"))
         batch_count += 1
         total_rows += df.height
+
+        elapsed = time.monotonic() - t0
+        rate = int(total_rows / elapsed) if elapsed > 0 else 0
+        pct = f" ({total_rows * 100 // estimated_rows}%)" if estimated_rows else ""
         nd_logger.info(
-            f"[IPC Cache] {cache_dir}: wrote batch {batch_count} ({df.height} rows, {total_rows} total)"
+            f"[IPC Cache] {table_name}: {total_rows:,} rows cached{pct}"
+            f" — batch {batch_count}, {rate:,} rows/s, {elapsed:.0f}s elapsed"
         )
 
-    return cache_dir if batch_count > 0 else None
+    if batch_count == 0:
+        return None
+
+    elapsed = time.monotonic() - t0
+    return {
+        "cache_dir": cache_dir,
+        "batches": batch_count,
+        "rows": total_rows,
+        "elapsed_s": round(elapsed, 1),
+    }
 
 
 def stream_from_ipc_cache(

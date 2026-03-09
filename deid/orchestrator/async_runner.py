@@ -64,7 +64,7 @@ async def run(config: DeidConfig, config_path: str):
         cache_paths: dict[str, str] = {}
         if "deidentify" in config.phases and table_id_ranges:
             try:
-                cache_paths = await _cache_large_tables(config, table_id_ranges)
+                cache_paths = await _cache_large_tables(config, table_id_ranges, table_row_counts)
             except Exception:
                 logger.exception("Cache phase failed — workers will read from source DB directly")
                 cache_paths = {}
@@ -184,6 +184,7 @@ async def _setup_phase(config: DeidConfig, state_engine):
 async def _cache_large_tables(
     config: DeidConfig,
     table_id_ranges: dict[str, tuple[int, int]],
+    table_row_counts: dict[str, int] | None = None,
 ) -> dict[str, str]:
     """Dump large tables (those in table_id_ranges) to local Arrow IPC files.
 
@@ -193,38 +194,63 @@ async def _cache_large_tables(
     if not table_id_ranges:
         return {}
 
+    from functools import partial
+
     from deid.core.dbPkg.dbhandler import NDDBHandler, dump_table_to_ipc_cache
 
+    table_row_counts = table_row_counts or {}
     cache_root = Path(config.state_db_path).resolve().parent / ".deid_cache"
     loop = asyncio.get_event_loop()
     cache_paths: dict[str, str] = {}
 
-    async def _dump_one(table_name: str) -> tuple[str, str | None]:
+    async def _dump_one(table_name: str) -> tuple[str, dict | None]:
         source = NDDBHandler(config.source_db.connection_string(), read_only=True)
         cache_dir = str(cache_root / table_name)
         try:
             stream = source.stream_table_as_dataframes(
                 table_name, config.deidentification.batch_size
             )
-            result = await loop.run_in_executor(
-                None, dump_table_to_ipc_cache, stream, cache_dir
+            dump_fn = partial(
+                dump_table_to_ipc_cache,
+                stream,
+                cache_dir,
+                table_name=table_name,
+                estimated_rows=table_row_counts.get(table_name, 0),
             )
+            result = await loop.run_in_executor(None, dump_fn)
             return table_name, result
         finally:
             source.close()
 
     # Dump tables sequentially to avoid overloading the source DB with
     # multiple parallel streaming cursors (the very problem the cache solves).
-    logger.info("Cache: dumping %d large table(s) to Arrow IPC...", len(table_id_ranges))
-    for table_name in table_id_ranges:
-        try:
-            name, path = await _dump_one(table_name)
-            if path:
-                cache_paths[name] = path
-                logger.info("Cache: %s → %s", name, path)
-        except Exception:
-            logger.exception("Cache: failed to dump %s — workers will read from source DB", table_name)
+    table_list = ", ".join(
+        f"{t} (~{table_row_counts.get(t, 0):,} rows)" for t in table_id_ranges
+    )
+    logger.info("Cache: dumping %d large table(s) to Arrow IPC: %s", len(table_id_ranges), table_list)
 
+    for idx, table_name in enumerate(table_id_ranges, 1):
+        est = table_row_counts.get(table_name, 0)
+        logger.info(
+            "Cache: [%d/%d] starting %s (~%s rows)...",
+            idx, len(table_id_ranges), table_name, f"{est:,}",
+        )
+        try:
+            name, summary = await _dump_one(table_name)
+            if summary:
+                cache_paths[name] = summary["cache_dir"]
+                logger.info(
+                    "Cache: [%d/%d] %s done — %s rows, %d batches, %.1fs",
+                    idx, len(table_id_ranges), name,
+                    f"{summary['rows']:,}", summary["batches"], summary["elapsed_s"],
+                )
+        except Exception:
+            logger.exception(
+                "Cache: [%d/%d] %s FAILED — workers will read from source DB",
+                idx, len(table_id_ranges), table_name,
+            )
+
+    logger.info("Cache: complete — %d/%d tables cached", len(cache_paths), len(table_id_ranges))
     return cache_paths
 
 
