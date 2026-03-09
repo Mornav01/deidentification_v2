@@ -35,8 +35,11 @@ class ColumnDetailsForUI(TypedDict, total=False):
     reference_mapping: JoinCondition = {}
 
 
-class TableDetailsForUI(TypedDict):
+class _TableDetailsRequired(TypedDict):
     columns_details: list[ColumnDetailsForUI]
+
+
+class TableDetailsForUI(_TableDetailsRequired, total=False):
     ignore_rows: IgnoreRowsConfig
     batch_size: int
     reference_patient_id_column: str
