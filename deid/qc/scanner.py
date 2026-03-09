@@ -38,7 +38,7 @@ class DbScanner:
         self.qc_config = qc_config
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
-    def get_important_columns(self, table_config: TableDetailsForUI):
+    def get_important_columns(self, table_config: dict):
         important_cols = []
         for col_conf in table_config["columns_details"]:
             if col_conf["is_phi"]:
@@ -46,7 +46,7 @@ class DbScanner:
         return important_cols
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
-    def get_structured_detectors(self, sample_data, table_config: TableDetailsForUI) -> list[tuple[str, Detector]]:
+    def get_structured_detectors(self, sample_data, table_config: dict) -> list[tuple[str, Detector]]:
         detectors = []
         patinet_dict, enc_dict = LoadMappingData.load(sample_data, table_config, self.mapping_db_config)
         for col_conf in table_config["columns_details"]:
@@ -57,7 +57,7 @@ class DbScanner:
         return detectors
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
-    def get_unstructured_detectors(self, sample_data, table_config: TableDetailsForUI) -> list[tuple[str, Detector]]:
+    def get_unstructured_detectors(self, sample_data, table_config: dict) -> list[tuple[str, Detector]]:
         detectors = []
         patinet_dict, enc_dict = LoadMappingData.load(sample_data, table_config, self.mapping_db_config)
         for col_conf in table_config["columns_details"]:
@@ -73,7 +73,7 @@ class DbScanner:
 
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
-    def scan_table(self, table_name: str, table_config: TableDetailsForUI, ignore_row_count: int = 0) -> OutputSchemaForTable:
+    def scan_table(self, table_name: str, table_config: dict, ignore_row_count: int = 0) -> OutputSchemaForTable:
         assert table_name, "table_name must not be empty"
         assert table_config, "table_config must not be empty"
 

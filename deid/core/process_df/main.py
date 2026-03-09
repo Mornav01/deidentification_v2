@@ -24,7 +24,7 @@ from pydantic import validate_call
 # ---------------------------------------------------------------------------
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
-def get_key_phi_column_list(column_details: ColumnDetailsForUI) -> tuple:
+def get_key_phi_column_list(column_details: list) -> tuple:
     """Return (encounter_ids, patient_ids, reference_pids, appointment_ids)."""
     encounter_id_columns: list = []
     patient_id_columns: list = []
@@ -380,7 +380,7 @@ class JoinMapping:
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
 def _get_columns_schema_mapping(
-    table_config: TableDetailsForUI,
+    table_config: dict,
     source_col_lengths: dict | None = None,
 ) -> dict:
     """Build the {col_name: type_dict} map used to create the destination table.
@@ -475,7 +475,7 @@ def _serialize_dict_values(df: pl.DataFrame) -> pl.DataFrame:
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
 def start_de_identification_for_table(
-    table_config: TableDetailsForUI | dict,
+    table_config: dict,
     source_conn_str: str,
     dest_conn_str: str,
     mappings_db_path: str = "",

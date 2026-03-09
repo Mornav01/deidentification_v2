@@ -64,7 +64,7 @@ class PIITableLoader:
         self.pii_db_config = pii_db_config
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
-    def _has_notes_columns(self, table_config: TableDetailsForUI):
+    def _has_notes_columns(self, table_config: dict):
         for col_conf in table_config["columns_details"]:
             if col_conf["de_identification_rule"] == "NOTES":
                 return True
@@ -73,7 +73,7 @@ class PIITableLoader:
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def load_pii_table(
         self,
-        table_config: TableDetailsForUI,
+        table_config: dict,
         patient_ids: list[int],
         encounter_ids: list[int],
         encounter_id_mapping: dict[int, EncounterMappingDict],
@@ -94,7 +94,7 @@ class PIITableLoader:
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def load_insurance_table(
         self,
-        table_config: TableDetailsForUI,
+        table_config: dict,
         patient_ids: list[int],
         encounter_ids: list[int],
         encounter_id_mapping: dict[int, EncounterMappingDict],
