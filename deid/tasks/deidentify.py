@@ -103,6 +103,7 @@ def deidentify_table_range(self, raw_config: dict, start_id: int, end_id: int):
             table_name=config.table_name,
             start_id=start_id,
             end_id=end_id,
+            cache_dir=config.cache_dir,
         )
 
         _publish_progress(config.redis_url, config.table_name, "completed", range_tag)

@@ -9,6 +9,7 @@ from deid.config.task_models import LogLevel
 from deid.core.log_publisher import make_log_record, maybe_log, get_peak_memory_mb
 from deid.core.logger import nd_logger
 from deid.core.dbPkg import NDDBHandler
+from deid.core.dbPkg.dbhandler import stream_from_ipc_cache
 from deid.core.ops_df.jointables import ReferenceMappingDataFrameJoiner
 from deid.core.ops_df.utility import DistinctValueFetcher, join_dataframes
 from sqlalchemy import Table, String, MetaData, create_engine, select, cast
@@ -492,6 +493,7 @@ def start_de_identification_for_table(
     start_id: int | None = None,
     end_id: int | None = None,
     id_column: str = "nd_auto_increment_id",
+    cache_dir: str | None = None,
 ):
     """Process an entire table (or a keyset-bounded range) by streaming rows in Polars batches.
 
@@ -586,7 +588,17 @@ def start_de_identification_for_table(
     writer_thread.start()
 
     # Choose the appropriate stream source.
-    if start_id is not None and end_id is not None:
+    if cache_dir and start_id is not None and end_id is not None:
+        nd_logger.info(
+            f"[{table_name}] Reading from IPC cache: {cache_dir}"
+        )
+        stream = stream_from_ipc_cache(
+            cache_dir=cache_dir,
+            start_id=start_id,
+            end_id=end_id,
+            id_column=id_column,
+        )
+    elif start_id is not None and end_id is not None:
         stream = source_db_connection.stream_table_as_dataframes_in_range(
             table_name, batch_size,
             start_id=start_id, end_id=end_id, id_column=id_column,

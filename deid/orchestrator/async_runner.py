@@ -61,15 +61,26 @@ async def run(config: DeidConfig, config_path: str):
                 config, state_engine
             )
 
+        cache_paths: dict[str, str] = {}
+        if "deidentify" in config.phases and table_id_ranges:
+            cache_paths = await _cache_large_tables(config, table_id_ranges)
+
         if "deidentify" in config.phases:
             logger.info("Phase: deidentify")
-            await _deidentify_phase(config, state_engine, table_row_counts, table_id_ranges)
+            await _deidentify_phase(config, state_engine, table_row_counts, table_id_ranges, cache_paths)
 
         if "qc" in config.phases:
             logger.info("Phase: qc")
             await _qc_phase(config, state_engine)
 
     finally:
+        # Cleanup IPC cache.
+        cache_root = Path(config.state_db_path).resolve().parent / ".deid_cache"
+        if cache_root.exists():
+            import shutil
+            shutil.rmtree(cache_root, ignore_errors=True)
+            logger.info("Cache: cleaned up %s", cache_root)
+
         # Stop collector and write summary.
         collector.stop()
         # Give collector a moment to drain remaining messages.
@@ -166,11 +177,55 @@ async def _setup_phase(config: DeidConfig, state_engine):
 
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
-async def _deidentify_phase(config, state_engine, table_row_counts, table_id_ranges):
+async def _cache_large_tables(
+    config: DeidConfig,
+    table_id_ranges: dict[str, tuple[int, int]],
+) -> dict[str, str]:
+    """Dump large tables (those in table_id_ranges) to local Arrow IPC files.
+
+    Returns a mapping of {table_name: cache_dir_path} for tables that were cached.
+    Tables not in table_id_ranges are skipped (they won't be split).
+    """
+    if not table_id_ranges:
+        return {}
+
+    from deid.core.dbPkg.dbhandler import NDDBHandler, dump_table_to_ipc_cache
+
+    cache_root = Path(config.state_db_path).resolve().parent / ".deid_cache"
+    loop = asyncio.get_event_loop()
+    cache_paths: dict[str, str] = {}
+
+    async def _dump_one(table_name: str) -> tuple[str, str | None]:
+        source = NDDBHandler(config.source_db.connection_string(), read_only=True)
+        cache_dir = str(cache_root / table_name)
+        try:
+            stream = source.stream_table_as_dataframes(
+                table_name, config.deidentification.batch_size
+            )
+            result = await loop.run_in_executor(
+                None, dump_table_to_ipc_cache, stream, cache_dir
+            )
+            return table_name, result
+        finally:
+            source.close()
+
+    logger.info("Cache: dumping %d large table(s) to Arrow IPC...", len(table_id_ranges))
+    results = await asyncio.gather(*[_dump_one(t) for t in table_id_ranges])
+
+    for table_name, path in results:
+        if path:
+            cache_paths[table_name] = path
+            logger.info("Cache: %s → %s", table_name, path)
+
+    return cache_paths
+
+
+@validate_call(config=dict(arbitrary_types_allowed=True))
+async def _deidentify_phase(config, state_engine, table_row_counts, table_id_ranges, cache_paths=None):
     """Build task graph and dispatch to Celery, monitor progress."""
     from deid.orchestrator.task_graph import build_task_graph
 
-    graph = build_task_graph(config, table_row_counts, table_id_ranges)
+    graph = build_task_graph(config, table_row_counts, table_id_ranges, cache_paths or {})
     result = graph.apply_async()
 
     from deid.orchestrator.progress import listen_progress

@@ -57,6 +57,7 @@ class DeidentifyTaskConfig(BaseModel):
     mapping_db_config: dict | None = None
     universal_tables_config: list | None = None
     run_config: dict | None = None
+    cache_dir: str | None = None
 
 
 class QCTaskConfig(BaseModel):

@@ -6,6 +6,7 @@ from deid.core.logger import nd_logger
 from sqlalchemy import String
 import datetime
 import decimal
+import os
 import polars as pl
 from typing import Iterator, List, Dict
 from pydantic import validate_call
@@ -71,6 +72,52 @@ def create_read_only_engine(connection_string: str, **kwargs):
         cursor.close()
 
     return engine
+
+
+def dump_table_to_ipc_cache(
+    stream: Iterator[pl.DataFrame],
+    cache_dir: str,
+) -> str | None:
+    """Write a DataFrame stream to Arrow IPC batch files in *cache_dir*.
+
+    Each DataFrame yielded by *stream* is written as a separate
+    ``batch_NNNNN.arrow`` file.  Returns *cache_dir* on success, or
+    ``None`` if the stream was empty.
+    """
+    batch_count = 0
+    for df in stream:
+        if df.is_empty():
+            continue
+        if batch_count == 0:
+            os.makedirs(cache_dir, exist_ok=True)
+        df.write_ipc(os.path.join(cache_dir, f"batch_{batch_count:05d}.arrow"))
+        batch_count += 1
+
+    return cache_dir if batch_count > 0 else None
+
+
+def stream_from_ipc_cache(
+    cache_dir: str,
+    start_id: int,
+    end_id: int,
+    id_column: str = "nd_auto_increment_id",
+) -> Iterator[pl.DataFrame]:
+    """Iterate Arrow IPC batch files in *cache_dir*, filtering each to the given ID range.
+
+    The cache directory contains files named ``batch_NNNNN.arrow``, one per
+    batch written during the cache phase.  Each file is read independently
+    so memory stays at O(batch_size).
+
+    Yields only non-empty DataFrames after filtering.
+    """
+    import glob as _glob
+
+    paths = sorted(_glob.glob(os.path.join(cache_dir, "batch_*.arrow")))
+    for path in paths:
+        df = pl.read_ipc(path)
+        df = df.filter(pl.col(id_column).is_between(start_id, end_id))
+        if not df.is_empty():
+            yield df
 
 
 class NDDBHandler:

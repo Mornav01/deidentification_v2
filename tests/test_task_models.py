@@ -70,6 +70,37 @@ class TestDeidentifyTaskConfig:
         restored = DeidentifyTaskConfig(**dumped)
         assert restored == config
 
+    def test_cache_dir_defaults_to_none(self):
+        config = DeidentifyTaskConfig(
+            table_name="patients",
+            source_conn_str="sqlite:///src.db",
+            dest_conn_str="sqlite:///dest.db",
+            table_details_for_ui={"columns_details": []},
+        )
+        assert config.cache_dir is None
+
+    def test_cache_dir_set(self):
+        config = DeidentifyTaskConfig(
+            table_name="patients",
+            source_conn_str="sqlite:///src.db",
+            dest_conn_str="sqlite:///dest.db",
+            table_details_for_ui={"columns_details": []},
+            cache_dir="/tmp/.deid_cache/patients",
+        )
+        assert config.cache_dir == "/tmp/.deid_cache/patients"
+
+    def test_cache_dir_survives_roundtrip(self):
+        config = DeidentifyTaskConfig(
+            table_name="t1",
+            source_conn_str="sqlite:///s.db",
+            dest_conn_str="sqlite:///d.db",
+            table_details_for_ui={},
+            cache_dir="/tmp/cache/t1",
+        )
+        dumped = config.model_dump()
+        restored = DeidentifyTaskConfig(**dumped)
+        assert restored.cache_dir == "/tmp/cache/t1"
+
 
 class TestQCTaskConfig:
     def test_valid(self):

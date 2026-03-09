@@ -63,6 +63,7 @@ def build_task_graph(
     config: DeidConfig,
     table_row_counts: dict[str, int],
     table_id_ranges: dict[str, tuple[int, int]] | None = None,
+    cache_paths: dict[str, str] | None = None,
 ) -> group:
     """Build a Celery group/chord graph for all tables."""
     assert config.tables, "config.tables must not be empty"
@@ -79,6 +80,9 @@ def build_task_graph(
         task_config = _build_table_config(config, tname, table_cfg.rules)
 
         if row_count > threshold and table_id_ranges and tname in table_id_ranges:
+            # Inject cache_dir for range tasks.
+            task_config["cache_dir"] = (cache_paths or {}).get(tname)
+
             min_id, max_id = table_id_ranges[tname]
             range_size = math.ceil((max_id - min_id + 1) / n_splits)
             range_tasks = []
