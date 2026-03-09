@@ -3,12 +3,15 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, Integer, String
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy import JSON, DateTime, Integer, String, func
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from deid.models.base import MappingsBase
+from pydantic import validate_call
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def _utcnow():
     return datetime.now(timezone.utc)
 
@@ -56,6 +59,7 @@ class PhiStaging(MappingsBase):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def get_or_create_patient_mapping(
     session: Session, patient_id: str, id_prefix: int
 ) -> int:
@@ -63,14 +67,24 @@ def get_or_create_patient_mapping(
     existing = session.query(PatientMapping).filter_by(patient_id=patient_id).first()
     if existing:
         return existing.nd_patient_id
-    count = session.query(PatientMapping).count()
-    new_nd_id = id_prefix + count + 1
-    mapping = PatientMapping(patient_id=patient_id, nd_patient_id=new_nd_id)
-    session.add(mapping)
-    session.commit()
+
+    max_id = session.query(func.max(PatientMapping.nd_patient_id)).scalar()
+    new_nd_id = (max_id or id_prefix) + 1
+
+    try:
+        mapping = PatientMapping(patient_id=patient_id, nd_patient_id=new_nd_id)
+        session.add(mapping)
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        existing = session.query(PatientMapping).filter_by(patient_id=patient_id).first()
+        if existing:
+            return existing.nd_patient_id
+        raise
     return new_nd_id
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def get_or_create_encounter_mapping(
     session: Session, encounter_id: str, patient_id: str
 ) -> int:
@@ -78,13 +92,22 @@ def get_or_create_encounter_mapping(
     existing = session.query(EncounterMapping).filter_by(encounter_id=encounter_id).first()
     if existing:
         return existing.nd_encounter_id
-    count = session.query(EncounterMapping).count()
-    new_nd_id = count + 1
-    mapping = EncounterMapping(
-        encounter_id=encounter_id,
-        nd_encounter_id=new_nd_id,
-        patient_id=patient_id,
-    )
-    session.add(mapping)
-    session.commit()
+
+    max_id = session.query(func.max(EncounterMapping.nd_encounter_id)).scalar()
+    new_nd_id = (max_id or 0) + 1
+
+    try:
+        mapping = EncounterMapping(
+            encounter_id=encounter_id,
+            nd_encounter_id=new_nd_id,
+            patient_id=patient_id,
+        )
+        session.add(mapping)
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        existing = session.query(EncounterMapping).filter_by(encounter_id=encounter_id).first()
+        if existing:
+            return existing.nd_encounter_id
+        raise
     return new_nd_id

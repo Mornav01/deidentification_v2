@@ -28,9 +28,9 @@ def test_mappings_db_tables_created(tmp_path):
     from sqlalchemy import inspect
     inspector = inspect(engine)
     tables = inspector.get_table_names()
-    assert "patient_mappings" in tables
-    assert "encounter_mappings" in tables
-    assert "appointment_mappings" in tables
+    assert "patient_mapping_table" in tables
+    assert "encounter_mapping_table" in tables
+    assert "appointment_mapping_table" in tables
     assert "phi_staging" in tables
 
 
@@ -97,6 +97,6 @@ def test_encounter_mapping_get_or_create(tmp_path):
 
     with Session(engine) as session:
         pat_id = get_or_create_patient_mapping(session, "PAT001", id_prefix=10000000)
-        enc_id_1 = get_or_create_encounter_mapping(session, "ENC001", patient_mapping_id=1)
-        enc_id_2 = get_or_create_encounter_mapping(session, "ENC001", patient_mapping_id=1)
+        enc_id_1 = get_or_create_encounter_mapping(session, "ENC001", patient_id="PAT001")
+        enc_id_2 = get_or_create_encounter_mapping(session, "ENC001", patient_id="PAT001")
         assert enc_id_1 == enc_id_2
