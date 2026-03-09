@@ -1,12 +1,15 @@
 import struct
 from datetime import datetime, timedelta
+from pydantic import validate_call
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def decode_datetime(bytes8):
     """MSSQL datetime = 2 little-endian ints: days since 1900 + ticks fraction."""
     days, ticks = struct.unpack("<ii", bytes8)
     base = datetime(1900, 1, 1)
     return base + timedelta(days=days, milliseconds=ticks * 0.00390625)
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def decode_numeric(data):
     """MSSQL numeric/decimal internal storage."""
     precision = data[0]
@@ -26,6 +29,7 @@ def decode_numeric(data):
     return val
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def decode_rowlog_contents(blob: bytes, schema):
     if blob is None:
         return None

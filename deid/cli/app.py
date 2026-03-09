@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib.util
 
 import typer
+from pydantic import validate_call
 
 app = typer.Typer(
     name="deid",
@@ -12,12 +13,15 @@ app = typer.Typer(
 )
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def _register_commands():
     from deid.cli.run import run_command
     from deid.cli.status import status_command
+    from deid.cli.retry import retry_command
 
     app.command(name="run")(run_command)
     app.command(name="status")(status_command)
+    app.command(name="retry")(retry_command)
 
     if importlib.util.find_spec("deid.cli.cdc") is not None:
         from deid.cli.cdc import cdc_command

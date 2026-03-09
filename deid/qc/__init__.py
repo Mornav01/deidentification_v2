@@ -4,7 +4,9 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from datetime import datetime
 from typing import List, Dict, Tuple, Any, Union
+from pydantic import validate_call
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def get_smart_sample_comparison(
     table_name: str,
     source_engine: Engine,
@@ -29,12 +31,14 @@ def get_smart_sample_comparison(
     np.random.seed(current_seed)
     random.seed(current_seed)
     
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_total_rows(engine: Engine) -> int:
         """Get total number of rows in the table"""
         with engine.connect() as conn:
             result = conn.execute(text(f"SELECT COUNT(*) FROM {table_name}"))
             return result.scalar()
     
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def calculate_sample_size(n: int) -> int:
         """Calculate sample size based on population size using a stepped approach"""
         if n <= 300:
@@ -50,6 +54,7 @@ def get_smart_sample_comparison(
         else:
             return 5000
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_random_sample(engine: Engine, size: int) -> List[Dict[str, Any]]:
         """Get random sample using MySQL's RAND() function"""
         query = text(f"""
@@ -64,6 +69,7 @@ def get_smart_sample_comparison(
             columns = result.keys()
             return [dict(zip(columns, row)) for row in result]
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_stratified_sample(engine: Engine, sample_size: int, initial_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Get stratified sample based on important columns"""
         samples = initial_data.copy()
@@ -183,6 +189,7 @@ def get_smart_sample_comparison(
         
         return unique_samples[:sample_size]
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_sampled_data(engine: Engine, sample_size: int) -> List[Dict[str, Any]]:
         """Get complete sampled data from one engine"""
         initial_sample_size = min(100, sample_size)
@@ -203,6 +210,7 @@ def get_smart_sample_comparison(
     
     return sample_size, source_sample, dest_sample
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def compare_samples(
     source_sample: List[Dict[str, Any]], 
     dest_sample: List[Dict[str, Any]],

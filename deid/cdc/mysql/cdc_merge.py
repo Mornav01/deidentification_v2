@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 import logging
 import argparse
+from pydantic import validate_call
 
 try:
     from datetime import UTC  # Python 3.11+
@@ -37,6 +38,7 @@ generated_cols = defaultdict(set)
 table_columns = defaultdict(list)
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def parse_args():
     """
     Parse command-line arguments for CDC merge.
@@ -64,6 +66,7 @@ def parse_args():
     return parser.parse_args()
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def init_databases(staging_schema_arg: str, prod_schema_arg: str):
     """
     Initialise engines and metadata based on the supplied schemas.
@@ -131,6 +134,7 @@ CDC_COLS = [
     ("nd_operation", "VARCHAR(100)")
 ]
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def ensure_cdc_columns_for_table(conn, table_name, table_columns):
     t = table_name.lower()
 
@@ -160,6 +164,7 @@ def ensure_cdc_columns_for_table(conn, table_name, table_columns):
                 f"⚠️ Skipped adding {table_name}.{col_name}: {e}"
             )
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def remove_generated_columns(table_name, columns, values, generated_cols):
     gen_set = generated_cols.get(table_name.lower())
     if not gen_set:
@@ -173,11 +178,13 @@ def remove_generated_columns(table_name, columns, values, generated_cols):
 
     return clean_cols, clean_vals
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def load_staging_rows(engine, table):
     with engine.connect() as conn:
         result = conn.execute(text(f"SELECT * FROM `{table}`"))
         return [dict(row) for row in result.mappings()]
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def bulk_upsert_batch(conn, table, rows, generated_cols):
     if not rows:
         return
@@ -207,6 +214,7 @@ def bulk_upsert_batch(conn, table, rows, generated_cols):
 
     conn.execute(stmt, clean_rows)
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def ensure_cdc_columns_serial(tables):
     logger.info("🧱 Ensuring CDC columns (serial phase)")
 
@@ -216,10 +224,12 @@ def ensure_cdc_columns_serial(tables):
             # Ensure CDC columns exist for this table
             ensure_cdc_columns_for_table(conn, table, table_columns)
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def chunked(iterable, size):
     for i in range(0, len(iterable), size):
         yield iterable[i:i + size]
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def merge_table(staging_table, target_table):
     logger.info(f"🔄 Merging {staging_table} → {target_table}")
     t0 = datetime.now(UTC)
@@ -251,6 +261,7 @@ def merge_table(staging_table, target_table):
         f"{(datetime.now(UTC) - t0).total_seconds():.2f}s"
     )
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def discover_staging_tables(engine):
     # Get Table Statistics (Row Count, Column Count)
     inspector = inspect(engine)
@@ -274,6 +285,7 @@ def discover_staging_tables(engine):
 
     return list(df['table_name'].unique())
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def prepare_mysql_environment(engine):
     """
     Runs required GLOBAL MySQL settings once.
@@ -287,6 +299,7 @@ def prepare_mysql_environment(engine):
             "SET GLOBAL sql_mode = REPLACE(@@GLOBAL.sql_mode, 'STRICT_TRANS_TABLES', '')"
         ))
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def main():
     args = parse_args()
 

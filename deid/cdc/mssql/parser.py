@@ -1,7 +1,9 @@
 from sqlalchemy import text
 from db import get_session
 from decoder import decode_rowlog_contents
+from pydantic import validate_call
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def read_trn_log_file(trn_path: str):
     sql = text(f"""
         SELECT
@@ -31,6 +33,7 @@ def read_trn_log_file(trn_path: str):
     session.close()
     return rows
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def detect_operation(op):
     if op == "LOP_INSERT_ROWS":
         return "INSERT"
@@ -41,6 +44,7 @@ def detect_operation(op):
     return None
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def parse_trn_rows(rows, schema):
     parsed = []
     for r in rows:
@@ -58,13 +62,3 @@ def parse_trn_rows(rows, schema):
         })
 
     return parsed
-
-
-# trn_path = "/var/opt/mssql/dump/20251017/PrimeRecord1697/PrimeRecord1697_LOG_20251012_200000.trn"
-# rows = read_trn_log_file(trn_path)
-# print(f"Total records in the TRN file: {len(rows)}")
-# print(f"Sample rows: {rows[:5]}")
-
-# parsed = parse_trn_rows(rows, 'dbo')
-# print(f"Total records parsed: {len(parsed)}")
-# print(f"Sample parsed data: {parsed[:5]}")

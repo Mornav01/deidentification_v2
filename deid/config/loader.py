@@ -8,13 +8,16 @@ from pathlib import Path
 import yaml
 
 from deid.config.schema import DeidConfig
+from pydantic import validate_call
 
 _ENV_VAR_PATTERN = re.compile(r"\$\{(\w+)\}")
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def _interpolate_env_vars(obj):
     """Recursively replace ${VAR_NAME} with os.environ[VAR_NAME]."""
     if isinstance(obj, str):
+        @validate_call(config=dict(arbitrary_types_allowed=True))
         def _replacer(match):
             var = match.group(1)
             val = os.environ.get(var)
@@ -29,6 +32,7 @@ def _interpolate_env_vars(obj):
     return obj
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def load_config(path: str | Path) -> DeidConfig:
     """Load config from YAML file, interpolate env vars, validate with Pydantic."""
     path = Path(path)

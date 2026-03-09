@@ -1,4 +1,5 @@
 import re          # standard lib – re.Match type hint + fallback
+from pydantic import validate_call
 try:
     import re2
 except ImportError:
@@ -24,18 +25,23 @@ CONTROL_CHARS_RE = re2.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
 BARE_AMP_RE = re.compile(r'&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9A-Fa-f]+;)')
 
 # ---------------- cleaning helpers ----------------
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def remove_control_chars(text: str) -> str:
     return CONTROL_CHARS_RE.sub("", text)
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def remove_processing_instructions(text: str) -> str:
     return PI_RE.sub("", text)
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def escape_bare_ampersands(text: str) -> str:
     return BARE_AMP_RE.sub("&amp;", text)
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def normalize_br(text: str) -> str:
     return re2.sub(r"(?i)<br\s*>", "<br />", text)
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def wrap_with_root_if_needed(text: str) -> str:
     s = text.strip()
     if not s:
@@ -53,6 +59,7 @@ def wrap_with_root_if_needed(text: str) -> str:
     return s
 
 # ---------------- robust XML parse ----------------
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def try_lxml_recover_parse(text: str):
     if not HAS_LXML:
         return None
@@ -63,12 +70,14 @@ def try_lxml_recover_parse(text: str):
     except Exception:
         return None
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def try_et_parse(text: str):
     try:
         return ET.fromstring(text)
     except Exception:
         return None
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def robust_xml_parse(raw_xml: str):
     """Try multiple repair strategies until we get a parsed XML root."""
     if raw_xml is None or not isinstance(raw_xml, str):
@@ -122,6 +131,7 @@ def robust_xml_parse(raw_xml: str):
     return None
 
 # ---------------- main deid ----------------
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def deidentify_xml_tags(text: str, tag_replacements: dict) -> str:
     """
     De-identify XML string values based on tag names with special handling for DOB and ZIP.
@@ -153,6 +163,7 @@ def deidentify_xml_tags(text: str, tag_replacements: dict) -> str:
 
         # --- Special Rule: ZIP ---
         elif tag_name.lower() in ["zip", "zipcode", "postalcode"]:
+            @validate_call(config=dict(arbitrary_types_allowed=True))
             def mask_zip(m):
                 return m.group(0)[:3]  # keep only first 3 digits
             tag.text = re2.sub(r"\d{5}", mask_zip, val)
@@ -171,6 +182,7 @@ def deidentify_xml_tags(text: str, tag_replacements: dict) -> str:
     ET.register_namespace("xsd", "http://www.w3.org/2001/XMLSchema")
     ET.register_namespace("xsi", "http://www.w3.org/2001/XMLSchema-instance")
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _remove_recursive_refs(element, seen=None):
         if seen is None:
             seen = set()

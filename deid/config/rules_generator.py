@@ -8,6 +8,7 @@ from __future__ import annotations
 import csv
 import logging
 from pathlib import Path
+from pydantic import validate_call
 
 try:
     import re2 as re
@@ -50,6 +51,7 @@ COLUMN_RULES = [
 DATE_TYPE_PATTERN = re.compile(r"(?i)(DATE|TIME|TIMESTAMP)")
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def auto_assign_rule(column_name: str, data_type: str) -> str:
     """Return a rule string if the column name/type matches known patterns, else ''."""
     for pattern, rule in COLUMN_RULES:
@@ -60,6 +62,7 @@ def auto_assign_rule(column_name: str, data_type: str) -> str:
     return ""
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def extract_schema(source_db: DbConfig, tables: list[str] | None = None) -> list[dict]:
     """Connect to source DB (read-only) and extract table/column metadata with auto-assigned rules."""
     engine = create_read_only_engine(source_db.connection_string())
@@ -85,6 +88,7 @@ def extract_schema(source_db: DbConfig, tables: list[str] | None = None) -> list
     return rows
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def write_csv(rows: list[dict], output_path: str) -> None:
     """Write extracted schema rows to a CSV file."""
     fieldnames = ["table_name", "column_name", "data_type", "rule"]
@@ -94,6 +98,7 @@ def write_csv(rows: list[dict], output_path: str) -> None:
         writer.writerows(rows)
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def generate_rules_csv(source_db: DbConfig, output_path: str) -> str:
     """Generate a config_rules CSV from the source database schema.
 

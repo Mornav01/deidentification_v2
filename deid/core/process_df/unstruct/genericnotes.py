@@ -1,5 +1,6 @@
 import polars as pl
 import re          # standard lib – re.Match type hint + fallback
+from pydantic import validate_call
 try:
     import re2
 except ImportError:
@@ -11,6 +12,7 @@ from deid.core.logger import nd_logger
 from deid.core.process_df.constants import DATE_PATTERN_NOTES
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def mask_address(match: re.Match) -> str:
     """Replacement function to mask address parts using named groups."""
     nd_logger.debug(f"Matched address: {match.group(0)}")
@@ -27,6 +29,7 @@ class GenericDateShiftRule(BaseDateOffsetRule):
     def __init__(self):
         super().__init__(format_as_datetime=False, is_notes=True)
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _get_offset_list(self, df: pl.DataFrame) -> list:
         if "_resolved_offset" in df.columns:
             return df["_resolved_offset"].to_list()
@@ -36,6 +39,7 @@ class GenericDateShiftRule(BaseDateOffsetRule):
 class GenericNotesRule(RuleBase):
     """Apply a battery of generic regex-based PHI masks to free-text columns."""
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def apply(self, df: pl.DataFrame, column_config: Dict) -> pl.DataFrame:
         col_name = column_config["column_name"]
         nd_logger.info(

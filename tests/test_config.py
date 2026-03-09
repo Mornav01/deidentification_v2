@@ -127,3 +127,99 @@ def test_default_phases(tmp_path):
     p = _write_yaml(tmp_path, cfg)
     config = load_config(p)
     assert config.phases == ["setup", "deidentify", "qc"]
+
+
+def test_clinical_bin_doc_config_optional(tmp_path):
+    """DeidConfig works without clinical_bin_doc section (backwards compat)."""
+    from deid.config.loader import load_config
+
+    p = _write_yaml(tmp_path, _minimal_config())
+    config = load_config(p)
+    assert config.clinical_bin_doc is None
+
+
+def test_default_logging_settings(tmp_path):
+    from deid.config.loader import load_config
+
+    p = _write_yaml(tmp_path, _minimal_config())
+    config = load_config(p)
+    assert config.logging.log_dir == "./logs"
+    assert config.logging.log_verbosity == "standard"
+
+
+def test_custom_logging_settings(tmp_path):
+    from deid.config.loader import load_config
+
+    cfg = _minimal_config()
+    cfg["logging"] = {"log_dir": "/var/log/deid", "log_verbosity": "verbose"}
+    p = _write_yaml(tmp_path, cfg)
+    config = load_config(p)
+    assert config.logging.log_dir == "/var/log/deid"
+    assert config.logging.log_verbosity == "verbose"
+
+
+def test_invalid_log_verbosity(tmp_path):
+    from deid.config.loader import load_config
+
+    cfg = _minimal_config()
+    cfg["logging"] = {"log_verbosity": "ultra"}
+    p = _write_yaml(tmp_path, cfg)
+    with pytest.raises(Exception):
+        load_config(p)
+
+
+def test_clinical_bin_doc_config_present(tmp_path):
+    """DeidConfig parses clinical_bin_doc section when present."""
+    from deid.config.loader import load_config
+
+    cfg = _minimal_config()
+    cfg["clinical_bin_doc"] = {
+        "source_db": "mssql+pymssql://user:pass@host:1433/db",
+        "dest_db": "mysql+pymysql://user:pass@host:3306/db",
+    }
+    p = _write_yaml(tmp_path, cfg)
+    config = load_config(p)
+    assert config.clinical_bin_doc is not None
+    assert config.clinical_bin_doc.source_table == "ClinicalBin"
+    assert config.clinical_bin_doc.metadata_table == "ClinicalDocuments"
+    assert config.clinical_bin_doc.dest_table == "clinicalbin_xml_decrypt"
+    assert config.clinical_bin_doc.processed_table == "clinicalbin_xml_processed"
+
+
+def test_worker_max_tasks_per_child_default(tmp_path):
+    from deid.config.loader import load_config
+
+    p = _write_yaml(tmp_path, _minimal_config())
+    config = load_config(p)
+    assert config.workers.max_tasks_per_child == 1
+
+
+def test_worker_max_tasks_per_child_override(tmp_path):
+    from deid.config.loader import load_config
+
+    cfg = _minimal_config()
+    cfg["workers"]["max_tasks_per_child"] = 5
+    p = _write_yaml(tmp_path, cfg)
+    config = load_config(p)
+    assert config.workers.max_tasks_per_child == 5
+
+
+def test_default_batch_size(tmp_path):
+    from deid.config.loader import load_config
+
+    cfg = _minimal_config()
+    del cfg["deidentification"]["batch_size"]
+    p = _write_yaml(tmp_path, cfg)
+    config = load_config(p)
+    assert config.deidentification.batch_size == 25000
+
+
+def test_importing_qc_builders_does_not_load_presidio():
+    """Importing the QC builders package should NOT eagerly load AnalyzerEngine."""
+    import sys
+    mods_to_remove = [k for k in sys.modules if k.startswith("deid.qc.builders")]
+    for m in mods_to_remove:
+        del sys.modules[m]
+
+    from deid.qc.builders import unstructured
+    assert unstructured._analyzer is None

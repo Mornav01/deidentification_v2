@@ -2,6 +2,7 @@ import polars as pl
 from sqlalchemy import Table, select, MetaData
 from deid.core.dbPkg import NDDBHandler
 from deid.core.logger import nd_logger
+from pydantic import validate_call
 
 
 class ReferenceMappingDataFrameJoiner:
@@ -29,6 +30,7 @@ class ReferenceMappingDataFrameJoiner:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _load_reference_table(
         self,
         table_name: str,
@@ -60,6 +62,7 @@ class ReferenceMappingDataFrameJoiner:
     # Public API
     # ------------------------------------------------------------------
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def join_dataframe(self) -> tuple[pl.DataFrame, tuple]:
         """Walk the reference-mapping chain and append the destination column.
 

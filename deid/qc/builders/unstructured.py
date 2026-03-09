@@ -3,12 +3,21 @@ from typing import Any
 from datetime import datetime, timedelta
 from deid.qc.builders.base import Detector
 from deid.qc.schema import ColumnQCResult
-from presidio_analyzer import AnalyzerEngine
+from pydantic import validate_call
 
-analyzer = AnalyzerEngine()
+_analyzer = None
+
+
+def _get_analyzer():
+    global _analyzer
+    if _analyzer is None:
+        from presidio_analyzer import AnalyzerEngine
+        _analyzer = AnalyzerEngine()
+    return _analyzer
 
 class UnstructuredDetector(Detector):
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _exact_match(self, text: str, pii_info: dict):
         assert isinstance(pii_info, dict), "pii_info must be a dict"
         found_pii_values = []
@@ -17,8 +26,9 @@ class UnstructuredDetector(Detector):
                 found_pii_values.append(value)
         return found_pii_values
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _presidio_analyzer(self, text: str):
-        results = analyzer.analyze(text=str(text), entities=["PHONE_NUMBER", "EMAIL_ADDRESS", "PERSON"], language="en")
+        results = _get_analyzer().analyze(text=str(text), entities=["PHONE_NUMBER", "EMAIL_ADDRESS", "PERSON"], language="en")
         found_entities = []
         if results:
             for result in results:
@@ -28,6 +38,7 @@ class UnstructuredDetector(Detector):
         return found_entities
 
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict, pii_info: dict) -> ColumnQCResult:
         assert isinstance(after_rows, list), "after_rows must be a list"
         assert isinstance(pii_info, dict), "pii_info must be a dict"

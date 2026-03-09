@@ -13,11 +13,13 @@ from typing import Optional
 import typer
 
 from dotenv import load_dotenv
+from pydantic import validate_call
 load_dotenv()
 
 logger = logging.getLogger("deid.cli")
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def run_command(
     config: str = typer.Option(..., "--config", "-c", help="Path to config.yaml"),
     phase: Optional[str] = typer.Option(None, "--phase", "-p", help="Override: run only this phase"),
@@ -34,6 +36,7 @@ def run_command(
     from deid.config.loader import load_config
 
     cfg = load_config(config_path)
+    Path(cfg.logging.log_dir).mkdir(parents=True, exist_ok=True)
 
     if phase:
         cfg.phases = [phase]
@@ -54,6 +57,7 @@ def run_command(
         _stop_worker(worker_proc)
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def _start_worker(cfg) -> subprocess.Popen:
     """Spawn a Celery worker as a child process."""
     cmd = [
@@ -62,6 +66,7 @@ def _start_worker(cfg) -> subprocess.Popen:
         "worker",
         "--pool=prefork",
         f"--concurrency={cfg.workers.concurrency}",
+        f"--max-tasks-per-child={cfg.workers.max_tasks_per_child}",
         "--loglevel=info",
         "--without-heartbeat",
         "--without-mingle",
@@ -78,6 +83,7 @@ def _start_worker(cfg) -> subprocess.Popen:
     return proc
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def _stop_worker(proc: subprocess.Popen | None):
     """Gracefully terminate the Celery worker subprocess."""
     if proc and proc.poll() is None:

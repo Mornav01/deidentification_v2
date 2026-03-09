@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from deid.config.schema import DeidConfig
 from deid.config.task_models import ProgressEvent, QCTaskConfig
+from pydantic import validate_call
 from deid.models.base import (
     create_all_mappings_tables,
     create_all_state_tables,
@@ -22,9 +23,14 @@ from deid.models.state import DbConfig, RunLog, TableState
 logger = logging.getLogger("deid.orchestrator")
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 async def run(config: DeidConfig, config_path: str):
     """Main async entry point — runs phases from config."""
     assert config.phases, "config.phases must not be empty"
+    from deid.orchestrator.log_collector import LogCollector
+
+    run_start = datetime.now(timezone.utc)
+    run_timestamp = run_start.strftime("%Y-%m-%d_%H-%M-%S")
 
     state_engine = create_state_engine(config.state_db_path)
     create_all_state_tables(state_engine)
@@ -38,30 +44,58 @@ async def run(config: DeidConfig, config_path: str):
         session.commit()
         run_log_id = run_log.id
 
+    # Start log collector.
+    collector = LogCollector(
+        log_dir=config.logging.log_dir,
+        run_timestamp=run_timestamp,
+    )
+    collector_task = asyncio.create_task(collector.listen(config.redis_url))
+
     table_row_counts = {}
     table_id_ranges = {}
 
-    if "setup" in config.phases:
-        logger.info("Phase: setup")
-        table_row_counts, table_id_ranges = await _setup_phase(
-            config, state_engine
-        )
+    try:
+        if "setup" in config.phases:
+            logger.info("Phase: setup")
+            table_row_counts, table_id_ranges = await _setup_phase(
+                config, state_engine
+            )
 
-    if "deidentify" in config.phases:
-        logger.info("Phase: deidentify")
-        await _deidentify_phase(config, state_engine, table_row_counts, table_id_ranges)
+        if "deidentify" in config.phases:
+            logger.info("Phase: deidentify")
+            await _deidentify_phase(config, state_engine, table_row_counts, table_id_ranges)
 
-    if "qc" in config.phases:
-        logger.info("Phase: qc")
-        await _qc_phase(config, state_engine)
+        if "qc" in config.phases:
+            logger.info("Phase: qc")
+            await _qc_phase(config, state_engine)
 
-    with Session(state_engine) as session:
-        log = session.get(RunLog, run_log_id)
-        log.status = "completed"
-        log.completed_at = datetime.now(timezone.utc)
-        session.commit()
+    finally:
+        # Stop collector and write summary.
+        collector.stop()
+        # Give collector a moment to drain remaining messages.
+        await asyncio.sleep(0.5)
+        collector_task.cancel()
+        try:
+            await collector_task
+        except asyncio.CancelledError:
+            pass
+
+        summary = collector.write_summary()
+        text_summary = collector.format_text_summary()
+        logger.info(text_summary)
+        print(text_summary)
+        collector.close()
+
+        # Update RunLog with stats and completion time.
+        with Session(state_engine) as session:
+            log = session.get(RunLog, run_log_id)
+            log.status = "completed"
+            log.completed_at = datetime.now(timezone.utc)
+            log.stats = summary
+            session.commit()
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 async def _setup_phase(config: DeidConfig, state_engine):
     """Discover tables, create destination schemas, persist state."""
     assert config.tables, "config.tables must not be empty for setup phase"
@@ -73,6 +107,7 @@ async def _setup_phase(config: DeidConfig, state_engine):
     loop = asyncio.get_event_loop()
 
     # ── 1. Gather row counts for all tables in parallel ──────────────────
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     async def _get_count(table_name: str) -> tuple[str, int]:
         count = await loop.run_in_executor(None, source.get_rows_count, table_name)
         logger.info("  %s: %s rows", table_name, f"{count:,}")
@@ -91,6 +126,7 @@ async def _setup_phase(config: DeidConfig, state_engine):
     if large_tables:
         logger.info("Setup: fetching ID ranges for %d large tables...", len(large_tables))
 
+        @validate_call(config=dict(arbitrary_types_allowed=True))
         async def _get_range(table_name: str) -> tuple[str, tuple[int, int] | None]:
             mm = await loop.run_in_executor(None, source.get_min_max_id, table_name)
             return table_name, mm
@@ -129,6 +165,7 @@ async def _setup_phase(config: DeidConfig, state_engine):
     return table_row_counts, table_id_ranges
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 async def _deidentify_phase(config, state_engine, table_row_counts, table_id_ranges):
     """Build task graph and dispatch to Celery, monitor progress."""
     from deid.orchestrator.task_graph import build_task_graph
@@ -154,6 +191,7 @@ async def _deidentify_phase(config, state_engine, table_row_counts, table_id_ran
             break
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 async def _qc_phase(config, state_engine):
     """Dispatch QC tasks for completed tables."""
     from celery import group as celery_group

@@ -4,8 +4,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import typer
+from pydantic import validate_call
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def decrypt_notes_command(
     input_dir: str = typer.Option(..., "--input", "-i", help="Input directory with encrypted notes"),
     output_dir: str = typer.Option(..., "--output", "-o", help="Output directory for decrypted notes"),

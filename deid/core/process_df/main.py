@@ -1,29 +1,29 @@
 import polars as pl
 import json
-import time
 import queue
 import threading
+import time
 
 from deid.config.table_schemas import TableDetailsForUI, ColumnDetailsForUI
+from deid.config.task_models import LogLevel
+from deid.core.log_publisher import make_log_record, maybe_log, get_peak_memory_mb
 from deid.core.logger import nd_logger
 from deid.core.dbPkg import NDDBHandler
 from deid.core.ops_df.jointables import ReferenceMappingDataFrameJoiner
 from deid.core.ops_df.utility import DistinctValueFetcher, join_dataframes
-from sqlalchemy import Table, Column, Integer, String, MetaData, create_engine, select, cast
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy import Table, String, MetaData, create_engine, select, cast
+from sqlalchemy.orm import sessionmaker
 from deid.core.process_df.base import DeIdentifier, Rules
-from deid.core.process_df.exception import RaiseException
 from deid.core.process_df.columns_type_detector import ColumnsTypeDetector
 from deid.core.process_df.rowhandler import InvalidRowHandler
-from typing import Union
-
-Base = declarative_base()
+from pydantic import validate_call
 
 
 # ---------------------------------------------------------------------------
 # Helper: PHI column categorisation
 # ---------------------------------------------------------------------------
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def get_key_phi_column_list(column_details: ColumnDetailsForUI) -> tuple:
     """Return (encounter_ids, patient_ids, reference_pids, appointment_ids)."""
     encounter_id_columns: list = []
@@ -79,13 +79,15 @@ class PatientIdentifierResolver:
             "offset": "offset_from_appointment_mapping",
         }
 
-    def _coalesce_expr(self, df: pl.DataFrame, candidates: list[str]) -> pl.Expr | None:
+    @validate_call(config=dict(arbitrary_types_allowed=True))
+    def _coalesce_expr(self, df: pl.DataFrame, candidates: list[str | None]) -> pl.Expr | None:
         """Return pl.coalesce() over the candidate columns that actually exist."""
         existing = [c for c in candidates if c and c in df.columns]
         if not existing:
             return None
         return pl.coalesce([pl.col(c) for c in existing])
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def transform(self, df: pl.DataFrame) -> pl.DataFrame:
         nd_logger.info(f"[{self.__class__.__name__}] Starting patient identifier resolution...")
 
@@ -158,6 +160,7 @@ class PatientIdentifierResolver:
 # Mapping DB joins  (Polars DataFrames — faster joins than Pandas)
 # ---------------------------------------------------------------------------
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def _sql_result_to_polars(result) -> pl.DataFrame:
     """Convert a SQLAlchemy CursorResult to a Polars DataFrame."""
     rows = result.fetchall()
@@ -186,20 +189,22 @@ class JoinMapping:
         )
         self._get_mapping_table_connection()
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _get_mapping_table_connection(self):
         nd_logger.info(f"[{self.__class__.__name__}] Connecting to mapping DB...")
         connection_string = self.mapping_db_config["connection_str"]
         self.engine = create_engine(connection_string)
-        Base.metadata.create_all(self.engine)
         Session = sessionmaker(bind=self.engine)
         self.session = Session()
         nd_logger.info(f"[{self.__class__.__name__}] Connection established.")
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def close_connection(self):
         self.session.close()
         self.engine.dispose()
         nd_logger.info(f"[{self.__class__.__name__}] Connection closed.")
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _get_distinct_ids(self, index: int, label: str) -> list:
         if index >= len(self.key_phi_columns) or not self.key_phi_columns[index]:
             nd_logger.warning(f"[{self.__class__.__name__}] No {label} column configured.")
@@ -207,18 +212,23 @@ class JoinMapping:
         fetcher = DistinctValueFetcher(self.df)
         return fetcher.get_distinct_values(self.key_phi_columns[index][0])
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _get_distinct_encounterids(self):
         return self._get_distinct_ids(0, "encounter IDs")
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _get_distinct_patientids(self):
         return self._get_distinct_ids(1, "patient IDs")
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _get_distinct_referencepids(self):
         return self._get_distinct_ids(2, "reference PIDs")
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _get_distinct_appointmentids(self):
         return self._get_distinct_ids(3, "appointment IDs")
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _get_patient_mapping(self, patient_ids: list) -> pl.DataFrame | None:
         if not patient_ids:
             nd_logger.warning(f"[{self.__class__.__name__}] No patient IDs provided.")
@@ -244,6 +254,7 @@ class JoinMapping:
         )
         return df
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _get_mapping_with_patient_join(
         self,
         ids: list,
@@ -314,6 +325,7 @@ class JoinMapping:
         )
         return df_joined
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _get_encounter_mapping(self, encounter_ids: list) -> pl.DataFrame | None:
         return self._get_mapping_with_patient_join(
             ids=encounter_ids,
@@ -323,6 +335,7 @@ class JoinMapping:
             right_suffix="from_encounter_mapping",
         )
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _get_appointment_mapping(self, appointment_ids: list) -> pl.DataFrame | None:
         return self._get_mapping_with_patient_join(
             ids=appointment_ids,
@@ -332,6 +345,7 @@ class JoinMapping:
             right_suffix="from_appointment_mapping",
         )
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _get_reference_pid_mapping(self, reference_pids: list) -> pl.DataFrame | None:
         if not reference_pids:
             nd_logger.warning(f"[{self.__class__.__name__}] No reference PIDs provided.")
@@ -364,6 +378,7 @@ class JoinMapping:
 # Column schema mapping (unchanged — used to CREATE destination table)
 # ---------------------------------------------------------------------------
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def _get_columns_schema_mapping(
     table_config: TableDetailsForUI,
     source_col_lengths: dict | None = None,
@@ -428,12 +443,14 @@ def _get_columns_schema_mapping(
 # Dict-value serialisation  (safety net before DB insert)
 # ---------------------------------------------------------------------------
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def _serialize_dict_values(df: pl.DataFrame) -> pl.DataFrame:
     """Serialize any dict-typed cell values to JSON strings.
 
     MySQL cannot store Python dicts directly.  This guard converts Object-dtype
     columns (which may hold dicts from JSON columns) to Utf8 JSON strings.
     """
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _serialize_cell(val):
         if isinstance(val, dict):
             try:
@@ -456,6 +473,7 @@ def _serialize_dict_values(df: pl.DataFrame) -> pl.DataFrame:
 # Main entry point
 # ---------------------------------------------------------------------------
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def start_de_identification_for_table(
     table_config: TableDetailsForUI | dict,
     source_conn_str: str,
@@ -525,6 +543,7 @@ def start_de_identification_for_table(
     deidentifier: DeIdentifier | None = None
     dest_table_created = False
     batch_num = 0
+    _run_config = run_config or {}
 
     # -----------------------------------------------------------------------
     # Async background writer
@@ -540,6 +559,7 @@ def start_de_identification_for_table(
     write_queue: queue.Queue = queue.Queue(maxsize=1)
     write_errors: list = []
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _background_writer():
         while True:
             item = write_queue.get()
@@ -554,6 +574,13 @@ def start_de_identification_for_table(
                 nd_logger.error(
                     f"[{table_name}] Background write failed: {exc}"
                 )
+                maybe_log(_run_config, make_log_record(
+                    LogLevel.ERROR, table_name, "deidentify",
+                    f"batch write failed: {exc}",
+                    error=str(exc),
+                    start_id=start_id,
+                    end_id=end_id,
+                ))
 
     writer_thread = threading.Thread(target=_background_writer, daemon=True)
     writer_thread.start()
@@ -574,6 +601,7 @@ def start_de_identification_for_table(
             if df.is_empty():
                 continue
 
+            _batch_start = time.monotonic()
             nd_logger.info(
                 f"[{table_name}] Processing batch {batch_num + 1} "
                 f"({df.height} rows)."
@@ -664,6 +692,7 @@ def start_de_identification_for_table(
                     secondary_pii_configs=secondary_pii_configs,
                     key_phi_columns=key_phi_columns,
                     offset_days=offset_days,
+                    run_config={**_run_config, "table_name": table_name},
                 )
             else:
                 deidentifier.df = df
@@ -691,6 +720,19 @@ def start_de_identification_for_table(
                 raise write_errors[0]
 
             batch_num += 1
+            _batch_elapsed_ms = int((time.monotonic() - _batch_start) * 1000)
+            maybe_log(_run_config, make_log_record(
+                LogLevel.INFO, table_name, "deidentify",
+                f"batch {batch_num}: {df.height}/{df.height} rows OK in {_batch_elapsed_ms}ms",
+                batch=batch_num,
+                rows_in_batch=df.height,
+                rows_succeeded=df.height,
+                rows_failed=0,
+                duration_ms=_batch_elapsed_ms,
+                start_id=start_id,
+                end_id=end_id,
+                peak_memory_mb=get_peak_memory_mb(),
+            ))
 
     finally:
         # Signal the writer to finish and wait for it.

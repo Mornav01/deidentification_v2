@@ -1,5 +1,6 @@
 import polars as pl
 from typing import List, Optional
+from pydantic import validate_call
 
 
 class DistinctValueFetcher:
@@ -8,12 +9,14 @@ class DistinctValueFetcher:
     def __init__(self, df: pl.DataFrame):
         self.df = df
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_distinct_values(self, column: str) -> List:
         if column not in self.df.columns:
             raise ValueError(f"Column '{column}' not found in the DataFrame.")
         return self.df[column].drop_nulls().unique().to_list()
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def join_dataframes(
     left_df: pl.DataFrame,
     right_df: pl.DataFrame,
@@ -51,13 +54,22 @@ def join_dataframes(
     if right_on is None:
         right_on = left_on
 
-    # Cast both join columns to nullable Int64 for type compatibility.
+    # Harmonize join-key types: if either side is string-like, cast both to Utf8.
+    # Otherwise cast both to Int64 for numeric compatibility.
     # strict=False silently turns un-castable values into null rather than raising.
+    left_dtype = left_df[left_on].dtype
+    right_dtype = right_df[right_on].dtype
+
+    if left_dtype in (pl.Utf8, pl.Categorical) or right_dtype in (pl.Utf8, pl.Categorical):
+        cast_type = pl.Utf8
+    else:
+        cast_type = pl.Int64
+
     left_df = left_df.with_columns(
-        pl.col(left_on).cast(pl.Int64, strict=False)
+        pl.col(left_on).cast(cast_type, strict=False)
     )
     right_df = right_df.with_columns(
-        pl.col(right_on).cast(pl.Int64, strict=False)
+        pl.col(right_on).cast(cast_type, strict=False)
     )
 
     # Optionally rename ALL right_df columns before joining.

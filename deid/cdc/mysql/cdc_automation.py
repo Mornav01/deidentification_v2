@@ -2,6 +2,7 @@ import os
 import subprocess
 import logging
 from datetime import datetime, timedelta
+from pydantic import validate_call
 
 # ============================
 # Logging
@@ -19,6 +20,7 @@ MYSQL_PASS = "ndADMIN@2025"
 MYSQL_HOST = "localhost"
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def run_step(cmd, step_name):
     """
     Run a single step as a subprocess and fail fast on error.
@@ -35,6 +37,7 @@ def run_step(cmd, step_name):
     logger.info("Step '%s' completed in %.2fs", step_name, duration)
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def preprocessing(run_date):
     """
     Placeholder for any preprocessing logic you want to add.
@@ -44,6 +47,7 @@ def preprocessing(run_date):
     # TODO: Add real preprocessing here (e.g., cleanup temp tables, archive logs, etc.)
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def truncate_cdc_table(table_name):
     """
     Truncate CDC table so each run_date starts fresh.
@@ -53,6 +57,7 @@ def truncate_cdc_table(table_name):
     run_step(cmd, f"Truncate CDC table {table_name}")
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def reset_staging_schema(staging_schema, prod_schema):
     """
     Drop and recreate staging schema from prod schema (structure only).
@@ -73,6 +78,7 @@ def reset_staging_schema(staging_schema, prod_schema):
     run_step(["bash", "-lc", dump_and_load], f"Clone structure {prod_schema} -> {staging_schema}")
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def main():
     """
     End-to-end CDC automation with no external CLI arguments.
@@ -134,30 +140,6 @@ def main():
         step_name="CDC Merge",
     )
 
-    # # Run deidentification
-    # run_step(
-    #     [
-    #         "python",
-    #         deid_script,
-    #         "--staging_schema", staging_schema,
-    #         "--deid_schema", f"{staging_schema}_deidentified",
-    #     ],
-    #     step_name="Deidentification",
-    # )
-
-    # # Run deidentified data merge
-    # run_step(
-    #     [
-    #         "python",
-    #         merge_script,
-    #         "--staging_schema", f"{staging_schema}_deidentified",
-    #         "--prod_schema", "deidentified_oct",
-    #     ],
-    #     step_name="Deidentification",
-    # )
-
 
 if __name__ == "__main__":
     main()
-
-

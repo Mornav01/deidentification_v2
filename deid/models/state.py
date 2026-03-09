@@ -7,8 +7,10 @@ from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, UniqueConstr
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from deid.models.base import StateBase
+from pydantic import validate_call
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def _utcnow():
     return datetime.now(timezone.utc)
 

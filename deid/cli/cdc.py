@@ -4,8 +4,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import typer
+from pydantic import validate_call
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def cdc_command(
     config: str = typer.Option(..., "--config", "-c", help="Path to CDC config YAML"),
     db_type: str = typer.Option("mysql", "--db-type", help="Database type: mysql or mssql"),

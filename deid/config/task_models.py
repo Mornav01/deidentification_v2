@@ -1,7 +1,45 @@
 """Pydantic models for task/orchestrator/QC function boundaries."""
 from __future__ import annotations
 
+from enum import Enum
+
 from pydantic import BaseModel
+
+
+class LogLevel(str, Enum):
+    DEBUG = "DEBUG"
+    INFO = "INFO"
+    WARNING = "WARNING"
+    ERROR = "ERROR"
+
+
+class LogRecord(BaseModel):
+    timestamp: str
+    level: LogLevel
+    table: str
+    phase: str
+    batch: int | None = None
+    row_id: str | None = None
+    column: str | None = None
+    message: str
+    error: str | None = None
+    rows_in_batch: int | None = None
+    rows_succeeded: int | None = None
+    rows_failed: int | None = None
+    duration_ms: int | None = None
+    start_id: int | None = None
+    end_id: int | None = None
+    peak_memory_mb: int | None = None
+
+
+class BatchFailure(BaseModel):
+    table: str
+    start_id: int | None = None
+    end_id: int | None = None
+    batch: int | None = None
+    error: str
+    timestamp: str
+    task_type: str
 
 
 class DeidentifyTaskConfig(BaseModel):
@@ -30,11 +68,6 @@ class QCTaskConfig(BaseModel):
     qc_settings: dict = {}
     offset_days: int = 34
     sample_size: int = 100
-
-
-class StatsTaskConfig(BaseModel):
-    table_name: str
-    source_conn_str: str
 
 
 class ProgressEvent(BaseModel):

@@ -9,6 +9,7 @@ import re
 import argparse
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pydantic import validate_call
 
 # ============================
 # Logging
@@ -35,6 +36,7 @@ _ALTER_COLS = [
 # ============================
 # CLI
 # ============================
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def parse_args():
     """
     Parse command-line arguments for CDC restore.
@@ -65,6 +67,7 @@ def parse_args():
 # ============================
 # DB helpers
 # ============================
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def _db_url(schema: str) -> str:
     """Build a MySQL connection URL. Override via DB_USER / DB_PASS / DB_HOST / DB_PORT env vars."""
     user     = os.environ.get("DB_USER", "ndadmin")
@@ -74,6 +77,7 @@ def _db_url(schema: str) -> str:
     return f"mysql+pymysql://{user}:{password}@{host}:{port}/{schema}"
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def stream_cdc_data(engine, table_name, batch_size=10000):
     """
     Yield rows from the CDC table in ID-ordered chunks.
@@ -105,6 +109,7 @@ def stream_cdc_data(engine, table_name, batch_size=10000):
         logger.info("Progress: %s rows streamed", f"{last_id:,}")
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def stream_cdc_data_for_table(engine, cdc_table, target_table, batch_size=10000):
     """
     Yield CDC rows for a single target_table in ID-ordered chunks.
@@ -145,6 +150,7 @@ def stream_cdc_data_for_table(engine, cdc_table, target_table, batch_size=10000)
 # ============================
 # SQL parsing
 # ============================
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def detect_insert_format(sql: str):
     s = sql.upper()
     if _RE_VALUES.search(s):
@@ -156,6 +162,7 @@ def detect_insert_format(sql: str):
     return None
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def find_matching_paren(s, start_index):
     """
     Return the index of the closing parenthesis that matches s[start_index],
@@ -191,6 +198,7 @@ def find_matching_paren(s, start_index):
     raise ValueError("Unbalanced parentheses")
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def parse_values_format(sql):
     sql = sql.strip().rstrip(";")
     upper = sql.upper()
@@ -248,6 +256,7 @@ def parse_values_format(sql):
     return columns, values
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def parse_set_format(sql):
     upper = sql.upper()
     set_pos = upper.find(" SET ")
@@ -306,6 +315,7 @@ def parse_set_format(sql):
     return columns, values
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def remove_generated_columns(table_name, columns, values, generated_cols):
     gen_set = generated_cols.get(table_name.lower())
     if not gen_set:
@@ -320,6 +330,7 @@ def remove_generated_columns(table_name, columns, values, generated_cols):
     return cleaned_cols, cleaned_vals
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def convert_update_join_to_select(sql):
     lower = sql.lower()
 
@@ -340,6 +351,7 @@ def convert_update_join_to_select(sql):
     return f"SELECT {alias}.* FROM {update_block} {where_clause}".strip()
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def parse_insert_select(sql: str):
     sql = sql.strip().rstrip(";")
     lower = sql.lower()
@@ -365,6 +377,7 @@ def parse_insert_select(sql: str):
 # ============================
 # Enrichment helpers
 # ============================
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def _build_enriched_insert(table_name, prod_data, table_columns, generated_cols, op):
     """
     Strip generated columns from prod rows and append audit fields.
@@ -416,18 +429,21 @@ def _build_enriched_insert(table_name, prod_data, table_columns, generated_cols,
     return insert_sql, enriched_data, insert_columns
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def append_audit(columns, values, next_id, op):
     columns.extend(["nd_auto_increment_id", "nd_created_at", "nd_updated_at", "nd_operation"])
     values.extend([str(next_id), "NOW()", "NOW()", f"'{op}'"])
     return columns, values
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def build_final_insert(table_name, columns, values, staging_schema):
     col_str = ", ".join(f"`{c}`" for c in columns)
     val_str = ", ".join(values)
     return f"INSERT INTO {staging_schema}.`{table_name}` ({col_str}) VALUES ({val_str})"
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def handle_insert_select(sql, staging_conn, prod_conn, table_columns, generated_cols, stats, nd_counter, table_name_override=None):
     table_name, _insert_cols, select_sql = parse_insert_select(sql)
 
@@ -479,6 +495,7 @@ def handle_insert_select(sql, staging_conn, prod_conn, table_columns, generated_
 # ============================
 # Per-table worker
 # ============================
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def process_table(
     table_name,
     cdc_table,
@@ -653,6 +670,7 @@ def process_table(
     return stats, failed_cases
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def _empty_stats():
     return {
         "inserted": 0, "updated": 0, "update_where_none": 0,
@@ -667,6 +685,7 @@ def _empty_stats():
 # ============================
 # Core restore
 # ============================
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def run_restore(run_date, cdc_table, staging_schema, prod_schema, output_dir, max_workers=5):
     """
     Read every event from the CDC change-log table and apply it into the staging schema.
@@ -803,6 +822,7 @@ def run_restore(run_date, cdc_table, staging_schema, prod_schema, output_dir, ma
     logger.info("Failed cases written to %s", output_path)
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def main():
     args = parse_args()
     logger.info(

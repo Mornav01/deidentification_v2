@@ -6,6 +6,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from sqlalchemy import create_engine, inspect, text
 from urllib.parse import quote_plus
+from pydantic import validate_call
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -47,6 +48,7 @@ RESTORE_THREADS = 20   # parallel mysql restore workers
 # DUMP  –  parallel, one .sql file per table
 # ---------------------------------------------------------------------------
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def dump_table(table: str) -> None:
     os.makedirs(DUMP_FOLDER, exist_ok=True)
     dump_file = os.path.join(DUMP_FOLDER, f"{table}.sql")
@@ -82,6 +84,7 @@ def dump_table(table: str) -> None:
         logger.error(f"Exception dumping {table}: {exc}")
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def dump_all_tables() -> None:
     engine = create_engine(
         f"mysql+pymysql://{SRC_USER}:{SRC_PASSWORD}@{SRC_HOST}:{SRC_PORT}/{SRC_SCHEMA}",
@@ -108,6 +111,7 @@ def dump_all_tables() -> None:
 # RESTORE  –  parallel, skip tables that already exist
 # ---------------------------------------------------------------------------
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def get_existing_tables(engine, database: str) -> set:
     """Fetch all already-restored table names in one single query."""
     query = text("""
@@ -120,6 +124,7 @@ def get_existing_tables(engine, database: str) -> set:
     return {row[0] for row in rows}
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def restore_sql_file(sql_file_path: str, host: str, user: str, password: str,
                      database: str, existing_tables: set) -> None:
     table_name = os.path.splitext(os.path.basename(sql_file_path))[0]
@@ -147,6 +152,7 @@ def restore_sql_file(sql_file_path: str, host: str, user: str, password: str,
         logger.error(f"Exception restoring {sql_file_path}: {exc}")
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def restore_all_sql_files(folder: str, host: str, user: str, password: str,
                           database: str, max_threads: int) -> None:
     engine = create_engine(
@@ -193,6 +199,7 @@ def restore_all_sql_files(folder: str, host: str, user: str, password: str,
 _SENTINEL = None   # poison pill that tells restore workers the queue is done
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def _dump_worker(table: str, work_queue: queue.Queue) -> None:
     """Dump one table; on success push the .sql path onto the restore queue."""
     os.makedirs(DUMP_FOLDER, exist_ok=True)
@@ -227,6 +234,7 @@ def _dump_worker(table: str, work_queue: queue.Queue) -> None:
         logger.error(f"Exception dumping {table}: {exc}")
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def _restore_worker(work_queue: queue.Queue, existing_tables: set,
                     host: str, user: str, password: str, database: str,
                     active_count: threading.Semaphore) -> None:
@@ -263,6 +271,7 @@ def _restore_worker(work_queue: queue.Queue, existing_tables: set,
             work_queue.task_done()
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def dump_and_restore_pipeline() -> None:
     """
     Runs dump and restore concurrently:
@@ -331,17 +340,4 @@ def dump_and_restore_pipeline() -> None:
 # Entry points
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    # Choose one:
-
-    # dump_all_tables()                   # dump only
-
-    # restore_all_sql_files(              # restore only (from existing .sql files)
-    #     folder=RESTORE_FROM,
-    #     host=DST_HOST,
-    #     user=DST_USER,
-    #     password=DST_PASSWORD,
-    #     database=DST_SCHEMA,
-    #     max_threads=RESTORE_THREADS,
-    # )
-
-    dump_and_restore_pipeline()           # dump + restore concurrently
+    dump_and_restore_pipeline()

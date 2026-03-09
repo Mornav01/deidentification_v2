@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, model_validator, validate_call
 
 
 class DbType(str, Enum):
@@ -14,6 +14,12 @@ class DbType(str, Enum):
     mssql = "mssql"
     postgresql = "postgresql"
     snowflake = "snowflake"
+
+
+class LogVerbosity(str, Enum):
+    minimal = "minimal"
+    standard = "standard"
+    verbose = "verbose"
 
 
 class DbConfig(BaseModel):
@@ -24,6 +30,7 @@ class DbConfig(BaseModel):
     username: str
     password: str
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def connection_string(self) -> str:
         drivers = {
             DbType.mysql: "mysql+pymysql",
@@ -36,7 +43,7 @@ class DbConfig(BaseModel):
 
 
 class DeidentificationSettings(BaseModel):
-    batch_size: int = 100000
+    batch_size: int = 25000
     date_offset_days: int = 34
     patient_id_prefix: int = 10000000
     parallel_tasks_per_table: int = 4
@@ -58,11 +65,26 @@ class WorkerSettings(BaseModel):
     concurrency: int = 4
     max_retries: int = 1
     task_timeout: int = 3600
+    max_tasks_per_child: int = 1
 
 
 class QCSettings(BaseModel):
     sample_size: int = 100
     scan_for_residual_pii: bool = True
+
+
+class ClinicalBinDocConfig(BaseModel):
+    source_db: str
+    dest_db: str
+    source_table: str = "ClinicalBin"
+    metadata_table: str = "ClinicalDocuments"
+    dest_table: str = "clinicalbin_xml_decrypt"
+    processed_table: str = "clinicalbin_xml_processed"
+
+
+class LoggingSettings(BaseModel):
+    log_dir: str = "./logs"
+    log_verbosity: LogVerbosity = LogVerbosity.standard
 
 
 class DeidConfig(BaseModel):
@@ -78,6 +100,8 @@ class DeidConfig(BaseModel):
     phases: list[str] = Field(default=["setup", "deidentify", "qc"])
     workers: WorkerSettings = WorkerSettings()
     qc: QCSettings = QCSettings()
+    logging: LoggingSettings = LoggingSettings()
+    clinical_bin_doc: Optional[ClinicalBinDocConfig] = None
 
     @model_validator(mode="after")
     def require_tables_or_csv(self) -> "DeidConfig":
@@ -88,6 +112,7 @@ class DeidConfig(BaseModel):
         return self
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def _load_tables_from_csv(csv_path: str, source_db: "DbConfig") -> list[TableConfig]:
     """Parse a rules CSV into TableConfig objects.
 

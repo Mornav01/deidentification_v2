@@ -3,8 +3,10 @@ from typing import Any
 from datetime import datetime, timedelta
 from deid.qc.builders.base import Detector
 from deid.qc.schema import ColumnQCResult
+from pydantic import validate_call
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def _parse_date(value: Any) -> datetime | None:
     """Parse a date string, returning None if the value is not a valid date."""
     s = str(value).strip()
@@ -19,6 +21,7 @@ def _parse_date(value: Any) -> datetime | None:
 
 
 class SZipCodeDetector(Detector):
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
         passed_count = sum(1 for row in after_rows if len(str(row[self.column_name])) <= 3 or str(row[self.column_name]).lower() in ["none", "null"])
         failed_count = len(after_rows) - passed_count
@@ -26,6 +29,7 @@ class SZipCodeDetector(Detector):
 
 
 class SDobDetector(Detector):
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
         passed_count = sum(
             1 for row in after_rows
@@ -38,9 +42,11 @@ DEFAULT_OFFSET_VALUE = 34
 
 
 class SStaticOffestDetector(Detector):
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_offset(self, row: dict):
         return self.qc_config.get("default_offset_value", DEFAULT_OFFSET_VALUE)
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
         column_qc_result = ColumnQCResult(passed_count=0, failed_count=0, remarks={})
         column_name = self.column_config["column_name"]
@@ -78,6 +84,7 @@ class SStaticOffestDetector(Detector):
         return column_qc_result
 
 class SMaskDetector(Detector):
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
         assert "mask_value" in self.column_config, "column_config must contain 'mask_value'"
         mask_value = self.column_config["mask_value"]
@@ -86,6 +93,7 @@ class SMaskDetector(Detector):
         return ColumnQCResult(passed_count=passed_count, failed_count=failed_count, remarks={})
 
 class SDateOffestDetector(Detector):
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_offset(self, row: dict):
         enc_id, patient_id = None, None
         if self.patient_id_column is not None:
@@ -97,6 +105,7 @@ class SDateOffestDetector(Detector):
             return  self.patient_mapping_dict[pid]['offset']
         return self.qc_config.get("default_offset_value", DEFAULT_OFFSET_VALUE)
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
         column_qc_result = ColumnQCResult(passed_count=0, failed_count=0, remarks={})
         column_name = self.column_config["column_name"]
@@ -135,18 +144,21 @@ class SDateOffestDetector(Detector):
 
 class SPatientIdDetector(Detector):
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _verify_length(self, col_value: Any, ignore_condition: dict) -> bool:
         length_of_value = self.qc_config.get("PATIENT_ID", {}).get("length_of_value", None)
         if length_of_value is not None:
             return len(str(col_value)) == length_of_value
         return True
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _verify_prefix(self, col_value: Any, ignore_condition: dict) -> bool:
         prefix_value = self.qc_config.get("PATIENT_ID", {}).get("prefix_value", None)
         if prefix_value is not None:
             return str(col_value).startswith(prefix_value)
         return True
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
         column_qc_result = ColumnQCResult(passed_count=0, failed_count=0, remarks={"length_verification_failed": 0, "prefix_verification_failed": 0})
         column_name = self.column_config["column_name"]
@@ -166,18 +178,21 @@ class SPatientIdDetector(Detector):
 
 class SReferencePIDDetector(Detector):
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _verify_length(self, col_value: Any, ignore_condition: dict) -> bool:
         length_of_value = self.qc_config.get("PATIENT_ID", {}).get("length_of_value", None)
         if length_of_value is not None:
             return len(str(col_value)) == length_of_value
         return True
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _verify_prefix(self, col_value: Any, ignore_condition: dict) -> bool:
         prefix_value = self.qc_config.get("PATIENT_ID", {}).get("prefix_value", None)
         if prefix_value is not None:
             return str(col_value).startswith(prefix_value)
         return True
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
         column_qc_result = ColumnQCResult(passed_count=0, failed_count=0, remarks={"length_verification_failed": 0, "prefix_verification_failed": 0})
         column_name = self.column_config["column_name"]
@@ -197,18 +212,21 @@ class SReferencePIDDetector(Detector):
 
 class SEncounterIDDetector(Detector):
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _verify_length(self, col_value: Any, ignore_condition: dict) -> bool:
         length_of_value = self.qc_config.get("ENCOUNTER_ID", {}).get("length_of_value", None)
         if length_of_value is not None:
             return len(str(col_value)) == length_of_value
         return True
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _verify_prefix(self, col_value: Any, ignore_condition: dict) -> bool:
         prefix_value = self.qc_config.get("ENCOUNTER_ID", {}).get("prefix_value", None)
         if prefix_value is not None:
             return str(col_value).startswith(prefix_value)
         return True
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
         column_qc_result = ColumnQCResult(passed_count=0, failed_count=0, remarks={"length_verification_failed": 0, "prefix_verification_failed": 0})
         column_name = self.column_config["column_name"]

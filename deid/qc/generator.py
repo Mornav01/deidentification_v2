@@ -3,7 +3,8 @@ import random
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from datetime import datetime
-from typing import List, Dict, Tuple, Any, Union
+from typing import List, Dict, Tuple, Any
+from pydantic import validate_call
 
 
 class DataGenerator:
@@ -14,11 +15,13 @@ class DataGenerator:
         np.random.seed(current_seed)
         random.seed(current_seed)
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_total_rows(self, table_name: str) -> int:
         with self.dest_engine.connect() as conn:
             result = conn.execute(text(f"SELECT COUNT(*) FROM {table_name}"))
             return result.scalar()
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def calculate_sample_size(self, n: int) -> int:
         if n <= 300:
             return n
@@ -33,6 +36,7 @@ class DataGenerator:
         else:
             return 5000
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_random_sample(self, table_name: str, size: int) -> List[Dict[str, Any]]:
         query = text(f"""
             SELECT * 
@@ -46,6 +50,7 @@ class DataGenerator:
             columns = result.keys()
             return [dict(zip(columns, row)) for row in result]
         
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_sample(self, table_name: str, size: int) -> List[Dict[str, Any]]:
         query = text(f"""SELECT * FROM {table_name} LIMIT {size}""")
         source_sample = []
@@ -63,6 +68,7 @@ class DataGenerator:
             source_sample = [dict(zip(columns, row)) for row in result]
         return source_sample, dest_sample
     
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_sample_for_nd_ids(self, table_name: str, nd_auto_incr_ids: list[int]) -> List[Dict[str, Any]]:
         query = text(f"""SELECT * FROM {table_name} where  nd_auto_increment_id in {nd_auto_incr_ids}""")
         source_sample = []
@@ -78,6 +84,7 @@ class DataGenerator:
             source_sample = [dict(zip(columns, row)) for row in result]
         return source_sample, dest_sample
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_stratified_sample(self, table_name: str, sample_size: int, initial_data: List[Dict[str, Any]], important_columns: list[str]) -> List[Dict[str, Any]]:
         samples = initial_data.copy()
         remaining_size = sample_size - len(initial_data)
@@ -190,6 +197,7 @@ class DataGenerator:
         
         return unique_samples[:sample_size]
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def generate_sample(self, table_name: str, important_columns: List[str], is_structured: bool = True) -> Tuple[int, List[Dict[str, Any]]]:
         total_rows = self.get_total_rows(table_name)
         sample_size = self.calculate_sample_size(total_rows)
@@ -205,16 +213,3 @@ class DataGenerator:
         nd_auto_ids = [row['nd_auto_increment_id'] for row in final_sample]
         source_sample = []
         return sample_size, source_sample, final_sample
-
-
-# from sqlalchemy import create_engine
-
-# connection_string = 'mysql+pymysql://root:123456789@localhost:3306/nddenttest_mapping'
-# important_cols = ['patient_id']
-
-# generator = DataGenerator(connection_string)
-# sample_size, final_sample = generator.generate_sample(table_name="patient_mapping_table", important_columns=important_cols)
-
-# # Check the results
-# print(f"Sample size: {sample_size}")
-# print(f"First few records: {final_sample[0]}")

@@ -5,7 +5,7 @@ from deid.qc.builders import DectorMapping, Detector
 from deid.qc.schema import OutputSchemaForTable, FinalQCResult, ColumnQCResult
 from deid.core.dbPkg.mapping_loader import MappingDb
 from deid.core.dbPkg.dbhandler import NDDBHandler
-from deid.core.dbPkg.pii_loader import PIITableLoader
+from pydantic import validate_call
 
 
 class LoadMappingData:
@@ -35,9 +35,9 @@ class DbScanner:
         self.source_handler = NDDBHandler(source_connection_string, read_only=True)
         self.dest_handler = NDDBHandler(dest_connection_string)
         self.mapping_db_config = mapping_db_config
-        self.pii_db_config = {}
         self.qc_config = qc_config
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_important_columns(self, table_config: TableDetailsForUI):
         important_cols = []
         for col_conf in table_config["columns_details"]:
@@ -45,22 +45,7 @@ class DbScanner:
                 important_cols.append(col_conf["column_name"])
         return important_cols
 
-    def _load_mapping_data(self, sample_data: list[dict], table_config: TableDetailsForUI):
-        if table_config["reference_patient_id_column"] is not None:
-            pass
-
-    def notes_rule(self, sample_data, table_config: TableDetailsForUI, patient_mapping_dict):
-        pii_data = {}
-        all_pids, all_enc_ids = [], []
-        if table_config["reference_patient_id_column"]:
-            all_pids = [row[self.patient_id_column] for row in sample_data]
-        if table_config["reference_enc_id_column"]:
-            all_enc_ids = [row[self.enc_id_column] for row in sample_data] #ndid
-
-        pii_loader = PIITableLoader(self.pii_db_config)
-        pii_data = pii_loader.load_pii_table()
-
-
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_structured_detectors(self, sample_data, table_config: TableDetailsForUI) -> list[tuple[str, Detector]]:
         detectors = []
         patinet_dict, enc_dict = LoadMappingData.load(sample_data, table_config, self.mapping_db_config)
@@ -71,6 +56,7 @@ class DbScanner:
                 detectors.append((col_conf["column_name"], detector_obj))
         return detectors
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_unstructured_detectors(self, sample_data, table_config: TableDetailsForUI) -> list[tuple[str, Detector]]:
         detectors = []
         patinet_dict, enc_dict = LoadMappingData.load(sample_data, table_config, self.mapping_db_config)
@@ -81,10 +67,12 @@ class DbScanner:
                 detectors.append((col_conf["column_name"], detector_obj))
         return detectors
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_pii_info(self):
         return {}
 
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def scan_table(self, table_name: str, table_config: TableDetailsForUI, ignore_row_count: int = 0) -> OutputSchemaForTable:
         assert table_name, "table_name must not be empty"
         assert table_config, "table_config must not be empty"
@@ -119,6 +107,7 @@ class DbScanner:
         )
         return output_result
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_final_result(self, data_count_result: dict, columns_qc_result: dict[str: ColumnQCResult]):
         final_qc_result = FinalQCResult(
             is_qc_passed=True,
@@ -143,6 +132,7 @@ class DbScanner:
 
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def is_data_discrepancy_present(source_handler: NDDBHandler, dest_handler: NDDBHandler, table_name: str, ignore_row_count: int = 0) -> DataCountResult:
     assert table_name, "table_name must not be empty"
 

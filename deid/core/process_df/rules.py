@@ -3,6 +3,7 @@ from datetime import timedelta, datetime
 from typing import Dict
 from enum import Enum
 import re          # standard lib – re.Match type hint + fallback
+from pydantic import validate_call
 try:
     import re2
 except ImportError:
@@ -27,6 +28,7 @@ class Rules(Enum):
 
 
 class RuleBase:
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def apply(self, df: pl.DataFrame, column_config: Dict) -> pl.DataFrame:
         raise NotImplementedError
 
@@ -36,6 +38,7 @@ class RuleBase:
 # ---------------------------------------------------------------------------
 
 class PatientIDRule(RuleBase):
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def apply(self, df: pl.DataFrame, column_config: Dict) -> pl.DataFrame:
         column = column_config["column_name"]
         nd_logger.info(f"[{self.__class__.__name__}] Applying PatientIDRule for column: {column}")
@@ -49,6 +52,7 @@ class PatientIDRule(RuleBase):
 
 
 class EncounterIDRule(RuleBase):
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def apply(self, df: pl.DataFrame, column_config: Dict) -> pl.DataFrame:
         column = column_config["column_name"]
         nd_logger.info(f"[{self.__class__.__name__}] Applying EncounterIDRule for column: {column}")
@@ -62,6 +66,7 @@ class EncounterIDRule(RuleBase):
 
 
 class ReferencePIDRule(RuleBase):
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def apply(self, df: pl.DataFrame, column_config: Dict) -> pl.DataFrame:
         column = column_config["column_name"]
         nd_logger.info(f"[{self.__class__.__name__}] Applying ReferencePIDRule for column: {column}")
@@ -75,6 +80,7 @@ class ReferencePIDRule(RuleBase):
 
 
 class AppointmentIDRule(RuleBase):
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def apply(self, df: pl.DataFrame, column_config: Dict) -> pl.DataFrame:
         column = column_config["column_name"]
         nd_logger.info(f"[{self.__class__.__name__}] Applying AppointmentIDRule for column: {column}")
@@ -92,6 +98,7 @@ class AppointmentIDRule(RuleBase):
 # ---------------------------------------------------------------------------
 
 class MaskRule(RuleBase):
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def apply(self, df: pl.DataFrame, column_config: Dict) -> pl.DataFrame:
         column = column_config["column_name"]
         mask_value = column_config.get("mask_value", "<<>>")
@@ -109,6 +116,7 @@ class MaskRule(RuleBase):
 # Date-offset rules  (row-wise Python UDF — same speed as Pandas apply)
 # ---------------------------------------------------------------------------
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def _normalize_to_mysql_datetime(val) -> str | None:
     """Convert any date-like string to ``YYYY-MM-DD HH:MM:SS`` or None."""
     if val is None or str(val).strip() == "":
@@ -127,10 +135,12 @@ class BaseDateOffsetRule(RuleBase):
         self.format_as_datetime = format_as_datetime
         self.is_notes = is_notes
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _get_offset_list(self, df: pl.DataFrame) -> list:
         """Return a per-row list of offset days.  Subclasses must override."""
         raise NotImplementedError("Subclasses must implement _get_offset_list()")
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _shift_text(self, text, offset_days) -> str:
         """Apply date-offset to every date pattern found in *text*."""
         _NULL_SENTINELS = {"", "0", "null", "nan", "None", "none", None}
@@ -142,6 +152,7 @@ class BaseDateOffsetRule(RuleBase):
         except (ValueError, TypeError):
             offset_days = 0
 
+        @validate_call(config=dict(arbitrary_types_allowed=True))
         def replace_fn(match):
             date_str = match.group(0)
             try:
@@ -168,6 +179,7 @@ class BaseDateOffsetRule(RuleBase):
 
         return self.COMPILED_DATE_PATTERN.sub(replace_fn, str(text))
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def apply(self, df: pl.DataFrame, column_config: dict) -> pl.DataFrame:
         col_name = column_config["column_name"]
         nd_logger.info(
@@ -213,6 +225,7 @@ class StaticDateOffsetRule(BaseDateOffsetRule):
         super().__init__(format_as_datetime=format_as_datetime)
         self.static_offset = offset_days
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _get_offset_list(self, df: pl.DataFrame) -> list:
         return [self.static_offset] * df.height
 
@@ -221,6 +234,7 @@ class DateOffsetRule(BaseDateOffsetRule):
     def __init__(self, format_as_datetime: bool = True):
         super().__init__(format_as_datetime=format_as_datetime)
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _get_offset_list(self, df: pl.DataFrame) -> list:
         if "_resolved_offset" in df.columns:
             return df["_resolved_offset"].to_list()
@@ -232,9 +246,11 @@ class DateOffsetRule(BaseDateOffsetRule):
 # ---------------------------------------------------------------------------
 
 class PatientDOBRule(BaseDateOffsetRule):
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _get_offset_list(self, df: pl.DataFrame) -> list:
         return [0] * df.height  # not used; apply() is overridden
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def extract_year(self, text: str):
         """Parse *text* and return the 4-digit birth year, or None on failure."""
         if not text or str(text).strip().lower() in ("none", "nan", ""):
@@ -257,6 +273,7 @@ class PatientDOBRule(BaseDateOffsetRule):
             )
         return None
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def apply(self, df: pl.DataFrame, column_config: dict) -> pl.DataFrame:
         col_name = column_config["column_name"]
         nd_logger.info(f"[{self.__class__.__name__}] Applying PatientDOBRule for column: {col_name}")
@@ -296,6 +313,7 @@ class ZIPCodeRule(RuleBase):
             f"[{self.__class__.__name__}] Initialized with country: {self.country}"
         )
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _get_zip_pattern(self):
         pattern = ZIP_CODE_PATTERNS.get(self.country)
         if not pattern:
@@ -304,6 +322,7 @@ class ZIPCodeRule(RuleBase):
             )
         return pattern
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def mask_zip(self, zip_code) -> str | None:
         if not zip_code or str(zip_code).lower() in ("nan", "none"):
             return None
@@ -313,6 +332,7 @@ class ZIPCodeRule(RuleBase):
             return match.group(1)
         return zip_code[:3] if len(zip_code) > 2 else zip_code
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def apply(self, df: pl.DataFrame, column_config: Dict) -> pl.DataFrame:
         col_name = column_config["column_name"]
         nd_logger.info(f"[{self.__class__.__name__}] Applying ZIPCodeRule for column: {col_name}")

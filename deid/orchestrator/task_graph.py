@@ -7,8 +7,10 @@ from celery import group
 
 from deid.config.schema import DeidConfig
 from deid.config.task_models import DeidentifyTaskConfig
+from pydantic import validate_call
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def _rules_to_table_details(rules: dict[str, str]) -> dict:
     """Convert a flat {column: rule} dict to the TableDetailsForUI format.
 
@@ -33,6 +35,7 @@ def _rules_to_table_details(rules: dict[str, str]) -> dict:
     }
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def _build_table_config(config: DeidConfig, table_name: str, rules: dict) -> dict:
     """Build a validated config dict that gets passed to each Celery task."""
     table_details = _rules_to_table_details(rules)
@@ -47,10 +50,15 @@ def _build_table_config(config: DeidConfig, table_name: str, rules: dict) -> dic
         redis_url=config.redis_url,
         table_details_for_ui=table_details,
         mapping_db_config={"connection_str": mappings_conn_str},
+        run_config={
+            "redis_url": config.redis_url,
+            "log_verbosity": config.logging.log_verbosity.value,
+        },
     )
     return task_config.model_dump()
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def build_task_graph(
     config: DeidConfig,
     table_row_counts: dict[str, int],

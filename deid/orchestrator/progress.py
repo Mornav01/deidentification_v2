@@ -6,10 +6,12 @@ import json
 import logging
 
 from deid.config.task_models import ProgressEvent
+from pydantic import validate_call
 
 logger = logging.getLogger("deid.orchestrator")
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 async def listen_progress(redis_url: str):
     """Async generator yielding progress events from Redis pub/sub."""
     assert redis_url, "redis_url must not be empty"

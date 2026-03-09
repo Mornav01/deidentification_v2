@@ -1,22 +1,17 @@
-from sqlalchemy import create_engine, event, MetaData, Table, text, func, Index
+from sqlalchemy import create_engine, event, MetaData, Table, text, func, Column
 from sqlalchemy.engine import reflection
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import ProgrammingError
 from deid.core.logger import nd_logger
-from sqlalchemy import Table, Column, text, create_engine, MetaData, VARCHAR, INTEGER, BIGINT
-from sqlalchemy.exc import ProgrammingError
-from sqlalchemy import (
-    BigInteger,
-    Integer,
-    String
-)
+from sqlalchemy import String
 import datetime
 import decimal
-import pandas as pd
 import polars as pl
-from typing import Iterator, List, Dict, Union
+from typing import Iterator, List, Dict
+from pydantic import validate_call
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def _normalize_value(v):
     """Convert Python objects that Polars can't handle uniformly to plain scalars.
 
@@ -52,11 +47,13 @@ def _normalize_value(v):
     return v
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def _normalize_rows(rows) -> list:
     """Apply _normalize_value to every cell in every row."""
     return [[_normalize_value(cell) for cell in row] for row in rows]
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def create_read_only_engine(connection_string: str, **kwargs):
     """Create a SQLAlchemy engine that enforces read-only at the DB session level."""
     engine = create_engine(connection_string, **kwargs)
@@ -79,7 +76,7 @@ def create_read_only_engine(connection_string: str, **kwargs):
 class NDDBHandler:
     def __init__(self, connection_string: str, read_only: bool = False):
         self.read_only = read_only
-        engine_kwargs = dict(pool_size=100, max_overflow=10, pool_timeout=30, pool_recycle=1800, pool_pre_ping=True)
+        engine_kwargs = dict(pool_size=5, max_overflow=5, pool_timeout=30, pool_recycle=1800, pool_pre_ping=True)
         if read_only:
             self.engine = create_read_only_engine(connection_string, **engine_kwargs)
         else:
@@ -90,36 +87,24 @@ class NDDBHandler:
         self.Session = sessionmaker(bind=self.engine)
         self.session = self.Session()
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _qi(self, identifier: str) -> str:
         """Quote a table or column identifier for the current dialect."""
         if self.engine.dialect.name == "mssql":
             return f"[{identifier}]"
         return f"`{identifier}`"
-    
+
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def close(self):
         self.session.close()
         self.engine.dispose()
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_columns(self, table_name: str) -> list[dict]:
         inspector = reflection.Inspector.from_engine(self.engine)
         return inspector.get_columns(table_name)
 
-    def get_column_names(self, table_name: str) -> list[str]:
-        return [column["name"] for column in self.get_columns(table_name)]
-
-    def fetch_all(self, table_name: str) -> list[dict]:
-        table = Table(table_name, self.metadata, autoload_with=self.engine)
-        query = table.select()
-        result = self.session.execute(query)
-        return [dict(row) for row in result]
-
-    # def insert_to_db(self, rows: list[dict], table_name: str):
-    #     if not rows:
-    #         nd_logger.warning(f"No rows to insert into {table_name}.")
-    #         return
-    #     table = Table(table_name, self.metadata, autoload_with=self.engine)
-    #     self.session.execute(table.insert(), rows)
-    #     self.session.commit()
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _assert_writable(self, operation: str):
         if self.read_only:
             raise RuntimeError(
@@ -127,6 +112,7 @@ class NDDBHandler:
                 "Write operations must target the destination database."
             )
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def insert_to_db(self, rows: list[dict], table_name: str, batch_size: int = 10000):
         self._assert_writable(f"INSERT into {table_name}")
         import pymysql
@@ -141,7 +127,6 @@ class NDDBHandler:
             # Dynamically generate column names
             columns = rows[0].keys()
             placeholders = ", ".join(["%s"] * len(columns))
-            # sql = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders})"
             sql = f"INSERT INTO {self._qi(table_name)} ({', '.join(self._qi(col) for col in columns)}) VALUES ({placeholders})"
 
             # Convert rows to tuple format
@@ -162,14 +147,14 @@ class NDDBHandler:
     def _portable_type(col_type):
         """Map dialect-specific column types to portable generic types.
 
-        MSSQL types like MONEY, SMALLMONEY, IMAGE, etc. have no direct
-        equivalent in MySQL/PostgreSQL.  This converts them to standard
-        SQL types so cross-dialect CREATE TABLE works.
+        MSSQL types like MONEY, SMALLMONEY, IMAGE, NVARCHAR(MAX), etc. have
+        no direct equivalent in MySQL/PostgreSQL.  This converts them to
+        standard SQL types so cross-dialect CREATE TABLE works.
 
         Also strips MSSQL-specific collations (e.g. SQL_Latin1_General_CP1_CI_AS)
         from string columns so MySQL doesn't reject them.
         """
-        from sqlalchemy import Numeric, LargeBinary, UnicodeText
+        from sqlalchemy import Numeric, LargeBinary, Text, UnicodeText
         type_name = type(col_type).__name__.upper()
         if type_name in ("MONEY", "SMALLMONEY"):
             return Numeric(19, 4)
@@ -179,6 +164,11 @@ class NDDBHandler:
             return UnicodeText()
         if type_name in ("SQL_VARIANT", "UNIQUEIDENTIFIER"):
             return String(255)
+        # NVARCHAR/VARCHAR without a length (MSSQL MAX) → TEXT/LONGTEXT
+        if type_name in ("NVARCHAR", "NCHAR") and not getattr(col_type, "length", None):
+            return UnicodeText()
+        if type_name in ("VARCHAR", "CHAR") and not getattr(col_type, "length", None):
+            return Text()
         # Strip MSSQL collations from string-like types
         if hasattr(col_type, "collation") and col_type.collation:
             col_type = col_type.copy()
@@ -216,28 +206,13 @@ class NDDBHandler:
                 )
 
         dest_table = Table(dest_table_name, dest_handler.metadata, *mapped_columns)
-        # # Fix for missing Unique Indexes
-        # for idx in source_table.indexes:
-        #     # Map source index columns to the new destination table columns
-        #     column_names = [c.name for c in idx.columns]
-        #     target_columns = [dest_table.c[name] for name in column_names]
-            
-        #     # Re-create the index on the destination table
-        #     Index(idx.name, *target_columns, unique=idx.unique)
 
         dest_table.create(dest_handler.engine)
         nd_logger.info(
             f"Table {dest_table_name} created in destination database with modified schema."
         )
 
-    # def _get_sqlalchemy_type(self, type_name: str, length: int = None):
-    #     type_map = {
-    #         "VARCHAR": lambda l: VARCHAR(length=l) if l else VARCHAR,
-    #         "INTEGER": INTEGER,
-    #         "BIGINT": BIGINT
-    #     }
-    #     return type_map[type_name](length) if length else type_map[type_name]
-
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_column_type(self, col_info):
         col_nullable = col_info.get("null", None)
         col_type = col_info["type"]
@@ -269,14 +244,12 @@ class NDDBHandler:
         except ProgrammingError:
             return False
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_all_tables(self) -> list[str]:
         inspector = reflection.Inspector.from_engine(self.engine)
         return inspector.get_table_names()
 
-    def get_table_schema(self, table_name: str) -> list[dict]:
-        inspector = reflection.Inspector.from_engine(self.engine)
-        return inspector.get_columns(table_name)
-
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_rows_count(self, table_name: str) -> int:
         """Fast estimated row count using catalog metadata (no full table scan).
 
@@ -324,198 +297,7 @@ class NDDBHandler:
             result = conn.execute(func.count().select().select_from(table))
             return result.scalar()
 
-    def get_table_size(self, table_name: str) -> str:
-        return "1 GB"
-        if self.engine.dialect.name == "mysql":
-            query = text(
-                f"SELECT (data_length + index_length) FROM information_schema.tables WHERE table_name = '{table_name}'"
-            )
-        else:
-            query = text(f"SELECT pg_total_relation_size('{table_name}')")
-        result = self.session.execute(query)
-        size_in_bytes = result.scalar() or 0
-
-        for unit in ["Bytes", "KB", "MB", "GB", "TB"]:
-            if size_in_bytes < 1024:
-                return f"{size_in_bytes:.2f} {unit}"
-            size_in_bytes /= 1024
-
-    def get_db_size(self) -> str:
-        return "1 GB"
-        if self.engine.dialect.name == "mysql":
-            query = text(
-                "SELECT SUM(data_length + index_length) FROM information_schema.tables WHERE table_schema = DATABASE()"
-            )
-        else:
-            query = text("SELECT pg_database_size(current_database())")
-        result = self.session.execute(query)
-        size_in_bytes = result.scalar() or 0
-
-        for unit in ["Bytes", "KB", "MB", "GB", "TB"]:
-            if size_in_bytes < 1024:
-                return f"{size_in_bytes:.2f} {unit}"
-            size_in_bytes /= 1024
-
-    def get_rows(self, table_name: str, limit: int, offset: Union[int, Dict[str, int]]) -> List[dict]:
-        table = Table(table_name, self.metadata, autoload_with=self.engine)
-        
-        # Use primary key for offset-based pagination
-        primary_key_cols = list(table.primary_key.columns)
-        order_column = primary_key_cols[0] if primary_key_cols else list(table.columns)[0]
-        order_col_name = order_column.name
-
-        # Keyset Pagination using 'nd_auto_increment_id'
-        if isinstance(offset, dict) and "gt" in offset and "lt" in offset:
-            if "nd_auto_increment_id" not in table.c:
-                raise ValueError(f"Table '{table_name}' does not have column 'nd_auto_increment_id' required for keyset pagination.")
-
-            query = (
-                table.select()
-                .where(table.c.nd_auto_increment_id >= offset["gt"])
-                .where(table.c.nd_auto_increment_id <= offset["lt"])
-            )
-
-        # Offset-based Pagination (e.g., limit-offset)
-        elif isinstance(offset, int):
-            query = (
-                table.select()
-                .order_by(table.c[order_col_name])
-                .offset(offset)
-                .limit(limit)
-            )
-
-        else:
-            raise ValueError("Offset must be either an int or a dict with 'gt' and 'lt' keys.")
-
-        result = self.session.execute(query)
-        return [dict(row._mapping) for row in result]
-    
-    def get_all_rows(self, table_name: str) -> list[dict]:
-        table = Table(table_name, self.metadata, autoload_with=self.engine)
-        query = table.select()
-        result = self.session.execute(query)
-        return [dict(row._mapping) for row in result]
-    
-    def get_rows_where_column_values_in(self, table_name: str, column_name: str, column_values: list[str]) -> list[dict]:
-        table = Table(table_name, self.metadata, autoload_with=self.engine)
-    
-        # Build the query with WHERE condition
-        query = table.select().where(table.c[column_name].in_(column_values))
-
-        # Execute query
-        result = self.session.execute(query)
-
-        # Convert result to list of dictionaries
-        return [dict(row._mapping) for row in result]
-
-    def table_with_max_rows(self) -> dict[str, str]:
-        tables = self.get_all_tables()
-        max_rows, max_table = -1, None
-        for table in tables:
-            row_count = self.get_rows_count(table)
-            if row_count > max_rows:
-                max_rows, max_table = row_count, table
-        return {"table_name": max_table, "rows_count": max_rows}
-
-    def table_with_min_rows(self) -> dict[str, str]:
-        tables = self.get_all_tables()
-        min_rows, min_table = float("inf"), None
-        for table in tables:
-            row_count = self.get_rows_count(table)
-            if row_count < min_rows:
-                min_rows, min_table = row_count, table
-        return {"table_name": min_table, "rows_count": min_rows}
-
-    def table_with_max_size(self) -> str:
-        tables = self.get_all_tables()
-        max_size, max_table = -1, None
-        for table in tables:
-            table_size_str = self.get_table_size(table)
-            table_size = self._parse_size_to_bytes(table_size_str)
-            if table_size > max_size:
-                max_size, max_table = table_size, table
-        return {"table_name": max_table, "size": max_size}
-
-    def table_with_min_size(self) -> str:
-        tables = self.get_all_tables()
-        min_size, min_table = float("inf"), None
-        for table in tables:
-            table_size_str = self.get_table_size(table)
-            table_size = self._parse_size_to_bytes(table_size_str)
-            if table_size < min_size:
-                min_size, min_table = table_size, table
-        return {"table_name": min_table, "size": min_size}
-
-    def _parse_size_to_bytes(self, size_str: str) -> int:
-        units = {"Bytes": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
-        size, unit = size_str.split()
-        return int(float(size) * units[unit])
-
-    def fks_to_for_table(self, table_name: str) -> list[dict]:
-        inspector = reflection.Inspector.from_engine(self.engine)
-        foreign_keys = []
-        for fk in inspector.get_foreign_keys(table_name):
-            foreign_keys.append(
-                {
-                    "constrained_columns": fk["constrained_columns"],
-                    "referred_table": fk["referred_table"],
-                    "referred_columns": fk["referred_columns"],
-                }
-            )
-        return foreign_keys
-
-    def fks_from_for_table(self, table_name: str) -> list[dict]:
-        # Legacy single-table method — O(N) per call (N = number of tables).
-        # For bulk stats generation use get_all_fks_map() once instead.
-        inspector = reflection.Inspector.from_engine(self.engine)
-        foreign_keys = []
-        for table in self.get_all_tables():
-            for fk in inspector.get_foreign_keys(table):
-                if fk["referred_table"] == table_name:
-                    foreign_keys.append(
-                        {
-                            "table": table,
-                            "constrained_columns": fk["constrained_columns"],
-                            "referred_columns": fk["referred_columns"],
-                        }
-                    )
-        return foreign_keys
-
-    def get_all_fks_map(self) -> tuple[dict, dict]:
-        """Build complete FK graph for all tables in a single pass.
-
-        Returns:
-            fks_to_map:   {table_name → list of outgoing FK dicts}
-            fks_from_map: {referred_table_name → list of incoming FK dicts}
-
-        Replaces N calls to fks_from_for_table() (O(N²) total) with a single
-        O(N) loop — one inspector.get_foreign_keys() call per table.
-        """
-        inspector = reflection.Inspector.from_engine(self.engine)
-        all_tables = self.get_all_tables()
-        fks_to_map: dict[str, list] = {t: [] for t in all_tables}
-        fks_from_map: dict[str, list] = {t: [] for t in all_tables}
-
-        for table in all_tables:
-            for fk in inspector.get_foreign_keys(table):
-                fks_to_map[table].append(
-                    {
-                        "constrained_columns": fk["constrained_columns"],
-                        "referred_table": fk["referred_table"],
-                        "referred_columns": fk["referred_columns"],
-                    }
-                )
-                referred = fk["referred_table"]
-                if referred in fks_from_map:
-                    fks_from_map[referred].append(
-                        {
-                            "table": table,
-                            "constrained_columns": fk["constrained_columns"],
-                            "referred_columns": fk["referred_columns"],
-                        }
-                    )
-        return fks_to_map, fks_from_map
-
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_min_max_id(self, table_name: str, id_column: str = "nd_auto_increment_id") -> tuple[int, int] | None:
         """Return (min_id, max_id) for the given table's ID column, or None."""
         qi = self._qi
@@ -532,12 +314,8 @@ class NDDBHandler:
             except Exception:
                 return None
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_keyset_pagination_ranges(self, table_name: str, id_column: str = "nd_auto_increment_id", batch_size: int = 100000) -> List[Dict[str, int]]:
-        # Fast O(1) approach: MIN and MAX are pure index lookups on an auto-increment column.
-        # The old ROW_NUMBER() OVER () window function was O(N) — it materialized and sorted
-        # the entire table, taking 60–300s on 20–50M row tables.
-        # Since nd_auto_increment_id is an auto-increment column, ID distribution is dense
-        # and uniform, so MIN/MAX splitting gives batches close to batch_size rows.
         qi = self._qi
         min_max_query = text(
             f"SELECT MIN({qi(id_column)}), MAX({qi(id_column)}) "
@@ -562,6 +340,7 @@ class NDDBHandler:
         return ranges
 
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def stream_table_as_dataframes_in_range(
         self,
         table_name: str,
@@ -606,6 +385,7 @@ class NDDBHandler:
         finally:
             conn.close()
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def stream_table_as_dataframes(self, table_name: str, batch_size: int) -> Iterator[pl.DataFrame]:
         """Stream a table as an iterator of Polars DataFrames using a server-side cursor.
 
@@ -646,35 +426,7 @@ class NDDBHandler:
         finally:
             conn.close()
 
-    def get_table_as_dataframe(self, table_name: str, limit: int, offset: Union[int, dict]) -> pl.DataFrame:
-        """Fetch a slice of a table as a Polars DataFrame (legacy offset/keyset API).
-
-        Prefer `stream_table_as_dataframes()` for full-table processing.
-        """
-        table = Table(table_name, self.metadata, autoload_with=self.engine)
-
-        primary_key_cols = list(table.primary_key.columns)
-        order_column = primary_key_cols[0] if primary_key_cols else list(table.columns)[0]
-
-        # Keyset pagination
-        if isinstance(offset, dict) and "gt" in offset and "lt" in offset:
-            gt_value = offset["gt"]
-            lt_value = offset["lt"]
-            query = (table.select().where(table.c["nd_auto_increment_id"] >= gt_value).where(table.c["nd_auto_increment_id"] <= lt_value))
-        else:
-            # Offset-based pagination
-            query = (table.select().order_by(order_column).limit(limit).offset(offset))
-
-        result = self.session.execute(query)
-        rows = result.fetchall()
-        columns = list(result.keys())
-        return pl.DataFrame(
-            [list(r) for r in rows],
-            schema=columns,
-            orient="row",
-        )
-    
-
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def insert_dataframe_in_batches(self, df: pl.DataFrame, table_name: str, batch_size: int = 10000) -> None:
         """Insert a Polars DataFrame into the given MySQL table in batches.
 
@@ -713,11 +465,6 @@ class NDDBHandler:
                 max_lengths[col_name] = int(length)
 
         # ── 3. Truncate string columns that exceed the declared max-length ────
-        # This is a last-resort safety net.  Ideally the destination table was
-        # already created with the correct (wider) VARCHAR length via
-        # _get_columns_schema_mapping in main.py.  But if the table already
-        # existed from a previous run with the original narrow source schema,
-        # this prevents MySQL error 1265 "Data truncated for column …".
         _STRING_DTYPES = {pl.Utf8, pl.String, pl.Categorical}
         if max_lengths:
             truncate_exprs = []
@@ -755,3 +502,16 @@ class NDDBHandler:
                 raise
 
         nd_logger.info(f"[DBHandler] Completed insertion into '{table_name}'.")
+
+
+# ---------------------------------------------------------------------------
+# Deferred @validate_call for methods with "NDDBHandler" forward references.
+# Pydantic's validate_call eagerly resolves type hints at decoration time,
+# but during class body execution NDDBHandler isn't yet in module scope.
+# Applying the decorator here (after the class is defined) lets the forward
+# reference resolve normally.
+# ---------------------------------------------------------------------------
+_vc = validate_call(config=dict(arbitrary_types_allowed=True))
+NDDBHandler.create_table_in_dest = _vc(NDDBHandler.create_table_in_dest)
+NDDBHandler.create_table_in_dest_if_not_exists = _vc(NDDBHandler.create_table_in_dest_if_not_exists)
+NDDBHandler._table_exists = _vc(NDDBHandler._table_exists)

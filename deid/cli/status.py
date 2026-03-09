@@ -4,8 +4,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import typer
+from pydantic import validate_call
 
 
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def status_command(
     state_db: str = typer.Option("./state.db", "--state-db", help="Path to state.db"),
 ):

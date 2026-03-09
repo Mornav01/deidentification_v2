@@ -1,8 +1,7 @@
-from .schemas import PatientMappingDict, EncounterMappingDict, MappingDbConfig
+from .schemas import MappingDbConfig
 
 from pydantic import validate_call
 from sqlalchemy import MetaData, Table, create_engine, select
-from deid.core.logger import nd_logger
 
 
 class MappingDb:
@@ -28,9 +27,9 @@ class MappingDb:
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_nd_patients_dict(
         self,
-        ids: list[int],
+        ids: list,
         id_column: str = "patient_id",
-    ) -> dict[int, dict]:
+    ) -> dict:
         table = Table("patient_mapping_table", self.metadata, autoload_with=self.engine)
         col_attr = table.c[id_column]
         stmt = select(table).where(col_attr.in_(ids))
@@ -47,8 +46,8 @@ class MappingDb:
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_nd_encounter_dict(
-        self, encounter_ids: list[int]
-    ) -> dict[int, EncounterMappingDict]:
+        self, encounter_ids: list
+    ) -> dict:
         table = Table("encounter_mapping_table", self.metadata, autoload_with=self.engine)
         stmt = select(table).where(table.c.encounter_id.in_(encounter_ids))
 
@@ -67,8 +66,8 @@ class MappingDb:
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_reverse_patients_dict(
-        self, nd_patient_ids: list[int]
-    ) -> dict[int, PatientMappingDict]:
+        self, nd_patient_ids: list
+    ) -> dict:
         table = Table("patient_mapping_table", self.metadata, autoload_with=self.engine)
         stmt = select(table).where(table.c.nd_patient_id.in_(nd_patient_ids))
 
@@ -86,8 +85,8 @@ class MappingDb:
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_reverse_encounter_dict(
-        self, nd_encounter_ids: list[int]
-    ) -> dict[int, EncounterMappingDict]:
+        self, nd_encounter_ids: list
+    ) -> dict:
         table = Table("encounter_mapping_table", self.metadata, autoload_with=self.engine)
         stmt = select(table).where(table.c.nd_encounter_id.in_(nd_encounter_ids))
 

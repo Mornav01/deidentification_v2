@@ -1,6 +1,7 @@
 import polars as pl
 from deid.core.logger import nd_logger
 import json
+from pydantic import validate_call
 
 
 class InvalidRowHandler:
@@ -17,6 +18,7 @@ class InvalidRowHandler:
             f"[InvalidRowHandler] Initialized for db: '{db_name}', table: '{table_name}'"
         )
 
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def handle(self, df: pl.DataFrame) -> pl.DataFrame:
         if "_resolved_nd_patient_id" not in df.columns:
             nd_logger.warning(

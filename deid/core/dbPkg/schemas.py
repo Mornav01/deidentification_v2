@@ -14,18 +14,5 @@ class EncounterMappingDict(TypedDict):
 
 
 class MappingDbConfig(TypedDict):
-    connection_string: str
+    connection_str: str
     inhouse_mapping_table: bool
-    # patient_table_name: str
-    # encounter_table_name: str
-    # patient_id_column: str
-    # encounter_id_column: str
-    # offset_column: str
-    # nd_patient_id_column: str
-    # nd_encounter_id_column: str
-
-
-
-class SecondaryPIIConfig(TypedDict):
-    table_name: str
-    config: dict

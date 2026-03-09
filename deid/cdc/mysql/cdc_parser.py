@@ -11,6 +11,7 @@ import time
 import sys
 from datetime import datetime, timedelta, date
 from queue import Empty
+from pydantic import validate_call
  
 # Try to import orjson for faster JSON serialization
 try:
@@ -40,6 +41,7 @@ WHITELIST_SCHEMAS = {"mobiledoc"}
 # ============================
 # JSON Helper
 # ============================
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def json_dumps(data):
     if HAS_ORJSON:
         # orjson returns bytes, so we decode to string for compatibility with text-based DB drivers
@@ -50,6 +52,7 @@ def json_dumps(data):
 # ============================
 # Checkpoint Manager
 # ============================
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def load_checkpoint(checkpoint_file):
     if os.path.exists(checkpoint_file):
         try:
@@ -59,6 +62,7 @@ def load_checkpoint(checkpoint_file):
             logger.warning(f"Failed to load checkpoint file: {e}")
     return set()
  
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def save_checkpoint(checkpoint_file, processed_files):
     try:
         # Load existing first to merge (to be safe against race conditions if multiple writers existed, though here main is single writer)
@@ -83,6 +87,7 @@ def save_checkpoint(checkpoint_file, processed_files):
 # ============================
 # DB Connection
 # ============================
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def get_db_config():
     return {
         "host": "localhost",
@@ -91,12 +96,14 @@ def get_db_config():
         "database": MYSQL_DB
     }
  
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def get_db_conn():
     return mysql.connector.connect(**get_db_config())
  
 # ============================
 # Worker: DB Writer (Consumer)
 # ============================
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def worker_db_writer(queue, table_name, db_config, batch_size=2000, commit_interval=1.0):
     """
     Consumer process that pulls records from the queue and batch inserts them into MySQL.
@@ -169,6 +176,7 @@ def worker_db_writer(queue, table_name, db_config, batch_size=2000, commit_inter
 # ============================
 # Worker: Parser (Producer)
 # ============================
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def worker_parse(binlog_path, p0_tables_set, queue, run_date, end_date=None):
     """
     Producer process that parses a binlog file and pushes records to the queue.
@@ -396,6 +404,7 @@ def worker_parse(binlog_path, p0_tables_set, queue, run_date, end_date=None):
 # ============================
 # File Scanning
 # ============================
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def get_files(folder_path, run_date, end_date):
     # Optimized file scanning using os.scandir
     modified_files = []
@@ -434,6 +443,7 @@ def get_files(folder_path, run_date, end_date):
 # ============================
 # Argument Parsing
 # ============================
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def parse_args():
     parser = argparse.ArgumentParser(description="CDC binlog parser")
     parser.add_argument(
@@ -495,6 +505,7 @@ def parse_args():
 # ============================
 # Worker Wrapper (must be module-level for multiprocessing spawn pickling)
 # ============================
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def worker_wrapper(files, p0_set, data_q, stats_q, r_date, e_date):
     for f in files:
         try:
@@ -515,6 +526,7 @@ def worker_wrapper(files, p0_set, data_q, stats_q, r_date, e_date):
 # ============================
 # Main Orchestrator
 # ============================
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def main():
     args = parse_args()
     cdc_table_name = args.table_name
