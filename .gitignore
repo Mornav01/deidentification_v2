@@ -193,3 +193,7 @@ pip-delete-this-directory.txt
 *.rej
 tmp/
 temp/
+
+*.csv
+*.yaml
+*.db
