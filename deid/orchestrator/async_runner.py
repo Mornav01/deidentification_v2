@@ -209,13 +209,17 @@ async def _cache_large_tables(
         finally:
             source.close()
 
+    # Dump tables sequentially to avoid overloading the source DB with
+    # multiple parallel streaming cursors (the very problem the cache solves).
     logger.info("Cache: dumping %d large table(s) to Arrow IPC...", len(table_id_ranges))
-    results = await asyncio.gather(*[_dump_one(t) for t in table_id_ranges])
-
-    for table_name, path in results:
-        if path:
-            cache_paths[table_name] = path
-            logger.info("Cache: %s → %s", table_name, path)
+    for table_name in table_id_ranges:
+        try:
+            name, path = await _dump_one(table_name)
+            if path:
+                cache_paths[name] = path
+                logger.info("Cache: %s → %s", name, path)
+        except Exception:
+            logger.exception("Cache: failed to dump %s — workers will read from source DB", table_name)
 
     return cache_paths
 

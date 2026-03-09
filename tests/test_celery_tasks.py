@@ -109,3 +109,27 @@ def test_deidentify_table_publishes_error_on_failure():
     error_logs = [r for r in published_logs if r.level.value == "ERROR"]
     assert len(error_logs) >= 1
     assert "connection timeout" in error_logs[0].error
+
+
+def test_deidentify_table_range_passes_cache_dir():
+    from unittest.mock import patch
+    from deid.config.task_models import DeidentifyTaskConfig
+
+    config = DeidentifyTaskConfig(
+        table_name="big_table",
+        source_conn_str="sqlite:///test.db",
+        dest_conn_str="sqlite:///dest.db",
+        table_details_for_ui={"columns_details": [], "ignore_rows": {}},
+        redis_url="redis://localhost:6379/0",
+        run_config={"redis_url": "redis://localhost:6379/0", "log_verbosity": "standard"},
+        cache_dir="/tmp/.deid_cache/big_table",
+    )
+
+    with patch("deid.tasks.deidentify.start_de_identification_for_table", return_value={"batches_processed": 1}) as mock_fn:
+        with patch("deid.tasks.deidentify._publish_progress"):
+            with patch("deid.tasks.deidentify.publish_log"):
+                from deid.tasks.deidentify import deidentify_table_range
+                deidentify_table_range(config.model_dump(), 1, 100)
+
+    _, kwargs = mock_fn.call_args
+    assert kwargs.get("cache_dir") == "/tmp/.deid_cache/big_table"

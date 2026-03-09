@@ -51,3 +51,96 @@ def test_build_task_graph_large_table_splits():
     table_id_ranges = {"big_table": (1, 10000)}
     graph = build_task_graph(config, table_row_counts, table_id_ranges)
     assert graph is not None
+
+
+def test_cache_large_tables_creates_ipc_files(tmp_path):
+    """_cache_large_tables should dump large tables to Arrow IPC files."""
+    import asyncio
+    import os
+    from unittest.mock import patch, MagicMock
+    import polars as pl
+    from deid.config.schema import DeidentificationSettings, TableConfig
+
+    config = _make_config(
+        state_db_path=str(tmp_path / "state.db"),
+        deidentification=DeidentificationSettings(
+            large_table_threshold=500,
+            batch_size=5,
+        ),
+        tables=[TableConfig(name="big_table", rules={"col1": "MASK"})],
+    )
+
+    table_id_ranges = {"big_table": (1, 1000)}
+
+    def mock_stream(table_name, batch_size):
+        for i in range(3):
+            start = i * 5 + 1
+            yield pl.DataFrame({
+                "nd_auto_increment_id": list(range(start, start + 5)),
+                "col1": [f"val_{x}" for x in range(start, start + 5)],
+            })
+
+    mock_handler = MagicMock()
+    mock_handler.stream_table_as_dataframes = mock_stream
+    mock_handler.close = MagicMock()
+
+    with patch("deid.core.dbPkg.dbhandler.NDDBHandler", return_value=mock_handler):
+        from deid.orchestrator.async_runner import _cache_large_tables
+        cache_paths = asyncio.run(_cache_large_tables(config, table_id_ranges))
+
+    assert "big_table" in cache_paths
+    cache_dir = cache_paths["big_table"]
+    assert os.path.isdir(cache_dir)
+
+    files = sorted(os.listdir(cache_dir))
+    assert len(files) == 3
+    assert all(f.endswith(".arrow") for f in files)
+
+    import shutil
+    shutil.rmtree(os.path.dirname(cache_dir))
+
+
+def test_cache_large_tables_skips_small_tables(tmp_path):
+    """Tables below threshold should not be cached."""
+    import asyncio
+    from deid.config.schema import DeidentificationSettings, TableConfig
+
+    config = _make_config(
+        state_db_path=str(tmp_path / "state.db"),
+        deidentification=DeidentificationSettings(large_table_threshold=500),
+        tables=[TableConfig(name="small_table", rules={"col1": "MASK"})],
+    )
+
+    from deid.orchestrator.async_runner import _cache_large_tables
+    cache_paths = asyncio.run(_cache_large_tables(config, {}))
+    assert cache_paths == {}
+
+
+def test_build_task_graph_passes_cache_dir_to_range_tasks():
+    from unittest.mock import patch, MagicMock
+    from deid.orchestrator.task_graph import build_task_graph
+    from deid.config.schema import DeidentificationSettings, TableConfig
+
+    config = _make_config(
+        deidentification=DeidentificationSettings(large_table_threshold=500, parallel_tasks_per_table=2),
+        tables=[TableConfig(name="big_table", rules={"col1": "MASK"})],
+    )
+    table_row_counts = {"big_table": 10000}
+    table_id_ranges = {"big_table": (1, 10000)}
+    cache_paths = {"big_table": "/tmp/.deid_cache/big_table"}
+
+    captured_configs = []
+
+    def capture_s(config_dict, start, end):
+        captured_configs.append(config_dict)
+        return MagicMock()
+
+    with patch("deid.tasks.deidentify.deidentify_table_range") as mock_task:
+        mock_task.s = capture_s
+        with patch("deid.tasks.deidentify.deidentify_table") as mock_single:
+            mock_single.s = lambda x: MagicMock()
+            build_task_graph(config, table_row_counts, table_id_ranges, cache_paths)
+
+    assert len(captured_configs) == 2
+    for cfg in captured_configs:
+        assert cfg["cache_dir"] == "/tmp/.deid_cache/big_table"
