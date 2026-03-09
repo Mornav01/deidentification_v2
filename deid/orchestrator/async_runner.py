@@ -222,35 +222,46 @@ async def _cache_large_tables(
         finally:
             source.close()
 
-    # Dump tables sequentially to avoid overloading the source DB with
-    # multiple parallel streaming cursors (the very problem the cache solves).
+    concurrency = config.deidentification.cache_concurrency
+    semaphore = asyncio.Semaphore(concurrency)
+    total = len(table_id_ranges)
+
     table_list = ", ".join(
         f"{t} (~{table_row_counts.get(t, 0):,} rows)" for t in table_id_ranges
     )
-    logger.info("Cache: dumping %d large table(s) to Arrow IPC: %s", len(table_id_ranges), table_list)
+    logger.info(
+        "Cache: dumping %d large table(s) to Arrow IPC (concurrency=%d): %s",
+        total, concurrency, table_list,
+    )
 
-    for idx, table_name in enumerate(table_id_ranges, 1):
-        est = table_row_counts.get(table_name, 0)
-        logger.info(
-            "Cache: [%d/%d] starting %s (~%s rows)...",
-            idx, len(table_id_ranges), table_name, f"{est:,}",
-        )
-        try:
-            name, summary = await _dump_one(table_name)
-            if summary:
-                cache_paths[name] = summary["cache_dir"]
-                logger.info(
-                    "Cache: [%d/%d] %s done — %s rows, %d batches, %.1fs",
-                    idx, len(table_id_ranges), name,
-                    f"{summary['rows']:,}", summary["batches"], summary["elapsed_s"],
-                )
-        except Exception:
-            logger.exception(
-                "Cache: [%d/%d] %s FAILED — workers will read from source DB",
-                idx, len(table_id_ranges), table_name,
+    async def _dump_with_semaphore(idx: int, table_name: str):
+        async with semaphore:
+            est = table_row_counts.get(table_name, 0)
+            logger.info(
+                "Cache: [%d/%d] starting %s (~%s rows)...",
+                idx, total, table_name, f"{est:,}",
             )
+            try:
+                name, summary = await _dump_one(table_name)
+                if summary:
+                    cache_paths[name] = summary["cache_dir"]
+                    logger.info(
+                        "Cache: [%d/%d] %s done — %s rows, %d batches, %.1fs",
+                        idx, total, name,
+                        f"{summary['rows']:,}", summary["batches"], summary["elapsed_s"],
+                    )
+            except Exception:
+                logger.exception(
+                    "Cache: [%d/%d] %s FAILED — workers will read from source DB",
+                    idx, total, table_name,
+                )
 
-    logger.info("Cache: complete — %d/%d tables cached", len(cache_paths), len(table_id_ranges))
+    await asyncio.gather(*[
+        _dump_with_semaphore(idx, t)
+        for idx, t in enumerate(table_id_ranges, 1)
+    ])
+
+    logger.info("Cache: complete — %d/%d tables cached", len(cache_paths), total)
     return cache_paths
 
 
