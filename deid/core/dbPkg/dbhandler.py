@@ -85,6 +85,7 @@ def dump_table_to_ipc_cache(
     ``None`` if the stream was empty.
     """
     batch_count = 0
+    total_rows = 0
     for df in stream:
         if df.is_empty():
             continue
@@ -92,6 +93,10 @@ def dump_table_to_ipc_cache(
             os.makedirs(cache_dir, exist_ok=True)
         df.write_ipc(os.path.join(cache_dir, f"batch_{batch_count:05d}.arrow"))
         batch_count += 1
+        total_rows += df.height
+        nd_logger.info(
+            f"[IPC Cache] {cache_dir}: wrote batch {batch_count} ({df.height} rows, {total_rows} total)"
+        )
 
     return cache_dir if batch_count > 0 else None
 

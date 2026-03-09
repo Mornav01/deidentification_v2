@@ -63,7 +63,11 @@ async def run(config: DeidConfig, config_path: str):
 
         cache_paths: dict[str, str] = {}
         if "deidentify" in config.phases and table_id_ranges:
-            cache_paths = await _cache_large_tables(config, table_id_ranges)
+            try:
+                cache_paths = await _cache_large_tables(config, table_id_ranges)
+            except Exception:
+                logger.exception("Cache phase failed — workers will read from source DB directly")
+                cache_paths = {}
 
         if "deidentify" in config.phases:
             logger.info("Phase: deidentify")
