@@ -11,6 +11,42 @@ from deid.core.process_df.rules import RuleBase, BaseDateOffsetRule
 from deid.core.logger import nd_logger
 from deid.core.process_df.constants import DATE_PATTERN_NOTES
 
+# ---------------------------------------------------------------------------
+# Presidio NLP lazy singleton – mirrors deid/qc/builders/unstructured.py
+# ---------------------------------------------------------------------------
+_analyzer = None
+
+
+def _get_analyzer():
+    """Return a cached AnalyzerEngine instance (created on first call)."""
+    global _analyzer
+    if _analyzer is None:
+        from presidio_analyzer import AnalyzerEngine
+        _analyzer = AnalyzerEngine()
+    return _analyzer
+
+
+def _apply_presidio_names(text: str) -> str:
+    """Detect PERSON entities via Presidio/Spacy and replace with ((NAME))."""
+    if not isinstance(text, str) or not text.strip():
+        return text
+    try:
+        results = _get_analyzer().analyze(
+            text=text,
+            entities=["PERSON"],
+            language="en",
+        )
+        if not results:
+            return text
+        # Sort by start position descending so replacements don't shift indices
+        results.sort(key=lambda r: r.start, reverse=True)
+        for result in results:
+            text = text[:result.start] + "((NAME))" + text[result.end:]
+        return text
+    except Exception as exc:
+        nd_logger.warning("Presidio NLP name detection failed: %s", exc)
+        return text
+
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
 def mask_address(match: re.Match) -> str:
@@ -163,6 +199,16 @@ class GenericNotesRule(RuleBase):
                                 f"[{self.__class__.__name__}] Pattern for '{key}' failed both RE2 and stdlib re: "
                                 f"{pattern!r} (re2={re2_err}, re={re_err})"
                             )
+
+        # ----- NLP-based name detection (Presidio / Spacy) -----
+        nd_logger.info(
+            f"[{self.__class__.__name__}] Running Presidio NLP name detection on '{col_name}'."
+        )
+        df = df.with_columns(
+            pl.col(col_name)
+            .map_elements(_apply_presidio_names, return_dtype=pl.Utf8)
+            .alias(col_name)
+        )
 
         nd_logger.info(f"[{self.__class__.__name__}] GenericNotesRule completed.")
         return df
