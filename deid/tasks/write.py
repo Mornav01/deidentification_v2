@@ -47,9 +47,14 @@ def write_batch(self, raw_config: dict):
         # 3. Create dest table if needed (using embedded schema)
         col_schema_raw = file_metadata.get(b"deid_column_schema", b"{}")
         col_schema = json.loads(col_schema_raw)
-        _create_dest_table(dest, config.table_name, df, col_schema)
+        _create_dest_table(dest, config.table_name, col_schema)
 
-        # 4. Idempotent write: DELETE + INSERT in single transaction
+        # 4. Strip extra columns added during processing (mapping joins etc.)
+        #    Only write columns that exist in the original source schema.
+        source_columns = [c for c in df.columns if c in col_schema]
+        df = df.select(source_columns)
+
+        # 5. Idempotent write: DELETE + INSERT in single transaction
         qi = dest._qi
         delete_sql = text(
             f"DELETE FROM {qi(config.table_name)} "
@@ -107,9 +112,12 @@ def _update_batch_status_and_check_table(config: WriteTaskConfig):
     engine.dispose()
 
 
-def _create_dest_table(handler: NDDBHandler, table_name: str, df: pl.DataFrame, col_schema: dict):
+def _create_dest_table(handler: NDDBHandler, table_name: str, col_schema: dict):
     """Create destination table if it doesn't exist. Safe for concurrent calls."""
     from sqlalchemy import Column, MetaData, String, Integer, Table, Float, DateTime, Text
+
+    if not col_schema:
+        return
 
     type_map = {
         "INTEGER": Integer,
@@ -119,8 +127,7 @@ def _create_dest_table(handler: NDDBHandler, table_name: str, df: pl.DataFrame, 
     }
     metadata = MetaData()
     columns = []
-    for col_name in df.columns:
-        info = col_schema.get(col_name, {})
+    for col_name, info in col_schema.items():
         type_str = info.get("type", "").upper()
         length = info.get("length")
 
