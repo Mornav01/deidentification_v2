@@ -67,7 +67,11 @@ class PIITable:
         elif isinstance(col_type, Float):
             return Float
         else:
-            return type_mapping.get(str(col_type), String)
+            mapped = type_mapping.get(str(col_type), String(255))
+            # Ensure String/CHAR types always have a length for MySQL.
+            if isinstance(mapped, type) and issubclass(mapped, String):
+                return mapped(255)
+            return mapped
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def create_table(self, pii_table_name : str, pii_table_config: PIITableConfig):
