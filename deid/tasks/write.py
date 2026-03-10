@@ -137,10 +137,9 @@ def _create_dest_table(handler: NDDBHandler, table_name: str, col_schema: dict):
     col_defs = []
     for col_name, info in col_schema.items():
         type_str = _clean_type_str(info.get("type", "VARCHAR(255)"))
-        col_defs.append(f"{qi(col_name)} {type_str} NULL")
+        col_defs.append(f"{qi(col_name)} {type_str}")
 
-    ddl = text(
-        f"CREATE TABLE IF NOT EXISTS {qi(table_name)} ({', '.join(col_defs)})"
-    )
+    ddl_str = f"CREATE TABLE IF NOT EXISTS {qi(table_name)} ({', '.join(col_defs)})"
+    logger.debug("DDL: %s", ddl_str)
     with handler.engine.begin() as conn:
-        conn.execute(ddl)
+        conn.execute(text(ddl_str))
