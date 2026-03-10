@@ -361,17 +361,16 @@ class JoinMapping:
         patient_mapping = Table("patient_mapping_table", metadata, autoload_with=self.engine)
         stmt = (
             select(
-                patient_mapping.c.reference_mapping,
                 patient_mapping.c.patient_id,
                 patient_mapping.c.nd_patient_id,
                 patient_mapping.c.offset,
             )
-            .where(patient_mapping.c.reference_mapping.in_(reference_pids))
+            .where(patient_mapping.c.patient_id.in_(reference_pids))
         )
         with self.engine.connect() as conn:
             df = _sql_result_to_polars(conn.execute(stmt))
         nd_logger.info(
-            f"[{self.__class__.__name__}] Retrieved {df.height} rows via reference_mapping."
+            f"[{self.__class__.__name__}] Retrieved {df.height} rows for reference PIDs."
         )
         return df
 
@@ -666,7 +665,7 @@ def start_de_identification_for_table(
                 df = join_dataframes(
                     df, df_referencepid_mapping,
                     left_on=key_phi_columns[2][0],
-                    right_on="reference_mapping",
+                    right_on="patient_id",
                     right_suffix="from_referencepid_mapping",
                     how="left",
                     drop_right_join_column=True,
