@@ -106,10 +106,9 @@ def _from_table_rules(tables: list) -> dict[str, dict]:
 # ── Strategy 2: introspect source DB ─────────────────────────────────────
 
 def _from_source_db(source_db) -> dict[str, dict]:
-    """Scan all source tables (read-only) for tables with a patient_id column.
+    """Scan all source tables (read-only) for tables with patient_id + PII columns.
 
-    Includes ALL non-ID columns from matching tables so that as many PII
-    values as possible are available for notes masking.
+    Only columns matching known PII patterns are included.
     """
     from sqlalchemy import inspect as sa_inspect
 
@@ -133,19 +132,22 @@ def _from_source_db(source_db) -> dict[str, dict]:
         if not patient_id_col:
             continue
 
-        # Include every column except the patient-ID itself.
-        other_cols = [cn for cn in col_names if cn != patient_id_col]
-        if other_cols:
+        # Only include columns matching PII patterns.
+        pii_cols = [
+            cn for cn in col_names
+            if cn != patient_id_col and _is_pii_column(cn)
+        ]
+        if pii_cols:
             pii_source_tables[table_name] = {
                 "primary_col": patient_id_col,
-                "other_required_columns": other_cols,
+                "other_required_columns": pii_cols,
             }
 
     engine.dispose()
 
     if pii_source_tables:
         logger.info(
-            "PII introspection: found %d source table(s) with patient_id: %s",
+            "PII introspection: found %d source table(s) with PII columns: %s",
             len(pii_source_tables),
             ", ".join(pii_source_tables.keys()),
         )
