@@ -1,5 +1,7 @@
 import polars as pl
 import re          # standard lib – re.Match type hint + fallback
+import datetime
+import decimal
 from pydantic import validate_call
 try:
     import re2
@@ -32,6 +34,41 @@ def _normalize_pid(val):
         return int(float(val))
     except (ValueError, TypeError):
         return val
+
+
+def _normalize_pii_value(v):
+    """Convert SQLAlchemy/MySQL result values to Polars-safe scalars.
+    Handles dates (incl. MySQL zero dates "0000-00-00"), decimals, bytes.
+    Avoids ComputeError when Polars infers schema from mixed types."""
+    if v is None:
+        return None
+    if isinstance(v, datetime.datetime):
+        return v.isoformat(sep=" ")
+    if isinstance(v, datetime.date):
+        try:
+            return v.isoformat()
+        except (ValueError, OverflowError):
+            return str(v)  # MySQL zero date etc.
+    if isinstance(v, decimal.Decimal):
+        return float(v)
+    if isinstance(v, bytes):
+        try:
+            return v.decode("utf-8", errors="replace")
+        except Exception:
+            return str(v)
+    return v
+
+
+def _match_pii_columns(config_keys: list, pii_columns: list) -> list[tuple[str, str]]:
+    """Return [(config_key, actual_col)] for config keys that exist in pii (case-insensitive).
+    Handles MySQL/etc returning different casing than config (e.g. users_Ufname vs users_ufname)."""
+    result = []
+    pii_lower_to_actual = {c.lower(): c for c in pii_columns}
+    for config_key in config_keys:
+        actual = pii_lower_to_actual.get(config_key.lower())
+        if actual is not None:
+            result.append((config_key, actual))
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -72,9 +109,12 @@ class PIITable:
         self.close_connection()
         if not rows:
             return pl.DataFrame(schema={c: pl.Utf8 for c in columns})
+        # Normalise all cells (dates, decimals, zero-dates) to avoid Polars ComputeError
+        normalised = [[_normalize_pii_value(cell) for cell in row] for row in rows]
+        # Force Utf8 schema — PII data is used for string matching; avoids "0000-00-00" type conflicts
         return pl.DataFrame(
-            [list(r) for r in rows],
-            schema=columns,
+            normalised,
+            schema={c: pl.Utf8 for c in columns},
             orient="row",
         )
 
@@ -223,6 +263,9 @@ class NotesRule(RuleBase):
         self.pii_data_df = pii_table_loader._get_table(
             "pii_data_table", connection_string, patient_ids
         )
+        nd_logger.info(
+            f"[{self.__class__.__name__}] pii_data_table columns: {self.pii_data_df.columns}"
+        )
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def _get_secondary_pii_data_table(self, patient_ids: list):
@@ -288,24 +331,26 @@ class NotesRule(RuleBase):
         mask_config   = self.pii_config.get("mask", {})
         dob_config    = self.pii_config.get("dob", {})
         combine_config = self.pii_config.get("combine", {})
+        pii_df_cols = pii_df.columns
 
-        # ── Determine which PII-table columns are actually needed ─────────────
-        pii_cols     = [c for c in mask_config     if c in pii_df.columns]
-        dob_cols     = [c for c in dob_config      if c in pii_df.columns]
+        # ── Determine which PII-table columns are actually needed (case-insensitive match) ─
+        pii_cols     = _match_pii_columns(list(mask_config.keys()), pii_df_cols)
+        dob_cols     = _match_pii_columns(list(dob_config.keys()), pii_df_cols)
         combine_rules = {}
         for rule_name, rule in combine_config.items():
             requested_cols = rule.get("combine", [])
-            matched_cols = [c for c in requested_cols if c in pii_df.columns]
-            missing_cols = [c for c in requested_cols if c not in pii_df.columns]
-            if missing_cols:
+            matched = _match_pii_columns(requested_cols, pii_df_cols)
+            matched_actual = [t[1] for t in matched]
+            missing = [c for c in requested_cols if not any(c.lower() == m[0].lower() for m in matched)]
+            if missing:
                 nd_logger.warning(
                     f"[{self.__class__.__name__}] combine rule '{rule_name}': "
-                    f"columns {missing_cols} NOT found in pii_data_table "
-                    f"(available: {pii_df.columns}). Only using {matched_cols}."
+                    f"columns {missing} NOT found in pii_data_table "
+                    f"(available: {pii_df_cols}). Using {matched_actual}."
                 )
-            if matched_cols:
+            if matched_actual:
                 combine_rules[rule_name] = {
-                    "cols": matched_cols,
+                    "cols": matched_actual,
                     "masking_value": rule.get("masking_value", ""),
                 }
             else:
@@ -315,13 +360,14 @@ class NotesRule(RuleBase):
                 )
         nd_logger.info(
             f"[{self.__class__.__name__}] combine_config has {len(combine_config)} rule(s), "
-            f"{len(combine_rules)} survived column filtering."
+            f"{len(combine_rules)} survived. "
+            f"pii_cols: {[t[0] for t in pii_cols]} (matched {len(pii_cols)}/{len(mask_config)} mask columns)."
         )
 
         all_select = list(
             {"patient_id"}
-            | set(pii_cols)
-            | set(dob_cols)
+            | {t[1] for t in pii_cols}
+            | {t[1] for t in dob_cols}
             | {c for r in combine_rules.values() for c in r["cols"]}
         )
         cast_to_utf8 = {
@@ -349,20 +395,20 @@ class NotesRule(RuleBase):
             # --- exact-match mask patterns ---
             if pii_cols:
                 entry = pid_to_mask.setdefault(pid, {})
-                for col in pii_cols:
-                    val = row[col].strip()
+                for config_key, actual_col in pii_cols:
+                    val = row[actual_col].strip()
                     if not val:
                         continue
-                    min_len = mask_config[col].get("min_length", 2)
+                    min_len = mask_config[config_key].get("min_length", 2)
                     if len(val) <= min_len:
                         continue
-                    entry[rf"(?i)\b{re2.escape(val)}\b"] = mask_config[col]["masking_value"]
+                    entry[rf"(?i)\b{re2.escape(val)}\b"] = mask_config[config_key]["masking_value"]
 
             # --- DOB ---
             if dob_cols:
                 dob_map = pid_to_dobs.setdefault(pid, {})
-                for col in dob_cols:
-                    val = row[col].strip()
+                for config_key, actual_col in dob_cols:
+                    val = row[actual_col].strip()
                     if not val:
                         continue
                     try:
@@ -468,6 +514,7 @@ class NotesRule(RuleBase):
         date_re = re2.compile(DATE_PATTERN_NOTES) if dob_cols else None
         text_list = df[text_column].to_list()
         result: list = []
+        mask_hit_count = 0
         combine_hit_count = 0
 
         for text, pid in zip(text_list, pid_list):
@@ -476,11 +523,14 @@ class NotesRule(RuleBase):
                 continue
 
             # exact-match mask
+            text_before_mask = text
             for pattern, repl in pid_to_mask.get(pid, {}).items():
                 try:
                     text = re2.sub(pattern, repl, text)
                 except Exception:
                     pass
+            if text != text_before_mask:
+                mask_hit_count += 1
 
             # DOB
             if date_re:
@@ -507,6 +557,16 @@ class NotesRule(RuleBase):
 
             result.append(text)
 
+        # Log first-row text snippet (for debugging: confirm we're processing the right content)
+        if text_list:
+            first_text = text_list[0] if isinstance(text_list[0], str) else ""
+            snippet = (first_text[:150] + "…") if len(first_text) > 150 else first_text
+            nd_logger.info(
+                f"[{self.__class__.__name__}] [MASK DIAGNOSTIC] First row text preview: {repr(snippet)}"
+            )
+        nd_logger.info(
+            f"[{self.__class__.__name__}] [MASK DIAGNOSTIC] Mask replacements applied to {mask_hit_count}/{len(text_list)} rows."
+        )
         nd_logger.info(
             f"[{self.__class__.__name__}] [COMBINE DIAGNOSTIC] "
             f"Combine replacements applied to {combine_hit_count}/{len(text_list)} rows."
@@ -553,11 +613,12 @@ class NotesRule(RuleBase):
                 continue
 
             mask_config = table_config.get("config", {})
-            pii_cols = [col for col in mask_config if col in pii_df_raw.columns]
-            if not pii_cols:
+            pii_cols_tuples = _match_pii_columns(list(mask_config.keys()), pii_df_raw.columns)
+            if not pii_cols_tuples:
                 nd_logger.warning(
                     f"[{self.__class__.__name__}] [{table_name}] "
-                    "No matching PII columns in table. Skipping."
+                    f"No matching PII columns (config: {list(mask_config.keys())}, "
+                    f"table: {pii_df_raw.columns}). Skipping."
                 )
                 continue
 
@@ -566,25 +627,25 @@ class NotesRule(RuleBase):
                 f"Building merged PII maps from {pii_df_raw.height} records…"
             )
             pid_to_map: dict = {}
-            select_cols = ["patient_id"] + pii_cols
+            select_cols = ["patient_id"] + [t[1] for t in pii_cols_tuples]
             for row in (
                 pii_df_raw
                 .select(select_cols)
-                .cast({c: pl.Utf8 for c in pii_cols})
+                .cast({c: pl.Utf8 for c in select_cols if c != "patient_id"})
                 .fill_null("")
                 .to_dicts()
             ):
                 pid = _normalize_pid(row["patient_id"])
                 entry = pid_to_map.setdefault(pid, {})
-                for col in pii_cols:
-                    val = row[col].strip()
+                for config_key, actual_col in pii_cols_tuples:
+                    val = row[actual_col].strip()
                     if not val:
                         continue
-                    min_len = mask_config[col].get("min_length", 2)
+                    min_len = mask_config[config_key].get("min_length", 2)
                     if len(val) <= min_len:
                         continue
                     pattern = rf"(?i)\b{re2.escape(val)}\b"
-                    entry[pattern] = mask_config[col]["masking_value"]
+                    entry[pattern] = mask_config[config_key]["masking_value"]
 
             nd_logger.info(
                 f"[{self.__class__.__name__}] [{table_name}] "
@@ -964,8 +1025,10 @@ class NotesRule(RuleBase):
                 _normalize_pid(v)
                 for v in df["_resolved_patient_id"].drop_nulls().unique().to_list()
             ]
-            self._get_pii_data_table(patient_ids)
-            self._get_secondary_pii_data_table(patient_ids)
+            if self.pii_data_df is None:
+                self._get_pii_data_table(patient_ids)
+            if not self.secondary_pii_data_dfs:
+                self._get_secondary_pii_data_table(patient_ids)
             df = self.deidentify_primary_pii_values(df, column_details)
             df = self.deidentify_secondary_pii_values(df, column_details)
             nd_logger.info(

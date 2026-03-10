@@ -7,68 +7,9 @@ except ImportError:
     import re as re2  # type: ignore[no-redef]
 from typing import Dict
 from .utils import GENERIC_REGEX_DICT
-from .xml import deidentify_xml_tags
-from .xml_utils import xml_tag_replacements
 from deid.core.process_df.rules import RuleBase, BaseDateOffsetRule
 from deid.core.logger import nd_logger
 from deid.core.process_df.constants import DATE_PATTERN_NOTES
-
-# ---------------------------------------------------------------------------
-# Presidio NLP lazy singleton – mirrors deid/qc/builders/unstructured.py
-# Uses a sentinel to avoid retrying initialization on every cell if it fails.
-# ---------------------------------------------------------------------------
-_analyzer = None
-_analyzer_init_failed = False
-
-
-def _get_analyzer():
-    """Return a cached AnalyzerEngine instance (created on first call).
-
-    Returns None if initialization previously failed (sentinel pattern).
-    """
-    global _analyzer, _analyzer_init_failed
-    if _analyzer_init_failed:
-        return None
-    if _analyzer is None:
-        try:
-            from presidio_analyzer import AnalyzerEngine
-            _analyzer = AnalyzerEngine()
-            nd_logger.info("Presidio AnalyzerEngine initialized successfully.")
-        except Exception as exc:
-            _analyzer_init_failed = True
-            nd_logger.error(
-                "Presidio AnalyzerEngine initialization FAILED: %s. "
-                "NLP-based name detection will be DISABLED for this worker. "
-                "Ensure presidio-analyzer and spacy model (en_core_web_lg) are installed.",
-                exc,
-            )
-            return None
-    return _analyzer
-
-
-def _apply_presidio_names(text: str) -> str:
-    """Detect PERSON entities via Presidio/Spacy and replace with ((NAME))."""
-    if not isinstance(text, str) or not text.strip():
-        return text
-    analyzer = _get_analyzer()
-    if analyzer is None:
-        return text
-    try:
-        results = analyzer.analyze(
-            text=text,
-            entities=["PERSON"],
-            language="en",
-        )
-        if not results:
-            return text
-        # Sort by start position descending so replacements don't shift indices
-        results.sort(key=lambda r: r.start, reverse=True)
-        for result in results:
-            text = text[:result.start] + "((NAME))" + text[result.end:]
-        return text
-    except Exception as exc:
-        nd_logger.warning("Presidio NLP name detection failed: %s", exc)
-        return text
 
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
@@ -117,23 +58,6 @@ class GenericNotesRule(RuleBase):
             .cast(pl.Utf8)
             .str.replace_all(r"\s+", " ")
             .str.strip_chars()
-            .alias(col_name)
-        )
-
-        # ----- XML tag-based deidentification -----
-        # DocContent and similar columns often contain XML with tags like
-        # <PatientName>, <ProviderName>, <SSN>, <Phone>, <Address> etc.
-        # Replace known tag values with placeholders BEFORE regex/NLP passes.
-        nd_logger.info(
-            f"[{self.__class__.__name__}] Applying XML tag deidentification on '{col_name}'."
-        )
-        df = df.with_columns(
-            pl.col(col_name)
-            .map_elements(
-                lambda text: deidentify_xml_tags(text, xml_tag_replacements)
-                if isinstance(text, str) else text,
-                return_dtype=pl.Utf8,
-            )
             .alias(col_name)
         )
 
@@ -239,16 +163,6 @@ class GenericNotesRule(RuleBase):
                                 f"[{self.__class__.__name__}] Pattern for '{key}' failed both RE2 and stdlib re: "
                                 f"{pattern!r} (re2={re2_err}, re={re_err})"
                             )
-
-        # ----- NLP-based name detection (Presidio / Spacy) -----
-        nd_logger.info(
-            f"[{self.__class__.__name__}] Running Presidio NLP name detection on '{col_name}'."
-        )
-        df = df.with_columns(
-            pl.col(col_name)
-            .map_elements(_apply_presidio_names, return_dtype=pl.Utf8)
-            .alias(col_name)
-        )
 
         nd_logger.info(f"[{self.__class__.__name__}] GenericNotesRule completed.")
         return df
