@@ -34,8 +34,6 @@ def _minimal_config() -> dict:
             "batch_size": 1000,
             "date_offset_days": 34,
             "patient_id_prefix": 10000000,
-            "parallel_tasks_per_table": 4,
-            "large_table_threshold": 500000,
         },
         "tables": [
             {"name": "patients", "rules": {"patient_id": "PATIENT_ID", "name": "MASK"}}
@@ -47,7 +45,7 @@ def _minimal_config() -> dict:
             }
         },
         "phases": ["setup", "deidentify", "qc"],
-        "workers": {"concurrency": 2, "max_retries": 1, "task_timeout": 3600},
+        "workers": {"fetchers": 2, "processors": 4, "writers": 2, "max_retries": 1, "task_timeout": 3600},
         "qc": {"sample_size": 100, "scan_for_residual_pii": True},
     }
 
@@ -204,6 +202,36 @@ def test_worker_max_tasks_per_child_override(tmp_path):
     assert config.workers.max_tasks_per_child == 5
 
 
+def test_worker_settings_three_pools(tmp_path):
+    from deid.config.loader import load_config
+
+    cfg = _minimal_config()
+    cfg["workers"] = {
+        "fetchers": 3,
+        "processors": 6,
+        "writers": 2,
+        "max_retries": 1,
+        "task_timeout": 3600,
+    }
+    p = _write_yaml(tmp_path, cfg)
+    config = load_config(p)
+    assert config.workers.fetchers == 3
+    assert config.workers.processors == 6
+    assert config.workers.writers == 2
+
+
+def test_worker_settings_defaults(tmp_path):
+    from deid.config.loader import load_config
+
+    cfg = _minimal_config()
+    cfg["workers"] = {}
+    p = _write_yaml(tmp_path, cfg)
+    config = load_config(p)
+    assert config.workers.fetchers == 2
+    assert config.workers.processors == 4
+    assert config.workers.writers == 2
+
+
 def test_default_batch_size(tmp_path):
     from deid.config.loader import load_config
 
@@ -211,7 +239,20 @@ def test_default_batch_size(tmp_path):
     del cfg["deidentification"]["batch_size"]
     p = _write_yaml(tmp_path, cfg)
     config = load_config(p)
-    assert config.deidentification.batch_size == 25000
+    assert config.deidentification.batch_size == 1000
+
+
+def test_deidentification_settings_ignores_unknown_fields(tmp_path):
+    from deid.config.loader import load_config
+
+    cfg = _minimal_config()
+    cfg["deidentification"]["parallel_tasks_per_table"] = 4
+    cfg["deidentification"]["large_table_threshold"] = 500000
+    cfg["deidentification"]["cache_concurrency"] = 4
+    cfg["deidentification"]["cache_batch_size"] = 1000
+    p = _write_yaml(tmp_path, cfg)
+    config = load_config(p)  # should NOT raise
+    assert config.deidentification.batch_size == 1000
 
 
 def test_mappings_db_path_defaults_to_schema_name(tmp_path):

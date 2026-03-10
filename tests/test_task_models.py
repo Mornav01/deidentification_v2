@@ -3,7 +3,9 @@ import pytest
 from pydantic import ValidationError
 
 from deid.config.task_models import (
-    DeidentifyTaskConfig,
+    FetchTaskConfig,
+    ProcessTaskConfig,
+    WriteTaskConfig,
     QCTaskConfig,
     ProgressEvent,
     DataCountResult,
@@ -13,93 +15,90 @@ from deid.config.task_models import (
 )
 
 
-class TestDeidentifyTaskConfig:
+class TestFetchTaskConfig:
     def test_valid_minimal(self):
-        config = DeidentifyTaskConfig(
+        config = FetchTaskConfig(
             table_name="patients",
+            start_id=1,
+            end_id=1000,
             source_conn_str="sqlite:///src.db",
-            dest_conn_str="sqlite:///dest.db",
-            table_details_for_ui={"columns_details": []},
+            state_db_path="./state.db",
+            staging_root="/tmp/.deid_staging",
         )
         assert config.table_name == "patients"
-        assert config.batch_size == 100000
-        assert config.offset_days == 34
-        assert config.redis_url == ""
-
-    def test_valid_full(self):
-        config = DeidentifyTaskConfig(
-            table_name="encounters",
-            source_conn_str="mysql+pymysql://u:p@host/db",
-            dest_conn_str="postgresql+psycopg2://u:p@host/db",
-            table_details_for_ui={"columns_details": [{"col": "a"}]},
-            mappings_db_path="/tmp/mappings.db",
-            batch_size=50000,
-            offset_days=60,
-            redis_url="redis://localhost:6379/0",
-            pii_config={"key": "value"},
-            mapping_db_config={"path": "/tmp/map.db"},
-        )
-        assert config.batch_size == 50000
-        assert config.pii_config == {"key": "value"}
-
-    def test_missing_required_field(self):
-        with pytest.raises(ValidationError):
-            DeidentifyTaskConfig(
-                table_name="test",
-                source_conn_str="sqlite:///src.db",
-                # missing dest_conn_str and table_details_for_ui
-            )
-
-    def test_wrong_type(self):
-        with pytest.raises(ValidationError):
-            DeidentifyTaskConfig(
-                table_name="test",
-                source_conn_str="sqlite:///src.db",
-                dest_conn_str="sqlite:///dest.db",
-                table_details_for_ui="not_a_dict",
-            )
+        assert config.batch_size == 1000
+        assert config.id_column == "nd_auto_increment_id"
 
     def test_model_dump_roundtrip(self):
-        config = DeidentifyTaskConfig(
+        config = FetchTaskConfig(
             table_name="t1",
+            start_id=1,
+            end_id=100,
             source_conn_str="sqlite:///s.db",
-            dest_conn_str="sqlite:///d.db",
-            table_details_for_ui={},
+            state_db_path="./state.db",
+            staging_root="/tmp/staging",
         )
         dumped = config.model_dump()
-        restored = DeidentifyTaskConfig(**dumped)
+        restored = FetchTaskConfig(**dumped)
         assert restored == config
 
-    def test_cache_dir_defaults_to_none(self):
-        config = DeidentifyTaskConfig(
-            table_name="patients",
-            source_conn_str="sqlite:///src.db",
-            dest_conn_str="sqlite:///dest.db",
-            table_details_for_ui={"columns_details": []},
-        )
-        assert config.cache_dir is None
 
-    def test_cache_dir_set(self):
-        config = DeidentifyTaskConfig(
+class TestProcessTaskConfig:
+    def test_valid_minimal(self):
+        config = ProcessTaskConfig(
             table_name="patients",
+            start_id=1,
+            end_id=1000,
+            staging_root="/tmp/.deid_staging",
+            state_db_path="./state.db",
+            mapping_db_config={"connection_str": "sqlite:///mappings.db"},
+            table_details={"columns_details": []},
             source_conn_str="sqlite:///src.db",
-            dest_conn_str="sqlite:///dest.db",
-            table_details_for_ui={"columns_details": []},
-            cache_dir="/tmp/.deid_cache/patients",
         )
-        assert config.cache_dir == "/tmp/.deid_cache/patients"
+        assert config.offset_days == 34
+        assert config.pii_config is None
 
-    def test_cache_dir_survives_roundtrip(self):
-        config = DeidentifyTaskConfig(
+    def test_model_dump_roundtrip(self):
+        config = ProcessTaskConfig(
             table_name="t1",
+            start_id=1,
+            end_id=100,
+            staging_root="/tmp/staging",
+            state_db_path="./state.db",
+            mapping_db_config={"connection_str": "sqlite:///m.db"},
+            table_details={"columns_details": []},
             source_conn_str="sqlite:///s.db",
-            dest_conn_str="sqlite:///d.db",
-            table_details_for_ui={},
-            cache_dir="/tmp/cache/t1",
         )
         dumped = config.model_dump()
-        restored = DeidentifyTaskConfig(**dumped)
-        assert restored.cache_dir == "/tmp/cache/t1"
+        restored = ProcessTaskConfig(**dumped)
+        assert restored == config
+
+
+class TestWriteTaskConfig:
+    def test_valid_minimal(self):
+        config = WriteTaskConfig(
+            table_name="patients",
+            start_id=1,
+            end_id=1000,
+            staging_root="/tmp/.deid_staging",
+            state_db_path="./state.db",
+            dest_conn_str="sqlite:///dest.db",
+        )
+        assert config.id_column == "nd_auto_increment_id"
+        assert config.redis_url == ""
+
+    def test_model_dump_roundtrip(self):
+        config = WriteTaskConfig(
+            table_name="t1",
+            start_id=1,
+            end_id=100,
+            staging_root="/tmp/staging",
+            state_db_path="./state.db",
+            dest_conn_str="sqlite:///d.db",
+        )
+        dumped = config.model_dump()
+        restored = WriteTaskConfig(**dumped)
+        assert restored == config
 
 
 class TestQCTaskConfig:

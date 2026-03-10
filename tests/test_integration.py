@@ -70,22 +70,16 @@ def test_state_db_initialized(test_config_path):
 
 
 def test_celery_task_callable():
-    """Verify Celery tasks can be called in eager mode."""
+    """Verify Celery tasks can be imported in eager mode."""
     from deid.tasks.celery_app import create_celery_app
     app = create_celery_app(broker_url="memory://", result_backend="cache+memory://")
     app.conf.update(task_always_eager=True, task_eager_propagates=True)
     app.finalize()
     app.loader.import_default_modules()
 
-    from deid.tasks.deidentify import deidentify_table
-    # Can't run de-identification without a real DB,
-    # but verify the task is callable and raises appropriately
-    with pytest.raises(Exception):
-        deidentify_table({
-            "table_name": "test",
-            "source_conn_str": "sqlite:///nonexistent.db",
-            "dest_conn_str": "sqlite:///nonexistent.db",
-            "table_details_for_ui": {"columns_details": []},
-            "batch_size": 100,
-            "offset_days": 34,
-        })
+    from deid.tasks.fetch import fetch_batch
+    from deid.tasks.process import process_batch
+    from deid.tasks.write import write_batch
+    assert fetch_batch.name == "deid.tasks.fetch.fetch_batch"
+    assert process_batch.name == "deid.tasks.process.process_batch"
+    assert write_batch.name == "deid.tasks.write.write_batch"
