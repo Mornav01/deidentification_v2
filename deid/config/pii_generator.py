@@ -60,7 +60,9 @@ _MASKING_PATTERNS = [
 _FIRST_NAME_PAT = re.compile(r"(?i)(^|_)(first_?name|fname)($|_)")
 _LAST_NAME_PAT = re.compile(r"(?i)(^|_)(last_?name|lname)($|_)")
 
-
+def _is_pii_column(column_name: str) -> bool:                                   
+    """Return True if column_name matches any known PII pattern."""               
+    return any(p.search(column_name) for p in _PII_COLUMN_PATTERNS)                                                                                           
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
 def _classify_column(column_name: str) -> tuple[str, str]:
