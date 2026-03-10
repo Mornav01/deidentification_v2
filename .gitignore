@@ -199,3 +199,4 @@ temp/
 *.db
 *.arrow
 .deid_cache/
+docs/
