@@ -49,6 +49,7 @@ class DeidentificationSettings(BaseModel):
     parallel_tasks_per_table: int = 4
     large_table_threshold: int = 500000
     cache_concurrency: int = 4  # parallel table dumps during IPC cache phase
+    random_seed: int = 42
 
 
 class TableConfig(BaseModel):

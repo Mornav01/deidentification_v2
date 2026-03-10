@@ -191,6 +191,7 @@ async def _setup_phase(config: DeidConfig, state_engine, mappings_engine=None):
         mappings_engine=mappings_engine,
         patient_id_prefix=config.deidentification.patient_id_prefix,
         max_offset=config.deidentification.date_offset_days,
+        random_seed=config.deidentification.random_seed,
     )
     logger.info(
         "Setup: mappings populated — %d patients, %d encounters, %d appointments created.",

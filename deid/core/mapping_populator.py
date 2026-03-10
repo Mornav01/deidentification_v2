@@ -142,13 +142,16 @@ def bulk_insert_patient_mappings(
     patient_ids: list[str],
     id_prefix: int,
     max_offset: int,
+    random_seed: int = 42,
 ) -> int:
     """Bulk-insert new patient mappings, skipping IDs that already exist."""
+    rng = random.Random(random_seed)
+
     def factory(pid, next_id):
         return PatientMapping(
             nd_patient_id=next_id,
             patient_id=pid,
-            offset=random.randint(1, max_offset),
+            offset=rng.randint(1, max_offset),
         )
 
     return _bulk_insert_mappings(
@@ -212,6 +215,7 @@ def populate_mappings(
     mappings_engine,
     patient_id_prefix: int = 10000000,
     max_offset: int = 34,
+    random_seed: int = 42,
 ) -> dict:
     """Top-level orchestration: scan rules, fetch IDs from source, insert mappings.
 
@@ -222,6 +226,7 @@ def populate_mappings(
         mappings_engine: SQLAlchemy engine for the mappings database.
         patient_id_prefix: Base value for ``nd_patient_id`` when the table is empty.
         max_offset: Upper bound (inclusive) for random date-offset per patient.
+        random_seed: Seed for reproducible offset generation (default 42).
 
     Returns:
         Summary dict with counts: patients_found, patients_created,
@@ -253,6 +258,7 @@ def populate_mappings(
         sorted(all_patient_ids),
         patient_id_prefix,
         max_offset,
+        random_seed,
     )
 
     # ── 2. Encounters ─────────────────────────────────────────────────────
