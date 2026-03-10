@@ -21,72 +21,19 @@ from typing import Any
 try:
     import re2 as re
 except ImportError:
-    import regex as re  # type: ignore[no-redef]
+    try:
+        import regex as re  # type: ignore[no-redef]
+    except ImportError:
+        import re  # type: ignore[no-redef]
 
 import yaml
 from sqlalchemy import create_engine, event, inspect
 
 from deid.config.schema import DbConfig
+from deid.config.rules_generator import auto_assign_rule
 
 from dotenv import load_dotenv
 load_dotenv()
-
-# ── Auto-assignment patterns ────────────────────────────────────────────────
-# Each entry: (compiled regex on column name, assigned rule)
-# Order matters — first match wins.
-COLUMN_RULES = [
-    # Patient ID
-    (re.compile(r"(?i)^patient_?id$"), "PATIENT_ID"),
-    (re.compile(r"(?i)^pat_?id$"), "PATIENT_ID"),
-    (re.compile(r"(?i)^pid$"), "PATIENT_ID"),
-
-    # Encounter ID
-    (re.compile(r"(?i)^encounter_?id$"), "ENCOUNTER_ID"),
-    (re.compile(r"(?i)^enc_?id$"), "ENCOUNTER_ID"),
-    (re.compile(r"(?i)^visit_?id$"), "ENCOUNTER_ID"),
-
-    # Appointment ID
-    (re.compile(r"(?i)^appo?intment_?id$"), "APPOINTMENT_ID"),
-    (re.compile(r"(?i)^appt_?id$"), "APPOINTMENT_ID"),
-
-    # DOB — before generic date patterns
-    (re.compile(r"(?i)(^|_)(dob|date_?of_?birth|birth_?date|patientdob)($|_)"), "PATIENT_DOB"),
-
-    # Date columns → DATE_OFFSET
-    (re.compile(r"(?i)(^|_)(date|datetime|_dt|_date|timestamp|_time|_ts)($|_)"), "DATE_OFFSET"),
-    (re.compile(r"(?i)(date|time)$"), "DATE_OFFSET"),
-
-    # ZIP / postal code
-    (re.compile(r"(?i)(^|_)(zip|zip_?code|postal_?code|zipcode)($|_)"), "ZIP_CODE"),
-
-    # Names → MASK
-    (re.compile(r"(?i)(^|_)(first_?name|last_?name|middle_?name|patient_?name|full_?name|fname|lname|mname)($|_)"), "MASK"),
-    (re.compile(r"(?i)(^|_)(maiden_?name|preferred_?name|nick_?name|display_?name)($|_)"), "MASK"),
-
-    # Contact info → MASK
-    (re.compile(r"(?i)(^|_)(ssn|social_?security|tax_?id|tin)($|_)"), "MASK"),
-    (re.compile(r"(?i)(^|_)(phone|fax|cell|mobile|home_?phone|work_?phone|phone_?number)($|_)"), "MASK"),
-    (re.compile(r"(?i)(^|_)(email|e_?mail|email_?address)($|_)"), "MASK"),
-    (re.compile(r"(?i)(^|_)(address|addr|street|address_?line|city|state|county)($|_)"), "MASK"),
-
-    # Free-text / notes → GENERIC_NOTES
-    (re.compile(r"(?i)(^|_)(notes?|comment|narrative|description|free_?text|remarks|memo|clinical_?notes?)($|_)"), "GENERIC_NOTES"),
-]
-
-# Date-like SQL types — fallback when column name doesn't match
-DATE_TYPE_PATTERN = re.compile(r"(?i)(DATE|TIME|TIMESTAMP)")
-
-
-def auto_assign_rule(column_name: str, data_type: str) -> str:
-    """Return a rule string if the column name/type matches known patterns, else ''."""
-    for pattern, rule in COLUMN_RULES:
-        if pattern.search(column_name):
-            return rule
-
-    if DATE_TYPE_PATTERN.search(data_type):
-        return "DATE_OFFSET"
-
-    return ""
 
 
 _ENV_VAR_PATTERN = re.compile(r"\$\{(\w+)\}")
