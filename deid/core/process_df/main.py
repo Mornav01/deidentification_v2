@@ -12,8 +12,9 @@ from deid.core.dbPkg import NDDBHandler
 from deid.core.dbPkg.dbhandler import stream_from_ipc_cache
 from deid.core.ops_df.jointables import ReferenceMappingDataFrameJoiner
 from deid.core.ops_df.utility import DistinctValueFetcher, join_dataframes
-from sqlalchemy import Table, String, MetaData, create_engine, select, cast
+from sqlalchemy import Table, String, MetaData, select, cast
 from sqlalchemy.orm import sessionmaker
+from deid.core.dbPkg.dbhandler import create_read_only_engine
 from deid.core.process_df.base import DeIdentifier, Rules
 from deid.core.process_df.columns_type_detector import ColumnsTypeDetector
 from deid.core.process_df.rowhandler import InvalidRowHandler
@@ -194,7 +195,7 @@ class JoinMapping:
     def _get_mapping_table_connection(self):
         nd_logger.info(f"[{self.__class__.__name__}] Connecting to mapping DB...")
         connection_string = self.mapping_db_config["connection_str"]
-        self.engine = create_engine(connection_string)
+        self.engine = create_read_only_engine(connection_string)
         Session = sessionmaker(bind=self.engine)
         self.session = Session()
         nd_logger.info(f"[{self.__class__.__name__}] Connection established.")

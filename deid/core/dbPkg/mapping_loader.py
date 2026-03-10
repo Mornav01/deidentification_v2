@@ -1,7 +1,9 @@
 from .schemas import MappingDbConfig
 
 from pydantic import validate_call
-from sqlalchemy import MetaData, Table, create_engine, select
+from sqlalchemy import MetaData, Table, select
+
+from deid.core.dbPkg.dbhandler import create_read_only_engine
 
 
 class MappingDb:
@@ -17,7 +19,7 @@ class MappingDb:
         if self.inhouse_mapping_table:
             raise NotImplementedError("In-house mapping table is not implemented")
         connection_string = self.mapping_db_config["connection_str"]
-        self.engine = create_engine(connection_string)
+        self.engine = create_read_only_engine(connection_string)
         self.metadata = MetaData()
 
     @validate_call(config=dict(arbitrary_types_allowed=True))

@@ -8,8 +8,8 @@ except ImportError:
 import itertools
 from typing import List
 from deid.core.process_df.rules import RuleBase
-from sqlalchemy.orm import declarative_base, sessionmaker
-from sqlalchemy import create_engine, MetaData, Table, select
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy import MetaData, Table, select
 from deid.core.dbPkg import NDDBHandler
 from deid.core.logger import nd_logger
 from dateutil import parser as date_parser
@@ -19,7 +19,7 @@ from deid.core.process_df.unstruct.genericnotes import GenericNotesRule
 from deid.core.process_df.unstruct.xml import deidentify_xml_tags
 from deid.core.process_df.unstruct.xml_utils import xml_tag_replacements
 
-Base = declarative_base()
+from deid.core.dbPkg.dbhandler import create_read_only_engine
 
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
@@ -47,8 +47,7 @@ class PIITable:
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def _get_db_connection(self, connection_string: str):
-        self.engine = create_engine(connection_string)
-        Base.metadata.create_all(self.engine)
+        self.engine = create_read_only_engine(connection_string)
         Session = sessionmaker(bind=self.engine)
         self.master_session = Session()
 

@@ -54,9 +54,24 @@ def _normalize_rows(rows) -> list:
     return [[_normalize_value(cell) for cell in row] for row in rows]
 
 
+_WRITE_PREFIXES = (
+    "INSERT", "UPDATE", "DELETE", "DROP", "ALTER",
+    "CREATE", "TRUNCATE", "REPLACE", "MERGE", "UPSERT",
+    "EXEC ", "EXECUTE ",
+)
+
+
 @validate_call(config=dict(arbitrary_types_allowed=True))
 def create_read_only_engine(connection_string: str, **kwargs):
-    """Create a SQLAlchemy engine that enforces read-only at the DB session level."""
+    """Create a SQLAlchemy engine that enforces read-only at the DB session level.
+
+    Two layers of protection:
+    1. Dialect-specific session-level READ ONLY (MySQL, PostgreSQL, Snowflake).
+       MSSQL lacks a true session-level READ ONLY so READ UNCOMMITTED is kept
+       as a best-effort signal.
+    2. Universal ``before_cursor_execute`` guard that blocks any DML/DDL
+       statement regardless of dialect.
+    """
     engine = create_engine(connection_string, **kwargs)
 
     @event.listens_for(engine, "connect")
@@ -69,7 +84,18 @@ def create_read_only_engine(connection_string: str, **kwargs):
             cursor.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
         elif dialect == "mssql":
             cursor.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED")
+        elif dialect == "snowflake":
+            cursor.execute("ALTER SESSION SET TRANSACTION_DEFAULT_ISOLATION_LEVEL = 'READ COMMITTED'")
         cursor.close()
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def _block_writes(conn, cursor, statement, parameters, context, executemany):
+        stmt_upper = statement.lstrip().upper()
+        if stmt_upper.startswith(_WRITE_PREFIXES):
+            raise RuntimeError(
+                f"Refusing write operation on read-only (source) engine: "
+                f"{statement[:120]}..."
+            )
 
     return engine
 

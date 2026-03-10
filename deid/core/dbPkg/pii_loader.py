@@ -2,7 +2,9 @@ from deid.config.table_schemas import TableDetailsForUI
 from .schemas import EncounterMappingDict
 
 from pydantic import validate_call
-from sqlalchemy import MetaData, Table, create_engine, select
+from sqlalchemy import MetaData, Table, select
+
+from deid.core.dbPkg.dbhandler import create_read_only_engine
 
 
 class PIIDb:
@@ -14,12 +16,12 @@ class PIIDb:
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def _connect_master(self):
         connection_string = self.pii_db_config["master_connection_str"]
-        self.master_engine = create_engine(connection_string)
+        self.master_engine = create_read_only_engine(connection_string)
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def _connect_insurance(self):
         connection_string = self.pii_db_config["insurance_connection_str"]
-        self.insurance_engine = create_engine(connection_string)
+        self.insurance_engine = create_read_only_engine(connection_string)
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def close_master_connection(self):
