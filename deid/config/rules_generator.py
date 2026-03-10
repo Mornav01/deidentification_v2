@@ -50,7 +50,7 @@ COLUMN_RULES = [
 ]
 
 DATE_TYPE_PATTERN = re.compile(r"(?i)(DATE|TIME|TIMESTAMP)")
-LARGE_TEXT_TYPE_PATTERN = re.compile(r"(?i)(LONGTEXT|MEDIUMTEXT|NTEXT|NVARCHAR\s*\(\s*MAX\s*\)|(?<!TINY)TEXT\b)")
+LARGE_TEXT_TYPE_PATTERN = re.compile(r"(?i)(LONGTEXT|MEDIUMTEXT|NTEXT|NVARCHAR\s*\(\s*MAX\s*\)|\bTEXT\b)")
 
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
