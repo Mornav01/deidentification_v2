@@ -88,6 +88,8 @@ def write_batch(self, raw_config: dict):
 def _update_batch_status_and_check_table(config: WriteTaskConfig):
     """Mark batch as done; if all batches for table are done, mark table completed."""
     engine = create_state_engine(config.state_db_path)
+    from deid.models.base import create_all_state_tables
+    create_all_state_tables(engine)
     with Session(engine) as session:
         batch = session.query(BatchState).filter_by(
             table_name=config.table_name,
@@ -112,6 +114,20 @@ def _update_batch_status_and_check_table(config: WriteTaskConfig):
     engine.dispose()
 
 
+def _clean_type_str(raw: str) -> str:
+    """Normalize a SQLAlchemy type repr for use in DDL."""
+    import re
+    s = raw.strip()
+    # Remove trailing () from types like "LONGTEXT()" → "LONGTEXT"
+    if s.endswith("()"):
+        s = s[:-2]
+    # Strip COLLATE clauses — dest DB may not support the same collation
+    s = re.sub(r"\s+COLLATE\s+\S+", "", s, flags=re.IGNORECASE)
+    # Strip CHARACTER SET clauses
+    s = re.sub(r"\s+CHARACTER\s+SET\s+\S+", "", s, flags=re.IGNORECASE)
+    return s if s else "VARCHAR(255)"
+
+
 def _create_dest_table(handler: NDDBHandler, table_name: str, col_schema: dict):
     """Create destination table if it doesn't exist using exact source types."""
     if not col_schema:
@@ -120,12 +136,7 @@ def _create_dest_table(handler: NDDBHandler, table_name: str, col_schema: dict):
     qi = handler._qi
     col_defs = []
     for col_name, info in col_schema.items():
-        type_str = info.get("type", "VARCHAR(255)")
-        # Clean up SQLAlchemy repr artifacts like "LONGTEXT()" → "LONGTEXT"
-        if type_str.endswith("()"):
-            type_str = type_str[:-2]
-        if not type_str:
-            type_str = "VARCHAR(255)"
+        type_str = _clean_type_str(info.get("type", "VARCHAR(255)"))
         col_defs.append(f"{qi(col_name)} {type_str} NULL")
 
     ddl = text(

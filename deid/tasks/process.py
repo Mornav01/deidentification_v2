@@ -156,6 +156,8 @@ def process_batch(self, raw_config: dict):
 
 def _update_batch_status(config: ProcessTaskConfig, status: str):
     engine = create_state_engine(config.state_db_path)
+    from deid.models.base import create_all_state_tables
+    create_all_state_tables(engine)
     with Session(engine) as session:
         batch = session.query(BatchState).filter_by(
             table_name=config.table_name,
