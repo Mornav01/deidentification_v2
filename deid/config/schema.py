@@ -44,6 +44,7 @@ class DbConfig(BaseModel):
 
 class DeidentificationSettings(BaseModel):
     batch_size: int = 25000
+    cache_batch_size: int = 1000  # rows per page when dumping large tables to IPC cache
     date_offset_days: int = 34
     patient_id_prefix: int = 10000000
     parallel_tasks_per_table: int = 4

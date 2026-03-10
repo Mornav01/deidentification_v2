@@ -232,7 +232,7 @@ async def _cache_large_tables(
         try:
             stream = stream_table_paginated(
                 source, table_name, min_id, max_id,
-                config.deidentification.batch_size,
+                config.deidentification.cache_batch_size,
             )
             dump_fn = partial(
                 dump_table_to_ipc_cache,
