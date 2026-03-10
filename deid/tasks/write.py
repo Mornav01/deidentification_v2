@@ -45,12 +45,9 @@ def write_batch(self, raw_config: dict):
     dest = NDDBHandler(config.dest_conn_str)
     try:
         # 3. Create dest table if needed (using embedded schema)
-        from sqlalchemy import inspect as sa_inspect
-        inspector = sa_inspect(dest.engine)
-        if not inspector.has_table(config.table_name):
-            col_schema_raw = file_metadata.get(b"deid_column_schema", b"{}")
-            col_schema = json.loads(col_schema_raw)
-            _create_dest_table(dest, config.table_name, df, col_schema)
+        col_schema_raw = file_metadata.get(b"deid_column_schema", b"{}")
+        col_schema = json.loads(col_schema_raw)
+        _create_dest_table(dest, config.table_name, df, col_schema)
 
         # 4. Idempotent write: DELETE + INSERT in single transaction
         qi = dest._qi
@@ -111,7 +108,7 @@ def _update_batch_status_and_check_table(config: WriteTaskConfig):
 
 
 def _create_dest_table(handler: NDDBHandler, table_name: str, df: pl.DataFrame, col_schema: dict):
-    """Create destination table based on DataFrame columns and embedded schema."""
+    """Create destination table if it doesn't exist. Safe for concurrent calls."""
     from sqlalchemy import Column, MetaData, String, Integer, Table, Float, DateTime, Text
 
     type_map = {
@@ -134,5 +131,7 @@ def _create_dest_table(handler: NDDBHandler, table_name: str, df: pl.DataFrame, 
 
         columns.append(Column(col_name, col_type, nullable=True))
 
-    table = Table(table_name, metadata, *columns)
-    metadata.create_all(handler.engine)
+    Table(table_name, metadata, *columns)
+    # checkfirst=True (default) emits CREATE TABLE IF NOT EXISTS,
+    # safe when multiple workers race on the same table.
+    metadata.create_all(handler.engine, checkfirst=True)
