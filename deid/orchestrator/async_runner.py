@@ -52,7 +52,7 @@ async def run(config: DeidConfig, config_path: str):
     collector_task = asyncio.create_task(collector.listen(config.redis_url))
 
     # Ensure PII tables exist before any phase runs.
-    if config.pii_db and config.pii_tables_config:
+    if config.pii_db:
         loop = asyncio.get_event_loop()
         await _ensure_pii_tables(config, loop)
 
@@ -292,16 +292,48 @@ async def _deidentify_phase(config, state_engine):
 async def _ensure_pii_tables(config: DeidConfig, loop):
     """Create PII tables in the PII DB if they don't already exist.
 
-    Source DB access is strictly read-only (uses create_read_only_engine).
+    If pii_tables_config is not provided, auto-generates it by introspecting
+    the source database (read-only) for tables with patient_id + PII columns.
     """
     from sqlalchemy import create_engine, inspect as sa_inspect
 
     dest_url = config.pii_db["master_connection_str"]
+
+    # Check which tables already exist in the PII DB.
     dest_engine = create_engine(dest_url)
     existing = set(sa_inspect(dest_engine).get_table_names())
     dest_engine.dispose()
 
-    needed = [t for t in config.pii_tables_config if t not in existing]
+    # Resolve pii_tables_config: explicit > table-rules > source-DB introspection.
+    pii_tables_config = config.pii_tables_config
+    if not pii_tables_config:
+        from deid.config.pii_generator import generate_pii_tables_config
+
+        pii_tables_config = generate_pii_tables_config(
+            config.tables or [], source_db=config.source_db,
+        )
+        if pii_tables_config:
+            config.pii_tables_config = pii_tables_config
+            logger.info(
+                "Auto-generated pii_tables_config from source DB: %s",
+                list(pii_tables_config.keys()),
+            )
+        else:
+            logger.warning(
+                "pii_db is configured but no PII source tables could be "
+                "identified. Provide pii_tables_config in config.yaml."
+            )
+            return
+
+    # Also auto-generate pii_config if missing.
+    if not config.pii_config:
+        from deid.config.pii_generator import generate_pii_config
+
+        config.pii_config = generate_pii_config(pii_tables_config)
+        if config.pii_config:
+            logger.info("Auto-generated pii_config: %s", list(config.pii_config.keys()))
+
+    needed = [t for t in pii_tables_config if t not in existing]
     if not needed:
         logger.info("PII tables already exist — skipping creation.")
         return
@@ -313,7 +345,7 @@ async def _ensure_pii_tables(config: DeidConfig, loop):
     pii_manager = PIITable(
         src_db_url=config.source_db.connection_string(),
         dest_db_url=dest_url,
-        pii_tables_config=config.pii_tables_config,
+        pii_tables_config=pii_tables_config,
     )
     await loop.run_in_executor(None, pii_manager.generate_pii_tables)
     logger.info("PII tables generated successfully.")

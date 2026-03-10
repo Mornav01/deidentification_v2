@@ -128,16 +128,18 @@ class DeidConfig(BaseModel):
 
     @model_validator(mode="after")
     def auto_generate_pii_config(self) -> "DeidConfig":
-        """Auto-generate pii_tables_config and pii_config from table rules / source DB."""
+        """Auto-generate pii_tables_config and pii_config from table rules if possible.
+
+        Only uses in-memory table rules here (no DB connection).
+        Full DB introspection fallback happens in _ensure_pii_tables at runtime.
+        """
         if not self.pii_db or not self.tables:
             return self
 
         from deid.config.pii_generator import generate_pii_config, generate_pii_tables_config
 
         if not self.pii_tables_config:
-            self.pii_tables_config = generate_pii_tables_config(
-                self.tables, source_db=self.source_db,
-            )
+            self.pii_tables_config = generate_pii_tables_config(self.tables)
         if not self.pii_config and self.pii_tables_config:
             self.pii_config = generate_pii_config(self.pii_tables_config)
         return self
