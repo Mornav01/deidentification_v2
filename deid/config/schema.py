@@ -109,6 +109,7 @@ class DeidConfig(BaseModel):
     clinical_bin_doc: Optional[ClinicalBinDocConfig] = None
     pii_db: Optional[dict] = None
     pii_tables_config: Optional[dict] = None
+    pii_config: Optional[dict] = None
     secondary_pii_configs: Optional[list] = None
 
     @model_validator(mode="after")
@@ -123,6 +124,20 @@ class DeidConfig(BaseModel):
             raise ValueError("Either 'tables' or 'rules_csv' must be provided")
         if not self.tables and self.rules_csv:
             self.tables = _load_tables_from_csv(self.rules_csv, self.source_db)
+        return self
+
+    @model_validator(mode="after")
+    def auto_generate_pii_config(self) -> "DeidConfig":
+        """Auto-generate pii_tables_config and pii_config from table rules when pii_db is set."""
+        if not self.pii_db or not self.tables:
+            return self
+
+        from deid.config.pii_generator import generate_pii_config, generate_pii_tables_config
+
+        if not self.pii_tables_config:
+            self.pii_tables_config = generate_pii_tables_config(self.tables)
+        if not self.pii_config and self.pii_tables_config:
+            self.pii_config = generate_pii_config(self.pii_tables_config)
         return self
 
 
