@@ -329,6 +329,12 @@ def _build_fetch_config(config, batch, staging_root, mappings_conn_str):
     base["table_details"] = _get_table_details(config, batch.table_name)
     base["offset_days"] = config.deidentification.date_offset_days
     base["dest_conn_str"] = config.destination_db.connection_string()
+    # PII config for NOTES de-identification (patient name masking in free text)
+    if config.pii_db:
+        base["pii_config"] = config.pii_db
+        base["pii_db_conn_str"] = config.pii_db
+    if config.secondary_pii_configs:
+        base["secondary_pii_configs"] = config.secondary_pii_configs
     return base
 
 
@@ -344,6 +350,9 @@ def _build_process_config(config, batch, staging_root, mappings_conn_str):
         table_details=_get_table_details(config, batch.table_name),
         source_conn_str=config.source_db.connection_string(),
         offset_days=config.deidentification.date_offset_days,
+        pii_config=config.pii_db,
+        pii_db_conn_str=config.pii_db,
+        secondary_pii_configs=config.secondary_pii_configs,
         redis_url=config.redis_url,
     ).model_dump()
     # Extra field forwarded by process_batch to write_batch

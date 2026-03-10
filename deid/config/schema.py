@@ -107,6 +107,8 @@ class DeidConfig(BaseModel):
     qc: QCSettings = QCSettings()
     logging: LoggingSettings = LoggingSettings()
     clinical_bin_doc: Optional[ClinicalBinDocConfig] = None
+    pii_db: Optional[dict] = None
+    secondary_pii_configs: Optional[list] = None
 
     @model_validator(mode="after")
     def set_default_mappings_db_path(self) -> "DeidConfig":
