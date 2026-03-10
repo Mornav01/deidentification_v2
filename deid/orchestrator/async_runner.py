@@ -215,7 +215,11 @@ async def _setup_phase(config: DeidConfig, state_engine, mappings_engine=None):
                 current = end + 1
         session.commit()
 
-    # ── 6. Cleanup stale .tmp files ───────────────────────────────────────
+    # ── 6. Ensure PII tables exist (create if missing) ──────────────────
+    if config.pii_db and config.pii_tables_config:
+        await _ensure_pii_tables(config, loop)
+
+    # ── 7. Cleanup stale .tmp files ───────────────────────────────────────
     cleanup_tmp_files(staging_root)
 
     logger.info("Setup: pre-split %d tables into BatchState rows.", len(config.tables))
@@ -282,6 +286,36 @@ async def _deidentify_phase(config, state_engine):
                 stuck_timeout, done_count, total,
             )
             break
+
+
+async def _ensure_pii_tables(config: DeidConfig, loop):
+    """Create PII tables in the PII DB if they don't already exist.
+
+    Source DB access is strictly read-only (uses create_read_only_engine).
+    """
+    from sqlalchemy import create_engine, inspect as sa_inspect
+
+    dest_url = config.pii_db["master_connection_str"]
+    dest_engine = create_engine(dest_url)
+    existing = set(sa_inspect(dest_engine).get_table_names())
+    dest_engine.dispose()
+
+    needed = [t for t in config.pii_tables_config if t not in existing]
+    if not needed:
+        logger.info("PII tables already exist — skipping creation.")
+        return
+
+    logger.info("PII tables missing (%s) — generating...", ", ".join(needed))
+
+    from deid.core.dbPkg.phi_table.create_table import PIITable
+
+    pii_manager = PIITable(
+        src_db_url=config.source_db.connection_string(),
+        dest_db_url=dest_url,
+        pii_tables_config=config.pii_tables_config,
+    )
+    await loop.run_in_executor(None, pii_manager.generate_pii_tables)
+    logger.info("PII tables generated successfully.")
 
 
 def _rules_to_table_details(rules: dict[str, str]) -> dict:

@@ -108,6 +108,7 @@ class DeidConfig(BaseModel):
     logging: LoggingSettings = LoggingSettings()
     clinical_bin_doc: Optional[ClinicalBinDocConfig] = None
     pii_db: Optional[dict] = None
+    pii_tables_config: Optional[dict] = None
     secondary_pii_configs: Optional[list] = None
 
     @model_validator(mode="after")
