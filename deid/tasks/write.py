@@ -125,7 +125,11 @@ def _clean_type_str(raw: str) -> str:
     s = re.sub(r"\s+COLLATE\s+\S+", "", s, flags=re.IGNORECASE)
     # Strip CHARACTER SET clauses
     s = re.sub(r"\s+CHARACTER\s+SET\s+\S+", "", s, flags=re.IGNORECASE)
-    return s if s else "VARCHAR(255)"
+    s = s.strip()
+    # NullType() stringifies to "NULL" — not a valid column type
+    if not s or s.upper() == "NULL" or s.upper() == "NULLTYPE":
+        return "TEXT"
+    return s
 
 
 def _quote_identifier(engine, name: str) -> str:
