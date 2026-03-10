@@ -84,7 +84,7 @@ def process_batch(self, raw_config: dict):
         df_ref = mapping_obj._get_reference_pid_mapping(distinct_rpids)
         if df_ref is not None and key_phi_columns[2]:
             df = join_dataframes(df, df_ref, left_on=key_phi_columns[2][0],
-                                 right_on="patient_id", right_suffix="from_referencepid_mapping",
+                                 right_on="reference_mapping", right_suffix="from_referencepid_mapping",
                                  how="left", drop_right_join_column=True)
 
         distinct_aids = mapping_obj._get_distinct_appointmentids()
