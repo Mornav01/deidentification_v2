@@ -129,10 +129,14 @@ def _clean_type_str(raw: str) -> str:
     # NullType() stringifies to "NULL" — not a valid column type
     if not s or s.upper() == "NULL" or s.upper() == "NULLTYPE":
         return "TEXT"
-    # VARCHAR/NVARCHAR/VARBINARY without a length need one — bare form is invalid in MySQL
+    # VARCHAR/NVARCHAR without a length means the source had unbounded text — use LONGTEXT
     upper = s.upper()
-    if upper in ("VARCHAR", "NVARCHAR", "CHAR", "NCHAR", "VARBINARY", "BINARY"):
+    if upper in ("VARCHAR", "NVARCHAR"):
+        return "LONGTEXT"
+    if upper in ("CHAR", "NCHAR"):
         return f"{s}(255)"
+    if upper in ("VARBINARY", "BINARY"):
+        return "LONGBLOB"
     return s
 
 
