@@ -112,7 +112,10 @@ class TestDumpTableToIpcCache:
                 })
 
         result = dump_table_to_ipc_cache(mock_stream(), cache_dir)
-        assert result == cache_dir
+        assert result is not None
+        assert result["cache_dir"] == cache_dir
+        assert result["batches"] == 3
+        assert result["rows"] == 15
 
         # Should have 3 batch files
         files = sorted(os.listdir(cache_dir))

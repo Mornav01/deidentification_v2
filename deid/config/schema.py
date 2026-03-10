@@ -92,7 +92,7 @@ class DeidConfig(BaseModel):
     source_db: DbConfig
     destination_db: DbConfig
     state_db_path: str = "./state.db"
-    mappings_db_path: str = "./mappings.db"
+    mappings_db_path: str = ""
     redis_url: str = "redis://localhost:6379/0"
     deidentification: DeidentificationSettings = DeidentificationSettings()
     tables: Optional[list[TableConfig]] = None
@@ -103,6 +103,12 @@ class DeidConfig(BaseModel):
     qc: QCSettings = QCSettings()
     logging: LoggingSettings = LoggingSettings()
     clinical_bin_doc: Optional[ClinicalBinDocConfig] = None
+
+    @model_validator(mode="after")
+    def set_default_mappings_db_path(self) -> "DeidConfig":
+        if not self.mappings_db_path:
+            self.mappings_db_path = f"./{self.source_db.database}_mappings.db"
+        return self
 
     @model_validator(mode="after")
     def require_tables_or_csv(self) -> "DeidConfig":

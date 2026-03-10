@@ -58,7 +58,7 @@ async def run(config: DeidConfig, config_path: str):
         if "setup" in config.phases:
             logger.info("Phase: setup")
             table_row_counts, table_id_ranges = await _setup_phase(
-                config, state_engine
+                config, state_engine, mappings_engine
             )
 
         cache_paths: dict[str, str] = {}
@@ -111,7 +111,7 @@ async def run(config: DeidConfig, config_path: str):
 
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
-async def _setup_phase(config: DeidConfig, state_engine):
+async def _setup_phase(config: DeidConfig, state_engine, mappings_engine=None):
     """Discover tables, create destination schemas, persist state."""
     assert config.tables, "config.tables must not be empty for setup phase"
 
@@ -177,6 +177,27 @@ async def _setup_phase(config: DeidConfig, state_engine):
         session.commit()
 
     logger.info("Setup: complete — %d tables registered.", len(config.tables))
+
+    # ── 4. Populate mapping tables ─────────────────────────────────────────
+    from deid.core.mapping_populator import populate_mappings
+
+    if mappings_engine is None:
+        mappings_engine = create_mappings_engine(config.mappings_db_path)
+        create_all_mappings_tables(mappings_engine)
+
+    mapping_summary = populate_mappings(
+        source=source,
+        tables=config.tables,
+        mappings_engine=mappings_engine,
+        patient_id_prefix=config.deidentification.patient_id_prefix,
+        max_offset=config.deidentification.date_offset_days,
+    )
+    logger.info(
+        "Setup: mappings populated — %d patients, %d encounters, %d appointments created.",
+        mapping_summary["patients_created"],
+        mapping_summary["encounters_created"],
+        mapping_summary["appointments_created"],
+    )
     return table_row_counts, table_id_ranges
 
 
@@ -196,7 +217,7 @@ async def _cache_large_tables(
 
     from functools import partial
 
-    from deid.core.dbPkg.dbhandler import NDDBHandler, dump_table_to_ipc_cache
+    from deid.core.dbPkg.dbhandler import NDDBHandler, dump_table_to_ipc_cache, stream_table_paginated
 
     table_row_counts = table_row_counts or {}
     cache_root = Path(config.state_db_path).resolve().parent / ".deid_cache"
@@ -206,9 +227,11 @@ async def _cache_large_tables(
     async def _dump_one(table_name: str) -> tuple[str, dict | None]:
         source = NDDBHandler(config.source_db.connection_string(), read_only=True)
         cache_dir = str(cache_root / table_name)
+        min_id, max_id = table_id_ranges[table_name]
         try:
-            stream = source.stream_table_as_dataframes(
-                table_name, config.deidentification.batch_size
+            stream = stream_table_paginated(
+                source, table_name, min_id, max_id,
+                config.deidentification.batch_size,
             )
             dump_fn = partial(
                 dump_table_to_ipc_cache,

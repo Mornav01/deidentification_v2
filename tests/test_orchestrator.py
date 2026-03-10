@@ -72,7 +72,7 @@ def test_cache_large_tables_creates_ipc_files(tmp_path):
 
     table_id_ranges = {"big_table": (1, 1000)}
 
-    def mock_stream(table_name, batch_size):
+    def mock_paginated_stream(handler, table_name, min_id, max_id, page_size, id_column="nd_auto_increment_id"):
         for i in range(3):
             start = i * 5 + 1
             yield pl.DataFrame({
@@ -81,10 +81,10 @@ def test_cache_large_tables_creates_ipc_files(tmp_path):
             })
 
     mock_handler = MagicMock()
-    mock_handler.stream_table_as_dataframes = mock_stream
     mock_handler.close = MagicMock()
 
-    with patch("deid.core.dbPkg.dbhandler.NDDBHandler", return_value=mock_handler):
+    with patch("deid.core.dbPkg.dbhandler.NDDBHandler", return_value=mock_handler), \
+         patch("deid.core.dbPkg.dbhandler.stream_table_paginated", side_effect=mock_paginated_stream):
         from deid.orchestrator.async_runner import _cache_large_tables
         cache_paths = asyncio.run(_cache_large_tables(config, table_id_ranges))
 
@@ -144,3 +144,40 @@ def test_build_task_graph_passes_cache_dir_to_range_tasks():
     assert len(captured_configs) == 2
     for cfg in captured_configs:
         assert cfg["cache_dir"] == "/tmp/.deid_cache/big_table"
+
+
+def test_setup_phase_populates_mappings(tmp_path):
+    """_setup_phase should call populate_mappings at the end."""
+    import asyncio
+    from unittest.mock import patch, MagicMock
+    from deid.config.schema import TableConfig
+
+    config = _make_config(
+        state_db_path=str(tmp_path / "state.db"),
+        mappings_db_path=str(tmp_path / "mappings.db"),
+        tables=[TableConfig(name="patients", rules={"PID": "PATIENT_ID", "Name": "MASK"})],
+    )
+
+    mock_handler = MagicMock()
+    mock_handler.get_rows_count.return_value = 100
+    mock_handler.get_min_max_id.return_value = None
+
+    mock_populate = MagicMock(return_value={
+        "patients_found": 10, "patients_created": 10,
+        "encounters_found": 0, "encounters_created": 0,
+        "appointments_found": 0, "appointments_created": 0,
+    })
+
+    from deid.models.base import create_state_engine, create_all_state_tables
+    state_engine = create_state_engine(str(tmp_path / "state.db"))
+    create_all_state_tables(state_engine)
+
+    with patch("deid.core.dbPkg.dbhandler.NDDBHandler", return_value=mock_handler), \
+         patch("deid.core.mapping_populator.populate_mappings", mock_populate):
+        from deid.orchestrator.async_runner import _setup_phase
+        asyncio.run(_setup_phase(config, state_engine))
+
+    mock_populate.assert_called_once()
+    call_kwargs = mock_populate.call_args.kwargs
+    assert call_kwargs["patient_id_prefix"] == config.deidentification.patient_id_prefix
+    assert call_kwargs["max_offset"] == config.deidentification.date_offset_days

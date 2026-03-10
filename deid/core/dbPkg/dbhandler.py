@@ -145,6 +145,44 @@ def stream_from_ipc_cache(
             yield df
 
 
+def stream_table_paginated(
+    handler: "NDDBHandler",
+    table_name: str,
+    min_id: int,
+    max_id: int,
+    page_size: int,
+    id_column: str = "nd_auto_increment_id",
+) -> Iterator[pl.DataFrame]:
+    """Paginate through a table by ID range, yielding one DataFrame per page.
+
+    Unlike ``stream_table_as_dataframes`` which relies on server-side cursors
+    (``stream_results=True``), this issues separate bounded ``SELECT`` queries.
+    Each query returns at most *page_size* rows, guaranteeing O(page_size)
+    memory regardless of DB driver buffering behaviour (e.g. pymssql for MSSQL
+    may buffer the entire result set even with ``stream_results=True``).
+    """
+    qi = handler._qi
+    query = text(
+        f"SELECT * FROM {qi(table_name)} "
+        f"WHERE {qi(id_column)} BETWEEN :start AND :end"
+    )
+    chunk_start = min_id
+    while chunk_start <= max_id:
+        chunk_end = min(chunk_start + page_size - 1, max_id)
+        with handler.engine.connect() as conn:
+            result = conn.execute(query, {"start": chunk_start, "end": chunk_end})
+            columns = list(result.keys())
+            rows = result.fetchall()
+        if rows:
+            yield pl.DataFrame(
+                _normalize_rows(rows),
+                schema=columns,
+                orient="row",
+                infer_schema_length=len(rows),
+            )
+        chunk_start = chunk_end + 1
+
+
 class NDDBHandler:
     def __init__(self, connection_string: str, read_only: bool = False):
         self.read_only = read_only
@@ -574,6 +612,50 @@ class NDDBHandler:
                 raise
 
         nd_logger.info(f"[DBHandler] Completed insertion into '{table_name}'.")
+
+    def fetch_distinct_values(self, table_name: str, column_name: str, batch_size: int = 10000) -> Iterator[str]:
+        """Yield distinct non-NULL values of a single column from *table_name*."""
+        qi = self._qi
+        query = text(
+            f"SELECT DISTINCT {qi(column_name)} FROM {qi(table_name)} "
+            f"WHERE {qi(column_name)} IS NOT NULL"
+        )
+        conn = self.engine.connect().execution_options(
+            stream_results=True,
+            max_row_buffer=batch_size,
+        )
+        try:
+            result = conn.execute(query)
+            while True:
+                rows = result.fetchmany(batch_size)
+                if not rows:
+                    break
+                for row in rows:
+                    yield str(row[0])
+        finally:
+            conn.close()
+
+    def fetch_distinct_pairs(self, table_name: str, col_a: str, col_b: str, batch_size: int = 10000) -> Iterator[tuple[str, str]]:
+        """Yield distinct non-NULL (col_a, col_b) pairs from *table_name*."""
+        qi = self._qi
+        query = text(
+            f"SELECT DISTINCT {qi(col_a)}, {qi(col_b)} FROM {qi(table_name)} "
+            f"WHERE {qi(col_a)} IS NOT NULL AND {qi(col_b)} IS NOT NULL"
+        )
+        conn = self.engine.connect().execution_options(
+            stream_results=True,
+            max_row_buffer=batch_size,
+        )
+        try:
+            result = conn.execute(query)
+            while True:
+                rows = result.fetchmany(batch_size)
+                if not rows:
+                    break
+                for row in rows:
+                    yield (str(row[0]), str(row[1]))
+        finally:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------

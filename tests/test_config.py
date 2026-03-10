@@ -214,6 +214,27 @@ def test_default_batch_size(tmp_path):
     assert config.deidentification.batch_size == 25000
 
 
+def test_mappings_db_path_defaults_to_schema_name(tmp_path):
+    from deid.config.loader import load_config
+
+    cfg = _minimal_config()
+    cfg["source_db"]["database"] = "my_hospital"
+    del cfg["mappings_db_path"]
+    p = _write_yaml(tmp_path, cfg)
+    config = load_config(p)
+    assert config.mappings_db_path == "./my_hospital_mappings.db"
+
+
+def test_mappings_db_path_explicit_overrides_default(tmp_path):
+    from deid.config.loader import load_config
+
+    cfg = _minimal_config()
+    cfg["mappings_db_path"] = "./custom.db"
+    p = _write_yaml(tmp_path, cfg)
+    config = load_config(p)
+    assert config.mappings_db_path == "./custom.db"
+
+
 def test_importing_qc_builders_does_not_load_presidio():
     """Importing the QC builders package should NOT eagerly load AnalyzerEngine."""
     import sys
