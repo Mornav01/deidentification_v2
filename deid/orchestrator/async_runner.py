@@ -51,6 +51,11 @@ async def run(config: DeidConfig, config_path: str):
     )
     collector_task = asyncio.create_task(collector.listen(config.redis_url))
 
+    # Ensure PII tables exist before any phase runs.
+    if config.pii_db and config.pii_tables_config:
+        loop = asyncio.get_event_loop()
+        await _ensure_pii_tables(config, loop)
+
     table_row_counts = {}
     table_id_ranges = {}
 
@@ -215,11 +220,7 @@ async def _setup_phase(config: DeidConfig, state_engine, mappings_engine=None):
                 current = end + 1
         session.commit()
 
-    # ── 6. Ensure PII tables exist (create if missing) ──────────────────
-    if config.pii_db and config.pii_tables_config:
-        await _ensure_pii_tables(config, loop)
-
-    # ── 7. Cleanup stale .tmp files ───────────────────────────────────────
+    # ── 6. Cleanup stale .tmp files ───────────────────────────────────────
     cleanup_tmp_files(staging_root)
 
     logger.info("Setup: pre-split %d tables into BatchState rows.", len(config.tables))
