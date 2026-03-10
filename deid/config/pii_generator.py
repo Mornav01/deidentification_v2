@@ -61,18 +61,20 @@ _FIRST_NAME_PAT = re.compile(r"(?i)(^|_)(first_?name|fname)($|_)")
 _LAST_NAME_PAT = re.compile(r"(?i)(^|_)(last_?name|lname)($|_)")
 
 
-def _is_pii_column(column_name: str) -> bool:
-    """Return True if column_name matches any known PII pattern."""
-    return any(p.search(column_name) for p in _PII_COLUMN_PATTERNS)
-
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
-def _classify_column(column_name: str) -> tuple[str | None, str]:
-    """Return (masking_value, category) for a PII column, or (None, 'mask') if unknown."""
+def _classify_column(column_name: str) -> tuple[str, str]:
+    """Return (masking_value, category) for a column.
+
+    Known PII patterns get specific masking values; unrecognized columns
+    get a generic ``((COLUMN_NAME))`` mask so they are still included.
+    """
     for pattern, masking_value, category in _MASKING_PATTERNS:
         if pattern.search(column_name):
+            if masking_value is None:
+                masking_value = f"(({column_name.upper()}))"
             return masking_value, category
-    return None, "mask"
+    return f"(({column_name.upper()}))", "mask"
 
 
 # ── Strategy 1: from table rules ─────────────────────────────────────────
@@ -104,7 +106,11 @@ def _from_table_rules(tables: list) -> dict[str, dict]:
 # ── Strategy 2: introspect source DB ─────────────────────────────────────
 
 def _from_source_db(source_db) -> dict[str, dict]:
-    """Scan all source tables (read-only) for patient_id + PII columns."""
+    """Scan all source tables (read-only) for tables with a patient_id column.
+
+    Includes ALL non-ID columns from matching tables so that as many PII
+    values as possible are available for notes masking.
+    """
     from sqlalchemy import inspect as sa_inspect
 
     from deid.core.dbPkg.dbhandler import create_read_only_engine
@@ -127,19 +133,19 @@ def _from_source_db(source_db) -> dict[str, dict]:
         if not patient_id_col:
             continue
 
-        # Collect PII columns.
-        pii_cols = [cn for cn in col_names if _is_pii_column(cn)]
-        if pii_cols:
+        # Include every column except the patient-ID itself.
+        other_cols = [cn for cn in col_names if cn != patient_id_col]
+        if other_cols:
             pii_source_tables[table_name] = {
                 "primary_col": patient_id_col,
-                "other_required_columns": pii_cols,
+                "other_required_columns": other_cols,
             }
 
     engine.dispose()
 
     if pii_source_tables:
         logger.info(
-            "PII introspection: found %d source table(s) with PII columns: %s",
+            "PII introspection: found %d source table(s) with patient_id: %s",
             len(pii_source_tables),
             ", ".join(pii_source_tables.keys()),
         )
