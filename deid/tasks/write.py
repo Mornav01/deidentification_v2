@@ -128,12 +128,17 @@ def _clean_type_str(raw: str) -> str:
     return s if s else "VARCHAR(255)"
 
 
+def _quote_identifier(engine, name: str) -> str:
+    """Quote an identifier using the dialect's own preparer."""
+    return engine.dialect.identifier_preparer.quote_identifier(name)
+
+
 def _create_dest_table(handler: NDDBHandler, table_name: str, col_schema: dict):
     """Create destination table if it doesn't exist using exact source types."""
     if not col_schema:
         return
 
-    qi = handler._qi
+    qi = lambda name: _quote_identifier(handler.engine, name)
     col_defs = []
     for col_name, info in col_schema.items():
         type_str = _clean_type_str(info.get("type", "VARCHAR(255)"))
@@ -142,4 +147,4 @@ def _create_dest_table(handler: NDDBHandler, table_name: str, col_schema: dict):
     ddl_str = f"CREATE TABLE IF NOT EXISTS {qi(table_name)} ({', '.join(col_defs)})"
     logger.debug("DDL: %s", ddl_str)
     with handler.engine.begin() as conn:
-        conn.execute(text(ddl_str))
+        conn.exec_driver_sql(ddl_str)
