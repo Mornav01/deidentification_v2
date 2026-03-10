@@ -66,7 +66,7 @@ class ProcessTaskConfig(BaseModel):
     source_conn_str: str
     offset_days: int = 34
     pii_config: dict | None = None
-    pii_db_conn_str: str | None = None
+    pii_db_conn_str: dict | None = None
     secondary_pii_configs: list | None = None
     redis_url: str = ""
     run_config: dict | None = None
