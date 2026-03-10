@@ -1,10 +1,11 @@
-"""Auto-generate pii_tables_config and pii_config from table rules.
+"""Auto-generate pii_tables_config and pii_config.
 
-Mirrors the pattern of rules_generator.py — introspects configured tables
-to find PII columns (MASK, PATIENT_DOB) and builds the config needed by
-the PII table generator and notes de-identification.
-
-Source DB access is strictly read-only.
+Two strategies (tried in order):
+1. From configured table rules — if the deid tables themselves contain
+   MASK / PATIENT_DOB columns alongside a PATIENT_ID column.
+2. From source-DB introspection — scan ALL source tables for columns
+   whose names match PII patterns (names, SSN, DOB, etc.) and a
+   patient-ID primary key.  Source access is strictly read-only.
 """
 from __future__ import annotations
 
@@ -23,6 +24,19 @@ logger = logging.getLogger("deid.config")
 
 # Rules whose columns carry PII values useful for notes masking.
 _PII_RULES = {"MASK", "PATIENT_DOB"}
+
+# ── Column-name patterns for PII detection ───────────────────────────────
+_PATIENT_ID_PAT = re.compile(r"(?i)^(patient_?id|pat_?id|pid)$")
+
+_PII_COLUMN_PATTERNS = [
+    re.compile(r"(?i)(^|_)(first_?name|last_?name|middle_?name|patient_?name|full_?name|fname|lname|mname)($|_)"),
+    re.compile(r"(?i)(^|_)(maiden_?name|preferred_?name|nick_?name|display_?name)($|_)"),
+    re.compile(r"(?i)(^|_)(ssn|social_?security|tax_?id|tin)($|_)"),
+    re.compile(r"(?i)(^|_)(phone|fax|cell|mobile|home_?phone|work_?phone|phone_?number)($|_)"),
+    re.compile(r"(?i)(^|_)(email|e_?mail|email_?address)($|_)"),
+    re.compile(r"(?i)(^|_)(address|addr|street|address_?line|city|state|county)($|_)"),
+    re.compile(r"(?i)(^|_)(dob|date_?of_?birth|birth_?date|patientdob)($|_)"),
+]
 
 # ── Column-name → masking-value mapping (first match wins) ──────────────
 _MASKING_PATTERNS = [
@@ -47,26 +61,25 @@ _FIRST_NAME_PAT = re.compile(r"(?i)(^|_)(first_?name|fname)($|_)")
 _LAST_NAME_PAT = re.compile(r"(?i)(^|_)(last_?name|lname)($|_)")
 
 
+def _is_pii_column(column_name: str) -> bool:
+    """Return True if column_name matches any known PII pattern."""
+    return any(p.search(column_name) for p in _PII_COLUMN_PATTERNS)
+
+
 @validate_call(config=dict(arbitrary_types_allowed=True))
 def _classify_column(column_name: str) -> tuple[str | None, str]:
-    """Return (masking_value, category) for a PII column, or (None, '') if unknown."""
+    """Return (masking_value, category) for a PII column, or (None, 'mask') if unknown."""
     for pattern, masking_value, category in _MASKING_PATTERNS:
         if pattern.search(column_name):
             return masking_value, category
     return None, "mask"
 
 
+# ── Strategy 1: from table rules ─────────────────────────────────────────
+
 @validate_call(config=dict(arbitrary_types_allowed=True))
-def generate_pii_tables_config(
-    tables: list,
-) -> dict:
-    """Build pii_tables_config from configured table rules.
-
-    Scans each table's rules for PATIENT_ID + MASK/PATIENT_DOB columns and
-    groups them into a pii_data_table definition.
-
-    Returns dict suitable for PIITable.generate_pii_tables().
-    """
+def _from_table_rules(tables: list) -> dict[str, dict]:
+    """Find PII source tables from the configured deid table rules."""
     pii_source_tables: dict[str, dict] = {}
 
     for table_cfg in tables:
@@ -85,7 +98,78 @@ def generate_pii_tables_config(
                 "other_required_columns": pii_columns,
             }
 
+    return pii_source_tables
+
+
+# ── Strategy 2: introspect source DB ─────────────────────────────────────
+
+def _from_source_db(source_db) -> dict[str, dict]:
+    """Scan all source tables (read-only) for patient_id + PII columns."""
+    from sqlalchemy import inspect as sa_inspect
+
+    from deid.core.dbPkg.dbhandler import create_read_only_engine
+
+    engine = create_read_only_engine(source_db.connection_string())
+    insp = sa_inspect(engine)
+
+    pii_source_tables: dict[str, dict] = {}
+
+    for table_name in insp.get_table_names():
+        columns = insp.get_columns(table_name)
+        col_names = [c["name"] for c in columns]
+
+        # Find a patient-ID column.
+        patient_id_col = None
+        for cn in col_names:
+            if _PATIENT_ID_PAT.search(cn):
+                patient_id_col = cn
+                break
+        if not patient_id_col:
+            continue
+
+        # Collect PII columns.
+        pii_cols = [cn for cn in col_names if _is_pii_column(cn)]
+        if pii_cols:
+            pii_source_tables[table_name] = {
+                "primary_col": patient_id_col,
+                "other_required_columns": pii_cols,
+            }
+
+    engine.dispose()
+
+    if pii_source_tables:
+        logger.info(
+            "PII introspection: found %d source table(s) with PII columns: %s",
+            len(pii_source_tables),
+            ", ".join(pii_source_tables.keys()),
+        )
+
+    return pii_source_tables
+
+
+# ── Public API ────────────────────────────────────────────────────────────
+
+def generate_pii_tables_config(tables: list, source_db=None) -> dict:
+    """Build pii_tables_config, trying table rules first then DB introspection.
+
+    Returns dict suitable for PIITable.generate_pii_tables(), or {} if
+    no PII source tables could be identified.
+    """
+    pii_source_tables = _from_table_rules(tables)
+
+    if not pii_source_tables and source_db is not None:
+        logger.info(
+            "No PII columns found in configured table rules — "
+            "introspecting source database..."
+        )
+        pii_source_tables = _from_source_db(source_db)
+
     if not pii_source_tables:
+        logger.warning(
+            "Could not auto-generate pii_tables_config: no tables with "
+            "patient_id + PII columns found. Provide pii_tables_config "
+            "manually in config.yaml."
+        )
         return {}
 
     return {
@@ -98,9 +182,7 @@ def generate_pii_tables_config(
 
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
-def generate_pii_config(
-    pii_tables_config: dict,
-) -> dict:
+def generate_pii_config(pii_tables_config: dict) -> dict:
     """Build pii_config (mask/dob/combine) from pii_tables_config.
 
     Uses the {source_table}_{column} naming convention to produce
@@ -136,12 +218,11 @@ def generate_pii_config(
     if dob:
         config["dob"] = dob
 
-    # Build combine rules for first+last name pairs.
+    # Build combine rules for first+last name pairs from the same source table.
     combine: dict[str, dict] = {}
     for fn_col in first_name_cols:
-        # Find matching last-name column from the same source table.
-        prefix = fn_col.rsplit("_", 1)[0]  # e.g. "users_fname" → "users"
-        # Match by shared table prefix
+        # Extract table prefix: "users_fname" → "users"
+        prefix = fn_col.rsplit("_", 1)[0]
         for ln_col in last_name_cols:
             ln_prefix = ln_col.rsplit("_", 1)[0]
             if prefix == ln_prefix:
