@@ -46,9 +46,11 @@ COLUMN_RULES = [
     (re.compile(r"(?i)(^|_)(email|e_?mail|email_?address)($|_)"), "MASK"),
     (re.compile(r"(?i)(^|_)(address|addr|street|address_?line|city|state|county)($|_)"), "MASK"),
     (re.compile(r"(?i)(^|_)(notes?|comment|narrative|description|free_?text|remarks|memo|clinical_?notes?)($|_)"), "GENERIC_NOTES"),
+    (re.compile(r"(?i)(^|_)(doc_?content|document_?text|document_?body|doc_?text|doc_?body|bin_?content|blob_?content|text_?content|content_?text|report_?text|clinical_?text|note_?text)($|_)"), "GENERIC_NOTES"),
 ]
 
 DATE_TYPE_PATTERN = re.compile(r"(?i)(DATE|TIME|TIMESTAMP)")
+LARGE_TEXT_TYPE_PATTERN = re.compile(r"(?i)(LONGTEXT|MEDIUMTEXT|NTEXT|NVARCHAR\s*\(\s*MAX\s*\)|(?<!TINY)TEXT\b)")
 
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
@@ -59,6 +61,9 @@ def auto_assign_rule(column_name: str, data_type: str) -> str:
             return rule
     if DATE_TYPE_PATTERN.search(data_type):
         return "DATE_OFFSET"
+    # Large text columns likely contain free-text that needs de-identification
+    if LARGE_TEXT_TYPE_PATTERN.search(data_type):
+        return "GENERIC_NOTES"
     return ""
 
 
