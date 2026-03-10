@@ -60,8 +60,8 @@ def retry_command(
     from deid.tasks.celery_app import create_celery_app
     create_celery_app(broker_url=cfg.redis_url, result_backend=cfg.redis_url)
 
-    from deid.cli.run import _start_worker, _stop_worker
-    worker_proc = _start_worker(cfg)
+    from deid.cli.run import _start_workers, _stop_workers
+    worker_procs = _start_workers(cfg)
 
     try:
         asyncio.run(_retry_run(cfg, batch_failures))
@@ -69,18 +69,24 @@ def retry_command(
     except KeyboardInterrupt:
         typer.echo("\nInterrupted — shutting down...")
     finally:
-        _stop_worker(worker_proc)
+        _stop_workers(worker_procs)
 
 
 async def _retry_run(config, batch_failures: list[BatchFailure]):
-    """Dispatch retry tasks and monitor progress."""
-    from celery import group as celery_group
-    from deid.tasks.deidentify import deidentify_table, deidentify_table_range
-    from deid.orchestrator.task_graph import _build_table_config
+    """Dispatch retry tasks for failed batches using the 3-stage pipeline."""
+    from deid.models.base import create_state_engine
+    from deid.models.state import BatchState
+    from deid.staging import get_staging_root
+    from deid.tasks.fetch import fetch_batch
+    from sqlalchemy.orm import Session
 
-    tasks = []
+    state_engine = create_state_engine(config.state_db_path)
+    staging_root = get_staging_root(config.state_db_path)
+    mappings_conn_str = f"sqlite:///{config.mappings_db_path}"
+
+    # Reset failed batches to pending and dispatch fetch tasks.
+    dispatched = 0
     for failure in batch_failures:
-        # Find matching table config.
         table_cfg = next(
             (t for t in config.tables if t.name == failure.table), None
         )
@@ -88,25 +94,53 @@ async def _retry_run(config, batch_failures: list[BatchFailure]):
             logger.warning(f"Table '{failure.table}' not in config — skipping.")
             continue
 
-        task_config = _build_table_config(config, failure.table, table_cfg.rules)
+        if failure.start_id is None or failure.end_id is None:
+            logger.warning(f"Batch for '{failure.table}' missing ID range — skipping.")
+            continue
 
-        if failure.task_type == "range" and failure.start_id is not None:
-            tasks.append(
-                deidentify_table_range.s(task_config, failure.start_id, failure.end_id)
-            )
-        else:
-            tasks.append(deidentify_table.s(task_config))
+        # Reset BatchState to pending.
+        with Session(state_engine) as session:
+            batch = session.query(BatchState).filter_by(
+                table_name=failure.table,
+                start_id=failure.start_id,
+                end_id=failure.end_id,
+            ).first()
+            if batch:
+                batch.status = "pending"
+                session.commit()
 
-    if not tasks:
+        from deid.orchestrator.async_runner import _build_fetch_config, _get_table_details
+
+        # Build a minimal batch-like object for _build_fetch_config.
+        class _Batch:
+            def __init__(self, table_name, start_id, end_id):
+                self.table_name = table_name
+                self.start_id = start_id
+                self.end_id = end_id
+
+        batch_obj = _Batch(failure.table, failure.start_id, failure.end_id)
+        cfg = _build_fetch_config(config, batch_obj, staging_root, mappings_conn_str)
+        fetch_batch.apply_async(args=[cfg], queue="deid-fetch")
+        dispatched += 1
+
+    if dispatched == 0:
         return
 
-    result = celery_group(tasks).apply_async()
+    logger.info("Dispatched %d retry batches.", dispatched)
 
-    from deid.orchestrator.progress import listen_progress
-    from deid.config.task_models import ProgressEvent
-
-    async for event in listen_progress(config.redis_url):
-        progress = ProgressEvent(**event)
-        logger.info("Retry progress: %s — %s", progress.table, progress.status)
-        if result.ready():
-            break
+    # Poll for completion.
+    import time
+    while True:
+        await asyncio.sleep(2)
+        with Session(state_engine) as session:
+            remaining = 0
+            for failure in batch_failures:
+                batch = session.query(BatchState).filter_by(
+                    table_name=failure.table,
+                    start_id=failure.start_id,
+                    end_id=failure.end_id,
+                ).first()
+                if batch and batch.status != "done":
+                    remaining += 1
+            if remaining == 0:
+                break

@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, Field, model_validator, validate_call
+from pydantic import BaseModel, ConfigDict, Field, model_validator, validate_call
 
 
 class DbType(str, Enum):
@@ -43,13 +43,11 @@ class DbConfig(BaseModel):
 
 
 class DeidentificationSettings(BaseModel):
-    batch_size: int = 25000
-    cache_batch_size: int = 1000  # rows per page when dumping large tables to IPC cache
+    model_config = ConfigDict(extra="ignore")
+
+    batch_size: int = 1000
     date_offset_days: int = 34
     patient_id_prefix: int = 10000000
-    parallel_tasks_per_table: int = 4
-    large_table_threshold: int = 500000
-    cache_concurrency: int = 4  # parallel table dumps during IPC cache phase
     random_seed: int = 42
 
 
@@ -65,7 +63,11 @@ class MappingTableConfig(BaseModel):
 
 
 class WorkerSettings(BaseModel):
-    concurrency: int = 4
+    model_config = ConfigDict(extra="ignore")
+
+    fetchers: int = 2
+    processors: int = 4
+    writers: int = 2
     max_retries: int = 1
     task_timeout: int = 3600
     max_tasks_per_child: int = 1

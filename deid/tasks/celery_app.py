@@ -5,7 +5,9 @@ from celery import Celery
 from pydantic import validate_call
 
 _TASK_MODULES = [
-    "deid.tasks.deidentify",
+    "deid.tasks.fetch",
+    "deid.tasks.process",
+    "deid.tasks.write",
     "deid.tasks.qc",
 ]
 

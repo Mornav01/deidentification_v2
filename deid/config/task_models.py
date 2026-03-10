@@ -42,22 +42,46 @@ class BatchFailure(BaseModel):
     task_type: str
 
 
-class DeidentifyTaskConfig(BaseModel):
+class FetchTaskConfig(BaseModel):
     table_name: str
+    start_id: int
+    end_id: int
     source_conn_str: str
-    dest_conn_str: str
-    table_details_for_ui: dict
-    mappings_db_path: str = ""
-    batch_size: int = 100000
-    offset_days: int = 34
+    state_db_path: str
+    staging_root: str
+    batch_size: int = 1000
+    id_column: str = "nd_auto_increment_id"
     redis_url: str = ""
+    run_config: dict | None = None
+
+
+class ProcessTaskConfig(BaseModel):
+    table_name: str
+    start_id: int
+    end_id: int
+    staging_root: str
+    state_db_path: str
+    mapping_db_config: dict
+    table_details: dict
+    source_conn_str: str
+    offset_days: int = 34
     pii_config: dict | None = None
     pii_db_conn_str: str | None = None
     secondary_pii_configs: list | None = None
-    mapping_db_config: dict | None = None
-    universal_tables_config: list | None = None
+    redis_url: str = ""
     run_config: dict | None = None
-    cache_dir: str | None = None
+
+
+class WriteTaskConfig(BaseModel):
+    table_name: str
+    start_id: int
+    end_id: int
+    staging_root: str
+    state_db_path: str
+    dest_conn_str: str
+    id_column: str = "nd_auto_increment_id"
+    redis_url: str = ""
+    run_config: dict | None = None
 
 
 class QCTaskConfig(BaseModel):

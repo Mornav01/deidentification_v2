@@ -61,30 +61,15 @@ async def run(config: DeidConfig, config_path: str):
                 config, state_engine, mappings_engine
             )
 
-        cache_paths: dict[str, str] = {}
-        if "deidentify" in config.phases and table_id_ranges:
-            try:
-                cache_paths = await _cache_large_tables(config, table_id_ranges, table_row_counts)
-            except Exception:
-                logger.exception("Cache phase failed — workers will read from source DB directly")
-                cache_paths = {}
-
         if "deidentify" in config.phases:
             logger.info("Phase: deidentify")
-            await _deidentify_phase(config, state_engine, table_row_counts, table_id_ranges, cache_paths)
+            await _deidentify_phase(config, state_engine)
 
         if "qc" in config.phases:
             logger.info("Phase: qc")
             await _qc_phase(config, state_engine)
 
     finally:
-        # Cleanup IPC cache.
-        cache_root = Path(config.state_db_path).resolve().parent / ".deid_cache"
-        if cache_root.exists():
-            import shutil
-            shutil.rmtree(cache_root, ignore_errors=True)
-            logger.info("Cache: cleaned up %s", cache_root)
-
         # Stop collector and write summary.
         collector.stop()
         # Give collector a moment to drain remaining messages.
@@ -133,23 +118,19 @@ async def _setup_phase(config: DeidConfig, state_engine, mappings_engine=None):
     count_results = await asyncio.gather(*[_get_count(n) for n in table_names])
     table_row_counts = dict(count_results)
 
-    # ── 2. Gather min/max IDs for large tables in parallel ───────────────
-    threshold = config.deidentification.large_table_threshold
-    large_tables = [n for n, c in table_row_counts.items() if c > threshold]
+    # ── 2. Gather min/max IDs for all tables in parallel ─────────────────
     table_id_ranges = {}
+    logger.info("Setup: fetching ID ranges for %d tables...", len(table_names))
 
-    if large_tables:
-        logger.info("Setup: fetching ID ranges for %d large tables...", len(large_tables))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
+    async def _get_range(table_name: str) -> tuple[str, tuple[int, int] | None]:
+        mm = await loop.run_in_executor(None, source.get_min_max_id, table_name)
+        return table_name, mm
 
-        @validate_call(config=dict(arbitrary_types_allowed=True))
-        async def _get_range(table_name: str) -> tuple[str, tuple[int, int] | None]:
-            mm = await loop.run_in_executor(None, source.get_min_max_id, table_name)
-            return table_name, mm
-
-        range_results = await asyncio.gather(*[_get_range(n) for n in large_tables])
-        for name, mm in range_results:
-            if mm:
-                table_id_ranges[name] = mm
+    range_results = await asyncio.gather(*[_get_range(n) for n in table_names])
+    for name, mm in range_results:
+        if mm:
+            table_id_ranges[name] = mm
 
     # ── 3. Persist state (sequential — SQLite writes) ────────────────────
     with Session(state_engine) as session:
@@ -199,120 +180,188 @@ async def _setup_phase(config: DeidConfig, state_engine, mappings_engine=None):
         mapping_summary["encounters_created"],
         mapping_summary["appointments_created"],
     )
+
+    # ── 5. Pre-split tables into BatchState rows ──────────────────────────
+    from deid.models.state import BatchState
+    from deid.staging import get_staging_root, cleanup_tmp_files
+
+    batch_size = config.deidentification.batch_size
+    staging_root = get_staging_root(config.state_db_path)
+
+    with Session(state_engine) as session:
+        for table_cfg in config.tables:
+            tname = table_cfg.name
+            mm = table_id_ranges.get(tname)
+            if not mm:
+                # Table without integer IDs — single sentinel batch
+                existing = session.query(BatchState).filter_by(
+                    table_name=tname, start_id=-1, end_id=-1
+                ).first()
+                if not existing:
+                    session.add(BatchState(table_name=tname, start_id=-1, end_id=-1, status="pending"))
+                continue
+
+            min_id, max_id = mm
+            current = min_id
+            while current <= max_id:
+                end = min(current + batch_size - 1, max_id)
+                existing = session.query(BatchState).filter_by(
+                    table_name=tname, start_id=current, end_id=end
+                ).first()
+                if not existing:
+                    session.add(BatchState(
+                        table_name=tname, start_id=current, end_id=end, status="pending"
+                    ))
+                current = end + 1
+        session.commit()
+
+    # ── 6. Cleanup stale .tmp files ───────────────────────────────────────
+    cleanup_tmp_files(staging_root)
+
+    logger.info("Setup: pre-split %d tables into BatchState rows.", len(config.tables))
     return table_row_counts, table_id_ranges
 
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
-async def _cache_large_tables(
-    config: DeidConfig,
-    table_id_ranges: dict[str, tuple[int, int]],
-    table_row_counts: dict[str, int] | None = None,
-) -> dict[str, str]:
-    """Dump large tables (those in table_id_ranges) to local Arrow IPC files.
+async def _deidentify_phase(config, state_engine):
+    """Dispatch pipeline tasks based on BatchState, poll for completion."""
+    import time
+    from deid.models.state import BatchState
+    from deid.staging import get_staging_root, reconcile
+    from deid.tasks.fetch import fetch_batch
+    from deid.tasks.process import process_batch
+    from deid.tasks.write import write_batch
 
-    Returns a mapping of {table_name: cache_dir_path} for tables that were cached.
-    Tables not in table_id_ranges are skipped (they won't be split).
-    """
-    if not table_id_ranges:
-        return {}
+    staging_root = get_staging_root(config.state_db_path)
+    reconcile(state_engine, staging_root)
 
-    from functools import partial
+    mappings_conn_str = f"sqlite:///{config.mappings_db_path}"
 
-    from deid.core.dbPkg.dbhandler import NDDBHandler, dump_table_to_ipc_cache, stream_table_paginated
-
-    table_row_counts = table_row_counts or {}
-    cache_root = Path(config.state_db_path).resolve().parent / ".deid_cache"
-    loop = asyncio.get_event_loop()
-    cache_paths: dict[str, str] = {}
-
-    async def _dump_one(table_name: str) -> tuple[str, dict | None]:
-        source = NDDBHandler(config.source_db.connection_string(), read_only=True)
-        cache_dir = str(cache_root / table_name)
-        min_id, max_id = table_id_ranges[table_name]
-        try:
-            stream = stream_table_paginated(
-                source, table_name, min_id, max_id,
-                config.deidentification.cache_batch_size,
+    # Count total batches
+    with Session(state_engine) as session:
+        total = session.query(BatchState).count()
+        if total == 0:
+            raise RuntimeError(
+                "No BatchState rows found. Run the 'setup' phase first."
             )
-            dump_fn = partial(
-                dump_table_to_ipc_cache,
-                stream,
-                cache_dir,
-                table_name=table_name,
-                estimated_rows=table_row_counts.get(table_name, 0),
-            )
-            result = await loop.run_in_executor(None, dump_fn)
-            return table_name, result
-        finally:
-            source.close()
 
-    concurrency = config.deidentification.cache_concurrency
-    semaphore = asyncio.Semaphore(concurrency)
-    total = len(table_id_ranges)
+    # Initial dispatch based on current status
+    with Session(state_engine) as session:
+        for batch in session.query(BatchState).filter_by(status="pending").all():
+            cfg = _build_fetch_config(config, batch, staging_root, mappings_conn_str)
+            fetch_batch.apply_async(args=[cfg], queue="deid-fetch")
+        for batch in session.query(BatchState).filter_by(status="fetched").all():
+            cfg = _build_process_config(config, batch, staging_root, mappings_conn_str)
+            process_batch.apply_async(args=[cfg], queue="deid-process")
+        for batch in session.query(BatchState).filter_by(status="processed").all():
+            cfg = _build_write_config(config, batch, staging_root)
+            write_batch.apply_async(args=[cfg], queue="deid-write")
 
-    table_list = ", ".join(
-        f"{t} (~{table_row_counts.get(t, 0):,} rows)" for t in table_id_ranges
-    )
-    logger.info(
-        "Cache: dumping %d large table(s) to Arrow IPC (concurrency=%d): %s",
-        total, concurrency, table_list,
-    )
+    # Poll for completion
+    last_done_count = 0
+    last_progress_time = time.monotonic()
+    stuck_timeout = config.workers.task_timeout * 2
 
-    async def _dump_with_semaphore(idx: int, table_name: str):
-        async with semaphore:
-            est = table_row_counts.get(table_name, 0)
-            logger.info(
-                "Cache: [%d/%d] starting %s (~%s rows)...",
-                idx, total, table_name, f"{est:,}",
-            )
-            try:
-                name, summary = await _dump_one(table_name)
-                if summary:
-                    cache_paths[name] = summary["cache_dir"]
-                    logger.info(
-                        "Cache: [%d/%d] %s done — %s rows, %d batches, %.1fs",
-                        idx, total, name,
-                        f"{summary['rows']:,}", summary["batches"], summary["elapsed_s"],
-                    )
-            except Exception:
-                logger.exception(
-                    "Cache: [%d/%d] %s FAILED — workers will read from source DB",
-                    idx, total, table_name,
-                )
-
-    await asyncio.gather(*[
-        _dump_with_semaphore(idx, t)
-        for idx, t in enumerate(table_id_ranges, 1)
-    ])
-
-    logger.info("Cache: complete — %d/%d tables cached", len(cache_paths), total)
-    return cache_paths
-
-
-@validate_call(config=dict(arbitrary_types_allowed=True))
-async def _deidentify_phase(config, state_engine, table_row_counts, table_id_ranges, cache_paths=None):
-    """Build task graph and dispatch to Celery, monitor progress."""
-    from deid.orchestrator.task_graph import build_task_graph
-
-    graph = build_task_graph(config, table_row_counts, table_id_ranges, cache_paths or {})
-    result = graph.apply_async()
-
-    from deid.orchestrator.progress import listen_progress
-
-    async for event in listen_progress(config.redis_url):
-        progress = ProgressEvent(**event)
-        logger.info("Progress: %s — %s", progress.table, progress.status)
+    while True:
+        await asyncio.sleep(2)
 
         with Session(state_engine) as session:
-            ts = session.query(TableState).filter_by(table_name=progress.table).first()
-            if ts:
-                ts.status = progress.status
-                if progress.status == "failed":
-                    ts.failure_remarks = progress.detail
-                session.commit()
+            done_count = session.query(BatchState).filter_by(status="done").count()
 
-        if result.ready():
+        if done_count == total:
+            logger.info("All %d batches complete.", total)
             break
+
+        if done_count > last_done_count:
+            last_done_count = done_count
+            last_progress_time = time.monotonic()
+            logger.info("Progress: %d/%d batches done.", done_count, total)
+        elif time.monotonic() - last_progress_time > stuck_timeout:
+            logger.error(
+                "Pipeline stuck: no progress for %ds. %d/%d batches done.",
+                stuck_timeout, done_count, total,
+            )
+            break
+
+
+def _rules_to_table_details(rules: dict[str, str]) -> dict:
+    """Convert a flat {column: rule} dict to the table_details format."""
+    columns_details = []
+    for col_name, rule in rules.items():
+        columns_details.append({
+            "column_name": col_name,
+            "is_phi": True,
+            "de_identification_rule": rule,
+            "mask_value": col_name.upper(),
+        })
+    return {
+        "columns_details": columns_details,
+        "ignore_rows": {},
+        "batch_size": 0,
+        "reference_patient_id_column": None,
+        "reference_enc_id_column": None,
+        "reference_mapping": "",
+    }
+
+
+def _get_table_details(config, table_name: str) -> dict:
+    """Build table_details dict for a table from config."""
+    for table_cfg in config.tables:
+        if table_cfg.name == table_name:
+            return _rules_to_table_details(table_cfg.rules)
+    return {"columns_details": []}
+
+
+def _build_fetch_config(config, batch, staging_root, mappings_conn_str):
+    from deid.config.task_models import FetchTaskConfig
+    base = FetchTaskConfig(
+        table_name=batch.table_name,
+        start_id=batch.start_id,
+        end_id=batch.end_id,
+        source_conn_str=config.source_db.connection_string(),
+        state_db_path=config.state_db_path,
+        staging_root=str(staging_root),
+        batch_size=config.deidentification.batch_size,
+        redis_url=config.redis_url,
+    ).model_dump()
+    # Extra fields forwarded by fetch_batch to process_batch and write_batch
+    base["mapping_db_config"] = {"connection_str": mappings_conn_str}
+    base["table_details"] = _get_table_details(config, batch.table_name)
+    base["offset_days"] = config.deidentification.date_offset_days
+    base["dest_conn_str"] = config.destination_db.connection_string()
+    return base
+
+
+def _build_process_config(config, batch, staging_root, mappings_conn_str):
+    from deid.config.task_models import ProcessTaskConfig
+    base = ProcessTaskConfig(
+        table_name=batch.table_name,
+        start_id=batch.start_id,
+        end_id=batch.end_id,
+        staging_root=str(staging_root),
+        state_db_path=config.state_db_path,
+        mapping_db_config={"connection_str": mappings_conn_str},
+        table_details=_get_table_details(config, batch.table_name),
+        source_conn_str=config.source_db.connection_string(),
+        offset_days=config.deidentification.date_offset_days,
+        redis_url=config.redis_url,
+    ).model_dump()
+    # Extra field forwarded by process_batch to write_batch
+    base["dest_conn_str"] = config.destination_db.connection_string()
+    return base
+
+
+def _build_write_config(config, batch, staging_root):
+    from deid.config.task_models import WriteTaskConfig
+    return WriteTaskConfig(
+        table_name=batch.table_name,
+        start_id=batch.start_id,
+        end_id=batch.end_id,
+        staging_root=str(staging_root),
+        state_db_path=config.state_db_path,
+        dest_conn_str=config.destination_db.connection_string(),
+        redis_url=config.redis_url,
+    ).model_dump()
 
 
 @validate_call(config=dict(arbitrary_types_allowed=True))

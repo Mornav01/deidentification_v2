@@ -197,3 +197,5 @@ temp/
 *.csv
 *.yaml
 *.db
+*.arrow
+.deid_cache/

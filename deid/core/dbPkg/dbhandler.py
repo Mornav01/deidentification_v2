@@ -113,10 +113,18 @@ def dump_table_to_ipc_cache(
     ``None`` if the stream was empty.
     """
     import time
+    from tqdm import tqdm
 
     batch_count = 0
     total_rows = 0
     t0 = time.monotonic()
+
+    pbar = tqdm(
+        total=estimated_rows or None,
+        desc=f"[IPC Cache] {table_name}",
+        unit=" rows",
+        unit_scale=True,
+    )
 
     for df in stream:
         if df.is_empty():
@@ -126,19 +134,19 @@ def dump_table_to_ipc_cache(
         df.write_ipc(os.path.join(cache_dir, f"batch_{batch_count:05d}.arrow"))
         batch_count += 1
         total_rows += df.height
+        pbar.update(df.height)
 
-        elapsed = time.monotonic() - t0
-        rate = int(total_rows / elapsed) if elapsed > 0 else 0
-        pct = f" ({total_rows * 100 // estimated_rows}%)" if estimated_rows else ""
-        nd_logger.info(
-            f"[IPC Cache] {table_name}: {total_rows:,} rows cached{pct}"
-            f" — batch {batch_count}, {rate:,} rows/s, {elapsed:.0f}s elapsed"
-        )
+    pbar.close()
 
     if batch_count == 0:
         return None
 
     elapsed = time.monotonic() - t0
+    rate = int(total_rows / elapsed) if elapsed > 0 else 0
+    nd_logger.info(
+        f"[IPC Cache] {table_name}: {total_rows:,} rows cached"
+        f" — {batch_count} batches, {rate:,} rows/s, {elapsed:.0f}s elapsed"
+    )
     return {
         "cache_dir": cache_dir,
         "batches": batch_count,

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import signal
 import subprocess
 import sys
 import time
@@ -44,7 +43,7 @@ def run_command(
     from deid.tasks.celery_app import create_celery_app
     create_celery_app(broker_url=cfg.redis_url, result_backend=cfg.redis_url)
 
-    worker_proc = _start_worker(cfg)
+    worker_procs = _start_workers(cfg)
 
     try:
         from deid.orchestrator.async_runner import run
@@ -54,38 +53,57 @@ def run_command(
     except KeyboardInterrupt:
         typer.echo("\nInterrupted — shutting down...")
     finally:
-        _stop_worker(worker_proc)
+        _stop_workers(worker_procs)
 
 
-@validate_call(config=dict(arbitrary_types_allowed=True))
-def _start_worker(cfg) -> subprocess.Popen:
-    """Spawn a Celery worker as a child process."""
-    cmd = [
-        sys.executable, "-m", "celery",
-        "-A", "deid.tasks.celery_app",
-        "worker",
-        "--pool=prefork",
-        f"--concurrency={cfg.workers.concurrency}",
-        f"--max-tasks-per-child={cfg.workers.max_tasks_per_child}",
-        "--loglevel=info",
-        "--without-heartbeat",
-        "--without-mingle",
-        "--without-gossip",
+def _start_workers(cfg) -> list[subprocess.Popen]:
+    """Spawn three Celery worker subprocesses (fetch, process, write)."""
+    worker_configs = [
+        ("deid-fetch", cfg.workers.fetchers, "fetch"),
+        ("deid-process", cfg.workers.processors, "process"),
+        ("deid-write", cfg.workers.writers, "write"),
     ]
-    logger.info("Starting Celery worker: %s", " ".join(cmd))
-    proc = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr)
+
+    processes = []
+    for queue, concurrency, name in worker_configs:
+        cmd = [
+            sys.executable, "-m", "celery",
+            "-A", "deid.tasks.celery_app",
+            "worker",
+            f"--queues={queue}",
+            f"--concurrency={concurrency}",
+            f"--hostname={name}@%n",
+            "--pool=prefork",
+            f"--max-tasks-per-child={cfg.workers.max_tasks_per_child}",
+            "--loglevel=info",
+            "--without-heartbeat",
+            "--without-mingle",
+            "--without-gossip",
+        ]
+        proc = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr)
+        logger.info("Started %s worker (pid=%d, concurrency=%d)", name, proc.pid, concurrency)
+        processes.append(proc)
+
     time.sleep(3)
-    if proc.poll() is not None:
-        raise RuntimeError(
-            f"Celery worker exited immediately with code {proc.returncode}"
-        )
-    logger.info("Celery worker started (pid=%d)", proc.pid)
-    return proc
+    for proc in processes:
+        if proc.poll() is not None:
+            raise RuntimeError(
+                f"Celery worker exited immediately with code {proc.returncode}"
+            )
+
+    return processes
 
 
-@validate_call(config=dict(arbitrary_types_allowed=True))
-def _stop_worker(proc: subprocess.Popen | None):
-    """Gracefully terminate the Celery worker subprocess."""
-    if proc and proc.poll() is None:
-        proc.send_signal(signal.SIGTERM)
-        proc.wait(timeout=10)
+def _stop_workers(processes: list[subprocess.Popen]):
+    """Terminate all worker subprocesses with SIGKILL fallback."""
+    for proc in processes:
+        if proc.poll() is None:
+            proc.terminate()
+
+    for proc in processes:
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            logger.warning("Worker pid=%d did not exit, sending SIGKILL", proc.pid)
+            proc.kill()
+            proc.wait(timeout=5)
