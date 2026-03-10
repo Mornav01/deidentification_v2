@@ -113,32 +113,23 @@ def _update_batch_status_and_check_table(config: WriteTaskConfig):
 
 
 def _create_dest_table(handler: NDDBHandler, table_name: str, col_schema: dict):
-    """Create destination table if it doesn't exist. Safe for concurrent calls."""
-    from sqlalchemy import Column, MetaData, String, Integer, Table, Float, DateTime, Text
-
+    """Create destination table if it doesn't exist using exact source types."""
     if not col_schema:
         return
 
-    type_map = {
-        "INTEGER": Integer,
-        "BIGINT": Integer,
-        "FLOAT": Float,
-        "DATETIME": DateTime,
-    }
-    metadata = MetaData()
-    columns = []
+    qi = handler._qi
+    col_defs = []
     for col_name, info in col_schema.items():
-        type_str = info.get("type", "").upper()
-        length = info.get("length")
+        type_str = info.get("type", "VARCHAR(255)")
+        # Clean up SQLAlchemy repr artifacts like "LONGTEXT()" → "LONGTEXT"
+        if type_str.endswith("()"):
+            type_str = type_str[:-2]
+        if not type_str:
+            type_str = "VARCHAR(255)"
+        col_defs.append(f"{qi(col_name)} {type_str} NULL")
 
-        if "VARCHAR" in type_str or "CHAR" in type_str or "TEXT" in type_str:
-            col_type = String(length) if length else Text()
-        else:
-            col_type = type_map.get(type_str.split("(")[0], String(255))
-
-        columns.append(Column(col_name, col_type, nullable=True))
-
-    Table(table_name, metadata, *columns)
-    # checkfirst=True (default) emits CREATE TABLE IF NOT EXISTS,
-    # safe when multiple workers race on the same table.
-    metadata.create_all(handler.engine, checkfirst=True)
+    ddl = text(
+        f"CREATE TABLE IF NOT EXISTS {qi(table_name)} ({', '.join(col_defs)})"
+    )
+    with handler.engine.begin() as conn:
+        conn.execute(ddl)
