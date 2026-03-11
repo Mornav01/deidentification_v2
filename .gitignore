@@ -199,4 +199,5 @@ temp/
 *.db
 *.arrow
 .deid_cache/
-docs/
+docs/plans/
+docs/superpowers/

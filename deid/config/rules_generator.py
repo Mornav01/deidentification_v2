@@ -68,18 +68,18 @@ def auto_assign_rule(column_name: str, data_type: str) -> str:
 
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
-def extract_schema(source_db: DbConfig, tables: list[str] | None = None) -> list[dict]:
+def extract_schema(source_db: DbConfig, tables: list[str] | None = None, schema: str | None = None) -> list[dict]:
     """Connect to source DB (read-only) and extract table/column metadata with auto-assigned rules."""
     engine = create_read_only_engine(source_db.connection_string())
     insp = inspect(engine)
 
-    all_tables = insp.get_table_names()
+    all_tables = insp.get_table_names(schema=schema)
     if tables:
         all_tables = [t for t in all_tables if t in set(tables)]
 
     rows = []
     for table_name in sorted(all_tables):
-        columns = insp.get_columns(table_name)
+        columns = insp.get_columns(table_name, schema=schema)
         for col in columns:
             data_type = str(col["type"])
             rows.append({

@@ -14,6 +14,9 @@ def test_cli_help():
     assert result.exit_code == 0
     assert "run" in result.output
     assert "status" in result.output
+    assert "mapping" in result.output
+    assert "pii-table" in result.output
+    assert "generate-config" in result.output
 
 
 def test_run_missing_config():
@@ -33,6 +36,42 @@ def test_retry_command_registers():
     from deid.cli.app import app
     command_names = [cmd.name for cmd in app.registered_commands]
     assert "retry" in command_names
+
+
+def test_mapping_command_registers():
+    from deid.cli.app import app
+    command_names = [cmd.name for cmd in app.registered_commands]
+    assert "mapping" in command_names
+
+
+def test_pii_table_command_registers():
+    from deid.cli.app import app
+    command_names = [cmd.name for cmd in app.registered_commands]
+    assert "pii-table" in command_names
+
+
+def test_generate_config_command_registers():
+    from deid.cli.app import app
+    command_names = [cmd.name for cmd in app.registered_commands]
+    assert "generate-config" in command_names
+
+
+def test_mapping_missing_config():
+    from deid.cli.app import app
+    result = runner.invoke(app, ["mapping", "--config", "/nonexistent/config.yaml"])
+    assert result.exit_code != 0
+
+
+def test_pii_table_missing_config():
+    from deid.cli.app import app
+    result = runner.invoke(app, ["pii-table", "--config", "/nonexistent/config.yaml"])
+    assert result.exit_code != 0
+
+
+def test_generate_config_missing_config():
+    from deid.cli.app import app
+    result = runner.invoke(app, ["generate-config", "--config", "/nonexistent/config.yaml"])
+    assert result.exit_code != 0
 
 
 def test_retry_reads_failures_file(tmp_path):

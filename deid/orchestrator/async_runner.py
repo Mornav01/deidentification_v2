@@ -10,10 +10,9 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from deid.config.schema import DeidConfig
-from deid.config.task_models import ProgressEvent, QCTaskConfig
+from deid.config.task_models import QCTaskConfig
 from pydantic import validate_call
 from deid.models.base import (
-    create_all_mappings_tables,
     create_all_state_tables,
     create_mappings_engine,
     create_state_engine,
@@ -35,7 +34,46 @@ async def run(config: DeidConfig, config_path: str):
     state_engine = create_state_engine(config.state_db_path)
     create_all_state_tables(state_engine)
     mappings_engine = create_mappings_engine(config.mappings_db_path)
-    create_all_mappings_tables(mappings_engine)
+
+    # ── Load pii_config from file if needed ───────────────────────────────
+    if config.pii_db and not config.pii_config and config.pii_config_path:
+        import yaml as _yaml
+        with open(config.pii_config_path) as f:
+            config.pii_config = _yaml.safe_load(f)
+
+    # ── Validate prerequisites ────────────────────────────────────────────
+    from deid.models.mappings import PatientMapping
+
+    if not Path(config.mappings_db_path).exists():
+        raise SystemExit(
+            f"Mappings DB not found at '{config.mappings_db_path}'. "
+            "Run `deid mapping --config <config.yaml>` first."
+        )
+
+    with Session(mappings_engine) as session:
+        if session.query(PatientMapping).count() == 0:
+            raise SystemExit(
+                "No patient mappings found in mappings DB. "
+                "Run `deid mapping --config <config.yaml>` first."
+            )
+
+    if config.pii_db:
+        if not config.pii_config:
+            raise SystemExit(
+                "pii_db is configured but pii_config is not available. "
+                "Run `deid pii-table --config <config.yaml>` first."
+            )
+        from sqlalchemy import create_engine as _ce, inspect as _insp
+        _pii_engine = _ce(config.pii_db["master_connection_str"])
+        _pii_tables = set(_insp(_pii_engine).get_table_names())
+        _pii_engine.dispose()
+        if config.pii_tables_config:
+            missing = [t for t in config.pii_tables_config if t not in _pii_tables]
+            if missing:
+                raise SystemExit(
+                    f"PII tables missing in destination: {missing}. "
+                    "Run `deid pii-table --config <config.yaml>` first."
+                )
 
     config_hash = hashlib.sha256(Path(config_path).read_bytes()).hexdigest()
     with Session(state_engine) as session:
@@ -51,11 +89,6 @@ async def run(config: DeidConfig, config_path: str):
     )
     collector_task = asyncio.create_task(collector.listen(config.redis_url))
 
-    # Ensure PII tables exist before any phase runs.
-    if config.pii_db:
-        loop = asyncio.get_event_loop()
-        await _ensure_pii_tables(config, loop)
-
     table_row_counts = {}
     table_id_ranges = {}
 
@@ -63,7 +96,7 @@ async def run(config: DeidConfig, config_path: str):
         if "setup" in config.phases:
             logger.info("Phase: setup")
             table_row_counts, table_id_ranges = await _setup_phase(
-                config, state_engine, mappings_engine
+                config, state_engine
             )
 
         if "deidentify" in config.phases:
@@ -101,7 +134,7 @@ async def run(config: DeidConfig, config_path: str):
 
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
-async def _setup_phase(config: DeidConfig, state_engine, mappings_engine=None):
+async def _setup_phase(config: DeidConfig, state_engine):
     """Discover tables, create destination schemas, persist state."""
     assert config.tables, "config.tables must not be empty for setup phase"
 
@@ -164,29 +197,7 @@ async def _setup_phase(config: DeidConfig, state_engine, mappings_engine=None):
 
     logger.info("Setup: complete — %d tables registered.", len(config.tables))
 
-    # ── 4. Populate mapping tables ─────────────────────────────────────────
-    from deid.core.mapping_populator import populate_mappings
-
-    if mappings_engine is None:
-        mappings_engine = create_mappings_engine(config.mappings_db_path)
-        create_all_mappings_tables(mappings_engine)
-
-    mapping_summary = populate_mappings(
-        source=source,
-        tables=config.tables,
-        mappings_engine=mappings_engine,
-        patient_id_prefix=config.deidentification.patient_id_prefix,
-        max_offset=config.deidentification.date_offset_days,
-        random_seed=config.deidentification.random_seed,
-    )
-    logger.info(
-        "Setup: mappings populated — %d patients, %d encounters, %d appointments created.",
-        mapping_summary["patients_created"],
-        mapping_summary["encounters_created"],
-        mapping_summary["appointments_created"],
-    )
-
-    # ── 5. Pre-split tables into BatchState rows ──────────────────────────
+    # ── 4. Pre-split tables into BatchState rows ──────────────────────────
     from deid.models.state import BatchState
     from deid.staging import get_staging_root, cleanup_tmp_files
 
@@ -220,7 +231,7 @@ async def _setup_phase(config: DeidConfig, state_engine, mappings_engine=None):
                 current = end + 1
         session.commit()
 
-    # ── 6. Cleanup stale .tmp files ───────────────────────────────────────
+    # ── 5. Cleanup stale .tmp files ───────────────────────────────────────
     cleanup_tmp_files(staging_root)
 
     logger.info("Setup: pre-split %d tables into BatchState rows.", len(config.tables))
@@ -287,68 +298,6 @@ async def _deidentify_phase(config, state_engine):
                 stuck_timeout, done_count, total,
             )
             break
-
-
-async def _ensure_pii_tables(config: DeidConfig, loop):
-    """Create PII tables in the PII DB if they don't already exist.
-
-    If pii_tables_config is not provided, auto-generates it by introspecting
-    the source database (read-only) for tables with patient_id + PII columns.
-    """
-    from sqlalchemy import create_engine, inspect as sa_inspect
-
-    dest_url = config.pii_db["master_connection_str"]
-
-    # Check which tables already exist in the PII DB.
-    dest_engine = create_engine(dest_url)
-    existing = set(sa_inspect(dest_engine).get_table_names())
-    dest_engine.dispose()
-
-    # Resolve pii_tables_config: explicit > table-rules > source-DB introspection.
-    pii_tables_config = config.pii_tables_config
-    if not pii_tables_config:
-        from deid.config.pii_generator import generate_pii_tables_config
-
-        pii_tables_config = generate_pii_tables_config(
-            config.tables or [], source_db=config.source_db,
-        )
-        if pii_tables_config:
-            config.pii_tables_config = pii_tables_config
-            logger.info(
-                "Auto-generated pii_tables_config from source DB: %s",
-                list(pii_tables_config.keys()),
-            )
-        else:
-            logger.warning(
-                "pii_db is configured but no PII source tables could be "
-                "identified. Provide pii_tables_config in config.yaml."
-            )
-            return
-
-    # Also auto-generate pii_config if missing.
-    if not config.pii_config:
-        from deid.config.pii_generator import generate_pii_config
-
-        config.pii_config = generate_pii_config(pii_tables_config)
-        if config.pii_config:
-            logger.info("Auto-generated pii_config: %s", list(config.pii_config.keys()))
-
-    needed = [t for t in pii_tables_config if t not in existing]
-    if not needed:
-        logger.info("PII tables already exist — skipping creation.")
-        return
-
-    logger.info("PII tables missing (%s) — generating...", ", ".join(needed))
-
-    from deid.core.dbPkg.phi_table.create_table import PIITable
-
-    pii_manager = PIITable(
-        src_db_url=config.source_db.connection_string(),
-        dest_db_url=dest_url,
-        pii_tables_config=pii_tables_config,
-    )
-    await loop.run_in_executor(None, pii_manager.generate_pii_tables)
-    logger.info("PII tables generated successfully.")
 
 
 def _rules_to_table_details(rules: dict[str, str]) -> dict:
