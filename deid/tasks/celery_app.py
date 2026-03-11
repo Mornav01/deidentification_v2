@@ -94,7 +94,8 @@ def _preload_mappings(app: Celery) -> None:
                     rows = result.fetchall()
                     if rows:
                         _preloaded_data[table_key] = pl.DataFrame(
-                            [list(r) for r in rows], schema=cols, orient="row"
+                            [list(r) for r in rows], schema=cols, orient="row",
+                            infer_schema_length=len(rows),
                         )
                         _preload_logger.info("Preloaded %s: %d rows", table_key, len(rows))
                 except Exception as e:
@@ -112,7 +113,8 @@ def _preload_mappings(app: Celery) -> None:
                 rows = result.fetchall()
                 if rows:
                     _preloaded_data["pii_data_table"] = pl.DataFrame(
-                        [list(r) for r in rows], schema=cols, orient="row"
+                        [list(r) for r in rows], schema=cols, orient="row",
+                        infer_schema_length=len(rows),
                     )
                     _preload_logger.info("Preloaded pii_data_table: %d rows", len(rows))
             pii_engine.dispose()
