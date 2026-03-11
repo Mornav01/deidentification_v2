@@ -107,14 +107,14 @@ def _preload_mappings(app: Celery) -> None:
         try:
             pii_engine = create_engine(cfg.pii_db["master_connection_str"])
             with pii_engine.connect() as conn:
-                result = conn.execute(text("SELECT * FROM phi_staging"))
+                result = conn.execute(text("SELECT * FROM pii_data_table"))
                 cols = list(result.keys())
                 rows = result.fetchall()
                 if rows:
-                    _preloaded_data["phi_staging"] = pl.DataFrame(
+                    _preloaded_data["pii_data_table"] = pl.DataFrame(
                         [list(r) for r in rows], schema=cols, orient="row"
                     )
-                    _preload_logger.info("Preloaded phi_staging: %d rows", len(rows))
+                    _preload_logger.info("Preloaded pii_data_table: %d rows", len(rows))
             pii_engine.dispose()
         except Exception as e:
             _preload_logger.warning("Failed to preload PII table: %s", e)
