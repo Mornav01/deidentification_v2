@@ -138,8 +138,8 @@ Each entry:
 | `STATIC_OFFSET` | Shift dates by a fixed global offset (`date_offset_days`). Unlike `DATE_OFFSET`, does not vary per patient. | None. |
 | `PATIENT_DOB` | Extract the birth year only. The full date of birth is replaced with just the 4-digit year. | None. |
 | `ZIP_CODE` | Truncate to first 3 digits (US ZIP codes). Prevents re-identification from geographic data. | None. |
-| `NOTES` | NLP-based PII extraction and masking for clinical free-text. Uses Presidio + SpaCy to detect names, dates, IDs, etc. in unstructured text. | PII tables populated (`deid pii-table`), `pii_config_path` set. |
-| `GENERIC_NOTES` | Regex-based PII masking for free-text. Lighter weight than `NOTES` — uses pattern matching rather than NLP. Does not require PII tables. | None. |
+| `NOTES` | Full PII masking for clinical free-text. Looks up each patient's actual PII values (names, SSN, DOB, etc.) from the PII table and replaces exact matches in their notes. Also applies generic regex patterns for phones, dates, IPs, URLs. | PII tables populated (`deid pii-table`), `pii_config_path` set. |
+| `GENERIC_NOTES` | Regex-only PII masking for free-text. Applies generic patterns (phones, dates, IPs, URLs, driver's licenses) without patient-specific name/DOB matching. Does not require PII tables. | None. |
 
 ---
 
@@ -353,20 +353,44 @@ When `pii_db` is configured, `deid run` requires:
 
 ## `pii_tables_config` (optional)
 
-Explicit mapping of which source tables/columns should be loaded into PII lookup tables. If omitted, `deid pii-table` auto-detects PII source tables by scanning your rules for columns with `MASK`/`PATIENT_DOB` rules paired with a `PATIENT_ID` column.
+Defines the structure of the PII lookup table: which source tables and columns to extract, and how to join them. Used by `deid pii-table` to create and populate `pii_data_table` in the PII database.
+
+If omitted, `deid pii-table` auto-detects PII source tables by:
+1. Scanning configured table rules for `MASK`/`PATIENT_DOB` columns alongside a `PATIENT_ID` column.
+2. Falling back to introspecting all source DB tables for the same pattern.
+
+Required when running `deid pii-table --config-only` or when the PII table already exists (auto-detected), since source DB introspection is skipped in those cases.
 
 ```yaml
 pii_tables_config:
-  pii_patients:
-    - column: first_name
-      source_table: patients
-      source_column: first_name
-    - column: last_name
-      source_table: patients
-      source_column: last_name
+  pii_data_table:
+    primary_column_name: patient_id
+    upsert_instead_of_append: true
+    tables:
+      patients:
+        primary_col: patient_id
+        other_required_columns:
+          - first_name
+          - last_name
+          - ssn
+          - date_of_birth
+          - phone
 ```
 
-In most cases, you do not need to set this manually — `deid pii-table` generates it automatically.
+The top-level key (`pii_data_table`) is the name of the table created in the PII database.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `primary_column_name` | string | Name of the patient ID column in the created PII table. Rows are keyed by this column. Typically `patient_id`. |
+| `upsert_instead_of_append` | boolean | If `true`, re-running `deid pii-table` updates existing rows rather than inserting duplicates. |
+| `tables` | dict | Map of source table names to their extraction config (see below). Multiple source tables can be merged into a single PII table — columns are prefixed with the source table name (e.g. `patients_first_name`). |
+
+Each entry under `tables`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `primary_col` | string | The patient ID column in this source table, used to build the `SELECT` query when populating the PII table. **Required only when `deid pii-table` is creating/populating the table.** Can be omitted when using `--config-only` or when the PII table already exists, since no data insertion occurs. |
+| `other_required_columns` | list of strings | Columns to extract from this source table. Each becomes a `{table}_{column}` column in the PII table. Always required — used by both table creation and `pii_config` generation. |
 
 ---
 
@@ -390,24 +414,53 @@ At runtime, `deid run` loads this file and injects the PII config into the pipel
 
 ## `pii_config` (optional)
 
-Inline PII configuration (dict). Alternative to using `pii_config_path` — lets you embed the PII config directly in `config.yaml`.
+Inline PII configuration. Alternative to `pii_config_path` — embeds the masking rules directly in `config.yaml` instead of a separate file.
 
-In practice, the `pii_config_path` approach is preferred because `deid pii-table` writes the config to a separate file and you only need to reference it.
+```yaml
+pii_config:
+  mask:
+    patients_first_name: {masking_value: "((FIRST_NAME))", min_length: 2}
+    patients_last_name:  {masking_value: "((LAST_NAME))",  min_length: 2}
+  dob:
+    patients_date_of_birth: {}
+  combine:
+    patients_full_name:
+      combine: [patients_first_name, patients_last_name]
+      masking_value: "((PATIENT_NAME))"
+```
+
+`pii_config_path` is preferred in practice — `deid pii-table` writes this to a separate file automatically. Embed inline only if you are managing the config manually.
+
+See [pii-config-reference.md](./pii-config-reference.md) for the full field reference.
 
 ---
 
 ## `secondary_pii_configs` (optional)
 
-List of additional PII configurations for multi-source NLP masking. Used when clinical notes reference PII from multiple source systems.
+Additional PII sources for notes masking. Used when clinical notes may contain PII from a second source system (e.g. a separate insurance or scheduling database) that is not in the primary PII table.
+
+Each entry is processed identically to the primary PII masking step: patient records are fetched by patient ID and exact-match patterns are applied to note text.
 
 ```yaml
 secondary_pii_configs:
-  - master_connection_str: mysql+pymysql://user:pass@host:3306/secondary_pii_db
-    tables:
-      ...
+  - table_name: secondary_pii_table
+    config:
+      secondary_patients_first_name:
+        masking_value: "((FIRST_NAME))"
+        min_length: 2
+      secondary_patients_last_name:
+        masking_value: "((LAST_NAME))"
+        min_length: 2
 ```
 
-Advanced feature — most deployments do not need this.
+The secondary PII table is fetched from `pii_db.secondary_pii_connection_str` (a separate connection string under `pii_db`).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `table_name` | string | Name of the table in the secondary PII database to query. |
+| `config` | dict | Masking config for this table — same structure as `pii_config.mask`: column key → `{masking_value, min_length}`. |
+
+Most deployments do not need this.
 
 ---
 
