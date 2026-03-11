@@ -71,6 +71,9 @@ class WorkerSettings(BaseModel):
     max_retries: int = 1
     task_timeout: int = 3600
     max_tasks_per_child: int = 1
+    max_tasks_per_child_fetch: int | None = None
+    max_tasks_per_child_process: int | None = None
+    max_tasks_per_child_write: int | None = None
 
 
 class QCSettings(BaseModel):

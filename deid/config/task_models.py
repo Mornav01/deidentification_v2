@@ -51,6 +51,7 @@ class FetchTaskConfig(BaseModel):
     staging_root: str
     batch_size: int = 1000
     id_column: str = "nd_auto_increment_id"
+    last_fetched_id: int | None = None
     redis_url: str = ""
     run_config: dict | None = None
 

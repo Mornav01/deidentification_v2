@@ -43,7 +43,7 @@ def test_setup_phase_creates_batch_states(tmp_path):
     )
 
     mock_handler = MagicMock()
-    mock_handler.get_rows_count.return_value = 5000
+    mock_handler.get_exact_row_count.return_value = 5000
     mock_handler.get_min_max_id.return_value = (1, 5000)
 
     from deid.models.base import create_state_engine, create_all_state_tables
@@ -58,17 +58,17 @@ def test_setup_phase_creates_batch_states(tmp_path):
     from sqlalchemy.orm import Session
     with Session(state_engine) as s:
         batches = s.query(BatchState).filter_by(table_name="patients").order_by(BatchState.start_id).all()
-        # 5000 rows / 1000 batch_size = 5 batches
+        # 5000 rows / 1000 batch_size = 5 batches (offset-based: 0-999, 1000-1999, ...)
         assert len(batches) == 5
         assert all(b.status == "pending" for b in batches)
-        assert batches[0].start_id == 1
-        assert batches[0].end_id == 1000
-        assert batches[-1].start_id == 4001
-        assert batches[-1].end_id == 5000
+        assert batches[0].start_id == 0
+        assert batches[0].end_id == 999
+        assert batches[-1].start_id == 4000
+        assert batches[-1].end_id == 4999
 
 
-def test_setup_phase_sentinel_for_no_id_tables(tmp_path):
-    """Tables without integer IDs get a single sentinel BatchState."""
+def test_setup_phase_small_table(tmp_path):
+    """Tables smaller than batch_size get a single BatchState row."""
     import asyncio
     from unittest.mock import patch, MagicMock
     from deid.config.schema import TableConfig
@@ -76,12 +76,11 @@ def test_setup_phase_sentinel_for_no_id_tables(tmp_path):
     config = _make_config(
         state_db_path=str(tmp_path / "state.db"),
         mappings_db_path=str(tmp_path / "mappings.db"),
-        tables=[TableConfig(name="no_id_table", rules={"col": "MASK"})],
+        tables=[TableConfig(name="small_table", rules={"col": "MASK"})],
     )
 
     mock_handler = MagicMock()
-    mock_handler.get_rows_count.return_value = 100
-    mock_handler.get_min_max_id.return_value = None
+    mock_handler.get_exact_row_count.return_value = 100  # less than batch_size=1000
 
     from deid.models.base import create_state_engine, create_all_state_tables
     state_engine = create_state_engine(str(tmp_path / "state.db"))
@@ -94,7 +93,8 @@ def test_setup_phase_sentinel_for_no_id_tables(tmp_path):
     from deid.models.state import BatchState
     from sqlalchemy.orm import Session
     with Session(state_engine) as s:
-        batches = s.query(BatchState).filter_by(table_name="no_id_table").all()
+        batches = s.query(BatchState).filter_by(table_name="small_table").all()
+        # 100 rows < batch_size=1000 → one batch covering offset 0..999
         assert len(batches) == 1
-        assert batches[0].start_id == -1
-        assert batches[0].end_id == -1
+        assert batches[0].start_id == 0
+        assert batches[0].end_id == 999

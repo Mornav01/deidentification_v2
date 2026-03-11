@@ -2,7 +2,6 @@ import polars as pl
 import re          # standard lib – re.Match type hint + fallback
 import datetime
 import decimal
-from pydantic import validate_call
 try:
     import re2
 except ImportError:
@@ -24,7 +23,7 @@ from deid.core.process_df.unstruct.xml_utils import xml_tag_replacements
 from deid.core.dbPkg.dbhandler import create_read_only_engine
 
 
-@validate_call(config=dict(arbitrary_types_allowed=True))
+
 def _normalize_pid(val):
     """Coerce patient_id to int so PII-dict keys and source-df values
     always use the same type regardless of Float64/Utf8/Int64 origin."""
@@ -82,20 +81,20 @@ class PIITable:
         self.engine = None
         self.master_session = None
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+    
     def _get_db_connection(self, connection_string: str):
         self.engine = create_read_only_engine(connection_string)
         Session = sessionmaker(bind=self.engine)
         self.master_session = Session()
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+    
     def close_connection(self):
         if self.master_session:
             self.master_session.close()
         if self.engine:
             self.engine.dispose()
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+    
     def _get_table(
         self, table_name: str, connection_string: str, patient_ids: list[int]
     ) -> pl.DataFrame:
@@ -145,7 +144,7 @@ class NotesRule(RuleBase):
     # Key-PHI column masking (regex replacement in note text)
     # ------------------------------------------------------------------
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+    
     def de_identify_key_phi_columns(
         self, df: pl.DataFrame, column_details: dict
     ) -> pl.DataFrame:
@@ -170,7 +169,7 @@ class NotesRule(RuleBase):
 
         text_list = df[text_column].cast(pl.Utf8).to_list()
 
-        @validate_call(config=dict(arbitrary_types_allowed=True))
+        
         def build_replacements(row: dict) -> dict:
             replacements = {}
 
@@ -248,7 +247,7 @@ class NotesRule(RuleBase):
     # PII table loading
     # ------------------------------------------------------------------
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+    
     def _get_pii_data_table(self, patient_ids: list):
         if not self.pii_db_config:
             raise RaiseException("pii_db_config is not defined")
@@ -267,7 +266,7 @@ class NotesRule(RuleBase):
             f"[{self.__class__.__name__}] pii_data_table columns: {self.pii_data_df.columns}"
         )
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+    
     def _get_secondary_pii_data_table(self, patient_ids: list):
         if not self.pii_db_config or not self.secondary_pii_configs:
             return
@@ -291,7 +290,7 @@ class NotesRule(RuleBase):
     # Primary PII masking
     # ------------------------------------------------------------------
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+    
     def deidentify_primary_pii_values(
         self, df: pl.DataFrame, column_details: dict
     ) -> pl.DataFrame:
@@ -536,7 +535,7 @@ class NotesRule(RuleBase):
             if date_re:
                 dob_replacements = pid_to_dobs.get(pid)
                 if dob_replacements:
-                    @validate_call(config=dict(arbitrary_types_allowed=True))
+                    
                     def _dob_replacer(match, _repl=dob_replacements):
                         ds = match.group(0)
                         try:
@@ -581,7 +580,7 @@ class NotesRule(RuleBase):
         )
         return df
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+    
     def deidentify_secondary_pii_values(
         self, df: pl.DataFrame, column_details: dict
     ) -> pl.DataFrame:
@@ -678,7 +677,7 @@ class NotesRule(RuleBase):
     # Masking helpers  (operate on Polars Series)
     # ------------------------------------------------------------------
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+    
     def _apply_mask_batched(
         self,
         df_batch: pl.DataFrame,
@@ -718,7 +717,7 @@ class NotesRule(RuleBase):
             .fill_null("")
         )
 
-        @validate_call(config=dict(arbitrary_types_allowed=True))
+        
         def _build_map(row: dict) -> dict:
             replacement_map: dict = {}
             for col in pii_columns:
@@ -752,7 +751,7 @@ class NotesRule(RuleBase):
             # Fallback: no patient key available — build per-row as before.
             pii_replacements = [_build_map(row) for row in pii_rows_df.to_dicts()]
 
-        @validate_call(config=dict(arbitrary_types_allowed=True))
+        
         def replace_row(text: str, replacements: dict) -> str:
             if not replacements:
                 return text
@@ -768,7 +767,7 @@ class NotesRule(RuleBase):
         nd_logger.info(f"[{self.__class__.__name__}] Exact-match masking completed.")
         return pl.Series(result, dtype=pl.Utf8)
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+    
     def _apply_dob(self, df_batch: pl.DataFrame, masked_col: pl.Series) -> pl.Series:
         nd_logger.info(f"[{self.__class__.__name__}] Applying DOB masking...")
         dob_config = self.pii_config.get("dob", {})
@@ -800,12 +799,12 @@ class NotesRule(RuleBase):
                         )
             dob_replacements_list.append(row_map)
 
-        @validate_call(config=dict(arbitrary_types_allowed=True))
+        
         def replace_dates_in_text(text: str, replacements: dict) -> str:
             if not isinstance(text, str) or not replacements:
                 return text
 
-            @validate_call(config=dict(arbitrary_types_allowed=True))
+            
             def replacer(match):
                 date_str = match.group(0)
                 try:
@@ -824,7 +823,7 @@ class NotesRule(RuleBase):
         nd_logger.info(f"[{self.__class__.__name__}] DOB masking completed.")
         return pl.Series(result, dtype=pl.Utf8)
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+    
     def _build_rowwise_patterns(self, df_batch: pl.DataFrame) -> dict:
         combine_config = self.pii_config.get("combine", {})
         if not combine_config:
@@ -838,7 +837,7 @@ class NotesRule(RuleBase):
             if not cols:
                 continue
 
-            @validate_call(config=dict(arbitrary_types_allowed=True))
+            
             def generate_patterns(row: dict) -> List[str]:
                 values = [
                     str(row[col]).strip()
@@ -861,7 +860,7 @@ class NotesRule(RuleBase):
             }
         return pattern_map
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+    
     def _apply_combine(
         self, df_batch: pl.DataFrame, masked_col: pl.Series
     ) -> pl.Series:
@@ -877,7 +876,7 @@ class NotesRule(RuleBase):
             patterns_list: list[List[str]] = info["patterns_list"]
             masking_value: str = info["masking_value"]
 
-            @validate_call(config=dict(arbitrary_types_allowed=True))
+            
             def mask_row(note_text: str, patterns: List[str]) -> str:
                 if not patterns or not isinstance(note_text, str):
                     return note_text
@@ -900,7 +899,7 @@ class NotesRule(RuleBase):
         )
         return pl.Series(text_list, dtype=pl.Utf8)
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+    
     def _apply_regex(self, masked_col: pl.Series) -> pl.Series:
         nd_logger.info(f"[{self.__class__.__name__}] Applying regex-based masking...")
         regex_config = self.pii_config.get("regex", {})
@@ -926,7 +925,7 @@ class NotesRule(RuleBase):
                     )
         return masked_col
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+    
     def _apply_replace_value(self, masked_col: pl.Series) -> pl.Series:
         nd_logger.info(
             f"[{self.__class__.__name__}] Applying static string replacements..."
@@ -955,7 +954,7 @@ class NotesRule(RuleBase):
     # Public entry point
     # ------------------------------------------------------------------
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+    
     def apply(self, df: pl.DataFrame, column_details: dict) -> pl.DataFrame:
         """De-identify a note column using patient-specific PII data and generic rules."""
         nd_logger.info(

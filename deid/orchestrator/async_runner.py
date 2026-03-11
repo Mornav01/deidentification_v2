@@ -242,11 +242,21 @@ async def _deidentify_phase(config, state_engine):
                 "No BatchState rows found. Run the 'setup' phase first."
             )
 
-    # Initial dispatch based on current status
+    # Initial dispatch: only the FIRST pending batch per table (keyset self-chaining)
     with Session(state_engine) as session:
-        for batch in session.query(BatchState).filter_by(status="pending").all():
-            cfg = _build_fetch_config(config, batch, staging_root, mappings_conn_str)
-            fetch_batch.apply_async(args=[cfg], queue="deid-fetch")
+        dispatched_tables: set[str] = set()
+        for batch in (
+            session.query(BatchState)
+            .filter_by(status="pending")
+            .order_by(BatchState.table_name, BatchState.start_id)
+            .all()
+        ):
+            if batch.table_name not in dispatched_tables:
+                cfg = _build_fetch_config(config, batch, staging_root, mappings_conn_str)
+                fetch_batch.apply_async(args=[cfg], queue="deid-fetch")
+                dispatched_tables.add(batch.table_name)
+
+        # Resume in-progress batches (fetched -> process, processed -> write)
         for batch in session.query(BatchState).filter_by(status="fetched").all():
             cfg = _build_process_config(config, batch, staging_root, mappings_conn_str)
             process_batch.apply_async(args=[cfg], queue="deid-process")
@@ -280,13 +290,55 @@ async def _deidentify_phase(config, state_engine):
             )
             break
 
+        # Watchdog: re-dispatch stalled table chains (pending with no in-flight work)
+        if 0 < done_count < total:
+            with Session(state_engine) as session:
+                table_names_with_pending = [
+                    r[0] for r in session.query(BatchState.table_name)
+                    .filter_by(status="pending")
+                    .distinct()
+                    .all()
+                ]
+                for tname in table_names_with_pending:
+                    in_flight = session.query(BatchState).filter(
+                        BatchState.table_name == tname,
+                        BatchState.status.in_(["fetched", "processed"]),
+                    ).count()
+                    if in_flight == 0:
+                        first_pending = (
+                            session.query(BatchState)
+                            .filter_by(table_name=tname, status="pending")
+                            .order_by(BatchState.start_id)
+                            .first()
+                        )
+                        if first_pending:
+                            cfg = _build_fetch_config(
+                                config, first_pending, staging_root, mappings_conn_str
+                            )
+                            # Find last_fetched_id from the most recent done batch so
+                            # keyset pagination resumes from where the chain broke, not row 0.
+                            last_done = (
+                                session.query(BatchState)
+                                .filter_by(table_name=tname, status="done")
+                                .order_by(BatchState.end_id.desc())
+                                .first()
+                            )
+                            if last_done and last_done.actual_end_id is not None:
+                                cfg["last_fetched_id"] = last_done.actual_end_id
+                            fetch_batch.apply_async(args=[cfg], queue="deid-fetch")
+                            logger.warning(
+                                "Re-dispatched stalled fetch chain for table %s (last_fetched_id=%s)",
+                                tname, cfg.get("last_fetched_id"),
+                            )
 
-def _rules_to_table_details(rules: dict[str, str]) -> dict:
+
+def _rules_to_table_details(rules: dict[str, str], table_name: str = "") -> dict:
     """Convert a flat {column: rule} dict to the table_details format."""
     columns_details = []
     for col_name, rule in rules.items():
         columns_details.append({
             "column_name": col_name,
+            "table_name": table_name,
             "is_phi": True,
             "de_identification_rule": rule,
             "mask_value": col_name.upper(),
@@ -305,7 +357,7 @@ def _get_table_details(config, table_name: str) -> dict:
     """Build table_details dict for a table from config."""
     for table_cfg in config.tables:
         if table_cfg.name == table_name:
-            return _rules_to_table_details(table_cfg.rules)
+            return _rules_to_table_details(table_cfg.rules, table_name=table_name)
     return {"columns_details": []}
 
 

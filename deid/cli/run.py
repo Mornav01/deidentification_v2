@@ -40,10 +40,11 @@ def run_command(
     if phase:
         cfg.phases = [phase]
 
-    from deid.tasks.celery_app import create_celery_app
+    from deid.tasks.celery_app import create_celery_app, get_celery_app
     create_celery_app(broker_url=cfg.redis_url, result_backend=cfg.redis_url)
+    get_celery_app().conf.deid_config_path = str(config_path)
 
-    worker_procs = _start_workers(cfg)
+    worker_procs = _start_workers(cfg, str(config_path))
 
     try:
         from deid.orchestrator.async_runner import run
@@ -56,16 +57,21 @@ def run_command(
         _stop_workers(worker_procs)
 
 
-def _start_workers(cfg) -> list[subprocess.Popen]:
+def _start_workers(cfg, config_path: str = "") -> list[subprocess.Popen]:
     """Spawn three Celery worker subprocesses (fetch, process, write)."""
+    import os
+    global_mtpc = cfg.workers.max_tasks_per_child
     worker_configs = [
-        ("deid-fetch", cfg.workers.fetchers, "fetch"),
-        ("deid-process", cfg.workers.processors, "process"),
-        ("deid-write", cfg.workers.writers, "write"),
+        ("deid-fetch", cfg.workers.fetchers, "fetch",
+         cfg.workers.max_tasks_per_child_fetch or global_mtpc),
+        ("deid-process", cfg.workers.processors, "process",
+         cfg.workers.max_tasks_per_child_process or global_mtpc),
+        ("deid-write", cfg.workers.writers, "write",
+         cfg.workers.max_tasks_per_child_write or global_mtpc),
     ]
 
     processes = []
-    for queue, concurrency, name in worker_configs:
+    for queue, concurrency, name, mtpc in worker_configs:
         cmd = [
             sys.executable, "-m", "celery",
             "-A", "deid.tasks.celery_app",
@@ -74,14 +80,15 @@ def _start_workers(cfg) -> list[subprocess.Popen]:
             f"--concurrency={concurrency}",
             f"--hostname={name}@%n",
             "--pool=prefork",
-            f"--max-tasks-per-child={cfg.workers.max_tasks_per_child}",
+            f"--max-tasks-per-child={mtpc}",
             "--loglevel=info",
             "--without-heartbeat",
             "--without-mingle",
             "--without-gossip",
         ]
-        proc = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr)
-        logger.info("Started %s worker (pid=%d, concurrency=%d)", name, proc.pid, concurrency)
+        env = {**os.environ, "DEID_WORKER_QUEUE": queue, "DEID_CONFIG_PATH": config_path}
+        proc = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr, env=env)
+        logger.info("Started %s worker (pid=%d, concurrency=%d, mtpc=%d)", name, proc.pid, concurrency, mtpc)
         processes.append(proc)
 
     time.sleep(3)

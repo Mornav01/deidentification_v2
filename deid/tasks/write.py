@@ -19,6 +19,16 @@ from deid.staging import batch_processed_path
 
 logger = logging.getLogger("deid.tasks.write")
 
+# Module-level handler cache for connection reuse across tasks
+_handler_cache: dict[str, NDDBHandler] = {}
+
+
+def _get_cached_handler(conn_str: str) -> NDDBHandler:
+    """Return a cached NDDBHandler, creating one if needed."""
+    if conn_str not in _handler_cache:
+        _handler_cache[conn_str] = NDDBHandler(conn_str)
+    return _handler_cache[conn_str]
+
 
 @shared_task(bind=True, name="deid.tasks.write.write_batch")
 def write_batch(self, raw_config: dict):
@@ -35,6 +45,12 @@ def write_batch(self, raw_config: dict):
     file_metadata = arrow_table.schema.metadata or {}
     df = pl.from_arrow(arrow_table)
 
+    # Use actual ID range from fetch metadata (falls back to config for old files)
+    actual_start = file_metadata.get(b"deid_actual_start_id")
+    actual_end = file_metadata.get(b"deid_actual_end_id")
+    delete_start = int(actual_start) if actual_start else config.start_id
+    delete_end = int(actual_end) if actual_end else config.end_id
+
     if df.is_empty():
         proc_path.unlink(missing_ok=True)
         _update_batch_status_and_check_table(config)
@@ -42,36 +58,34 @@ def write_batch(self, raw_config: dict):
                 "end_id": config.end_id, "status": "done", "rows": 0}
 
     # 2. Open dest DB
-    dest = NDDBHandler(config.dest_conn_str)
-    try:
-        # 3. Create dest table if needed (using embedded schema)
-        col_schema_raw = file_metadata.get(b"deid_column_schema", b"{}")
-        col_schema = json.loads(col_schema_raw)
-        _create_dest_table(dest, config.table_name, col_schema)
+    dest = _get_cached_handler(config.dest_conn_str)
 
-        # 4. Strip extra columns added during processing (mapping joins etc.)
-        #    Only write columns that exist in the original source schema.
-        source_columns = [c for c in df.columns if c in col_schema]
-        df = df.select(source_columns)
+    # 3. Create dest table if needed (using embedded schema)
+    col_schema_raw = file_metadata.get(b"deid_column_schema", b"{}")
+    col_schema = json.loads(col_schema_raw)
+    _create_dest_table(dest, config.table_name, col_schema)
 
-        # 5. Idempotent write: DELETE + INSERT in single transaction
-        qi = dest._qi
-        delete_sql = text(
-            f"DELETE FROM {qi(config.table_name)} "
-            f"WHERE {qi(config.id_column)} BETWEEN :start_id AND :end_id"
-        )
-        rows = df.to_dicts()
+    # 4. Strip extra columns added during processing (mapping joins etc.)
+    #    Only write columns that exist in the original source schema.
+    source_columns = [c for c in df.columns if c in col_schema]
+    df = df.select(source_columns)
 
-        with dest.engine.begin() as conn:
-            conn.execute(delete_sql, {"start_id": config.start_id, "end_id": config.end_id})
-            if rows:
-                columns = list(rows[0].keys())
-                col_str = ", ".join(qi(c) for c in columns)
-                val_str = ", ".join(f":{c}" for c in columns)
-                insert_sql = text(f"INSERT INTO {qi(config.table_name)} ({col_str}) VALUES ({val_str})")
-                conn.execute(insert_sql, rows)
-    finally:
-        dest.close()
+    # 5. Idempotent write: DELETE + INSERT in single transaction
+    qi = dest._qi
+    delete_sql = text(
+        f"DELETE FROM {qi(config.table_name)} "
+        f"WHERE {qi(config.id_column)} BETWEEN :start_id AND :end_id"
+    )
+    rows = df.to_dicts()
+
+    with dest.engine.begin() as conn:
+        conn.execute(delete_sql, {"start_id": delete_start, "end_id": delete_end})
+        if rows:
+            columns = list(rows[0].keys())
+            col_str = ", ".join(qi(c) for c in columns)
+            val_str = ", ".join(f":{c}" for c in columns)
+            insert_sql = text(f"INSERT INTO {qi(config.table_name)} ({col_str}) VALUES ({val_str})")
+            conn.execute(insert_sql, rows)
 
     # 5. Delete processed file
     proc_path.unlink(missing_ok=True)

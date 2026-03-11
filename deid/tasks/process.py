@@ -22,6 +22,7 @@ from deid.core.process_df.main import (
     _serialize_dict_values,
     get_key_phi_column_list,
 )
+from deid.tasks.celery_app import get_preloaded_data
 from deid.core.process_df.rowhandler import InvalidRowHandler
 from deid.models.base import create_state_engine
 from deid.models.state import BatchState
@@ -62,39 +63,66 @@ def process_batch(self, raw_config: dict):
     finally:
         source.close()
 
-    # 3. Mapping joins (needs mapping DB)
-    mapping_obj = JoinMapping(df, key_phi_columns, config.mapping_db_config, config.table_name)
-    try:
-        distinct_eids = mapping_obj._get_distinct_encounterids()
-        df_enc = mapping_obj._get_encounter_mapping(distinct_eids)
-        if df_enc is not None and key_phi_columns[0]:
-            df = join_dataframes(df, df_enc, left_on=key_phi_columns[0][0],
+    # 3. Mapping joins
+    preloaded = get_preloaded_data()
+    if preloaded:
+        # Use preloaded in-memory DataFrames (avoids per-batch SQL round-trips)
+        enc_df = preloaded.get("encounter_mapping")
+        pat_df = preloaded.get("patient_mapping")
+        apt_df = preloaded.get("appointment_mapping")
+
+        if enc_df is not None and key_phi_columns[0]:
+            df = join_dataframes(df, enc_df, left_on=key_phi_columns[0][0],
                                  right_on="encounter_id", how="left", right_suffix="",
                                  drop_right_join_column=True)
-
-        distinct_pids = mapping_obj._get_distinct_patientids()
-        df_pat = mapping_obj._get_patient_mapping(distinct_pids)
-        if df_pat is not None and key_phi_columns[1]:
-            df = join_dataframes(df, df_pat, left_on=key_phi_columns[1][0],
+        if pat_df is not None and key_phi_columns[1]:
+            df = join_dataframes(df, pat_df, left_on=key_phi_columns[1][0],
                                  right_on="patient_id", how="left",
                                  right_suffix="from_patient_mapping",
                                  drop_right_join_column=True)
-
-        distinct_rpids = mapping_obj._get_distinct_referencepids()
-        df_ref = mapping_obj._get_reference_pid_mapping(distinct_rpids)
-        if df_ref is not None and key_phi_columns[2]:
-            df = join_dataframes(df, df_ref, left_on=key_phi_columns[2][0],
-                                 right_on="reference_mapping", right_suffix="from_referencepid_mapping",
+        if pat_df is not None and key_phi_columns[2]:
+            df = join_dataframes(df, pat_df, left_on=key_phi_columns[2][0],
+                                 right_on="reference_mapping",
+                                 right_suffix="from_referencepid_mapping",
                                  how="left", drop_right_join_column=True)
-
-        distinct_aids = mapping_obj._get_distinct_appointmentids()
-        df_apt = mapping_obj._get_appointment_mapping(distinct_aids)
-        if df_apt is not None and key_phi_columns[3]:
-            df = join_dataframes(df, df_apt, left_on=key_phi_columns[3][0],
+        if apt_df is not None and key_phi_columns[3]:
+            df = join_dataframes(df, apt_df, left_on=key_phi_columns[3][0],
                                  right_on="appointment_id", how="left",
                                  drop_right_join_column=True)
-    finally:
-        mapping_obj.close_connection()
+    else:
+        # Fallback: per-batch SQL joins
+        mapping_obj = JoinMapping(df, key_phi_columns, config.mapping_db_config, config.table_name)
+        try:
+            distinct_eids = mapping_obj._get_distinct_encounterids()
+            df_enc = mapping_obj._get_encounter_mapping(distinct_eids)
+            if df_enc is not None and key_phi_columns[0]:
+                df = join_dataframes(df, df_enc, left_on=key_phi_columns[0][0],
+                                     right_on="encounter_id", how="left", right_suffix="",
+                                     drop_right_join_column=True)
+
+            distinct_pids = mapping_obj._get_distinct_patientids()
+            df_pat = mapping_obj._get_patient_mapping(distinct_pids)
+            if df_pat is not None and key_phi_columns[1]:
+                df = join_dataframes(df, df_pat, left_on=key_phi_columns[1][0],
+                                     right_on="patient_id", how="left",
+                                     right_suffix="from_patient_mapping",
+                                     drop_right_join_column=True)
+
+            distinct_rpids = mapping_obj._get_distinct_referencepids()
+            df_ref = mapping_obj._get_reference_pid_mapping(distinct_rpids)
+            if df_ref is not None and key_phi_columns[2]:
+                df = join_dataframes(df, df_ref, left_on=key_phi_columns[2][0],
+                                     right_on="reference_mapping", right_suffix="from_referencepid_mapping",
+                                     how="left", drop_right_join_column=True)
+
+            distinct_aids = mapping_obj._get_distinct_appointmentids()
+            df_apt = mapping_obj._get_appointment_mapping(distinct_aids)
+            if df_apt is not None and key_phi_columns[3]:
+                df = join_dataframes(df, df_apt, left_on=key_phi_columns[3][0],
+                                     right_on="appointment_id", how="left",
+                                     drop_right_join_column=True)
+        finally:
+            mapping_obj.close_connection()
 
     # 4. Resolve patient identifiers
     resolver = PatientIdentifierResolver(key_phi_columns, offset_days=config.offset_days)

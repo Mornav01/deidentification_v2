@@ -1,6 +1,5 @@
 import polars as pl
 import re          # standard lib – re.Match type hint + fallback
-from pydantic import validate_call
 try:
     import re2
 except ImportError:
@@ -12,7 +11,45 @@ from deid.core.logger import nd_logger
 from deid.core.process_df.constants import DATE_PATTERN_NOTES
 
 
-@validate_call(config=dict(arbitrary_types_allowed=True))
+# Cache: pattern_string -> (is_re2_compatible, compiled_re2_or_None, compiled_stdlib_or_None)
+_REGEX_CACHE: dict[str, tuple[bool, object, re.Pattern | None]] = {}
+
+
+def _get_compiled(pattern: str) -> tuple[bool, object, re.Pattern | None]:
+    """Return cached compiled regex, testing RE2 compatibility on first call."""
+    if pattern in _REGEX_CACHE:
+        return _REGEX_CACHE[pattern]
+    try:
+        compiled_re2 = re2.compile(pattern)
+        _REGEX_CACHE[pattern] = (True, compiled_re2, None)
+    except Exception:
+        try:
+            compiled_std = re.compile(pattern)
+            _REGEX_CACHE[pattern] = (False, None, compiled_std)
+        except Exception:
+            _REGEX_CACHE[pattern] = (False, None, None)
+    return _REGEX_CACHE[pattern]
+
+
+_DELIMITERS = ["\x00", "\x01", "\x02", "\x03", "\x00\x01\x00"]
+
+
+def _pick_delimiter(series: pl.Series) -> str:
+    """Return a delimiter string not present anywhere in the series data."""
+    for delim in _DELIMITERS:
+        if not series.str.contains(re.escape(delim)).any():
+            return delim
+    return _DELIMITERS[-1]
+
+
+def _can_match_empty(pattern: str) -> bool:
+    """Return True if the pattern can match the empty string."""
+    try:
+        return re.match(pattern, "") is not None
+    except Exception:
+        return True
+
+
 def mask_address(match: re.Match) -> str:
     """Replacement function to mask address parts using named groups."""
     nd_logger.debug(f"Matched address: {match.group(0)}")
@@ -29,7 +66,7 @@ class GenericDateShiftRule(BaseDateOffsetRule):
     def __init__(self):
         super().__init__(format_as_datetime=False, is_notes=True)
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+
     def _get_offset_list(self, df: pl.DataFrame) -> list:
         if "_resolved_offset" in df.columns:
             return df["_resolved_offset"].to_list()
@@ -39,7 +76,7 @@ class GenericDateShiftRule(BaseDateOffsetRule):
 class GenericNotesRule(RuleBase):
     """Apply a battery of generic regex-based PHI masks to free-text columns."""
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+
     def apply(self, df: pl.DataFrame, column_config: Dict) -> pl.DataFrame:
         col_name = column_config["column_name"]
         nd_logger.info(
@@ -130,9 +167,8 @@ class GenericNotesRule(RuleBase):
                 # Fallback: patterns with lookahead/lookbehind that RE2 can't compile →
                 #   standard `re.sub` via map_elements.  Slower but correct.
                 for pattern in patterns:
-                    try:
-                        re2.compile(pattern)   # test RE2 compatibility
-                        # RE2-compatible — use Polars' Rust-native engine
+                    is_re2, compiled_re2, compiled_std = _get_compiled(pattern)
+                    if is_re2:
                         df = df.with_columns(
                             pl.col(col_name)
                             .str.replace_all(pattern, masking_value)
@@ -141,28 +177,34 @@ class GenericNotesRule(RuleBase):
                         nd_logger.info(
                             f"[{self.__class__.__name__}] Regex replace rule '{key}' applied (RE2 path)."
                         )
-                    except Exception as re2_err:
-                        # RE2 rejected it (e.g. lookahead/lookbehind) — try standard re
-                        try:
-                            std_compiled = re.compile(pattern)
-                            repl = masking_value  # capture for lambda closure
+                    elif compiled_std:
+                        repl = masking_value
+                        # Concatenate-and-split: one regex call instead of N
+                        if not _can_match_empty(pattern) and df.height > 1:
+                            delim = _pick_delimiter(df[col_name])
+                            combined = delim.join(df[col_name].fill_null("").to_list())
+                            combined = compiled_std.sub(repl, combined)
+                            parts = combined.split(delim)
+                            df = df.with_columns(
+                                pl.Series(col_name, parts, dtype=pl.Utf8)
+                            )
+                        else:
                             df = df.with_columns(
                                 pl.col(col_name)
                                 .map_elements(
-                                    lambda text, _c=std_compiled, _r=repl: _c.sub(_r, text)
+                                    lambda text, _c=compiled_std, _r=repl: _c.sub(_r, text)
                                     if isinstance(text, str) else text,
                                     return_dtype=pl.Utf8,
                                 )
                                 .alias(col_name)
                             )
-                            nd_logger.info(
-                                f"[{self.__class__.__name__}] Regex replace rule '{key}' applied (stdlib re fallback)."
-                            )
-                        except Exception as re_err:
-                            nd_logger.warning(
-                                f"[{self.__class__.__name__}] Pattern for '{key}' failed both RE2 and stdlib re: "
-                                f"{pattern!r} (re2={re2_err}, re={re_err})"
-                            )
+                        nd_logger.info(
+                            f"[{self.__class__.__name__}] Regex replace rule '{key}' applied (stdlib re fallback)."
+                        )
+                    else:
+                        nd_logger.warning(
+                            f"[{self.__class__.__name__}] Pattern for '{key}' failed both RE2 and stdlib re: {pattern!r}"
+                        )
 
         nd_logger.info(f"[{self.__class__.__name__}] GenericNotesRule completed.")
         return df

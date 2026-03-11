@@ -12,29 +12,11 @@ from typing import Iterator, List, Dict
 from pydantic import validate_call
 
 
-@validate_call(config=dict(arbitrary_types_allowed=True))
 def _normalize_value(v):
-    """Convert Python objects that Polars can't handle uniformly to plain scalars.
-
-    SQLAlchemy returns typed Python objects for certain DB column types:
-      - DATE / DATETIME  → ``datetime.date`` / ``datetime.datetime``
-      - DECIMAL / NUMERIC → ``decimal.Decimal``
-      - BLOB / BINARY     → ``bytes``
-
-    Within a single batch the same column may contain a mix of these objects
-    *and* plain strings (e.g. when the DB stores dates as VARCHAR) or None.
-    Polars infers the column dtype from the first non-None value it sees; if
-    a later row carries a different Python type Polars raises::
-
-        ComputeError: could not append value: 2024-09-18 of type: date …
-
-    Normalising every cell to ``str | float | int | None`` before handing
-    the batch to Polars avoids the ambiguity entirely.
-    """
+    """Convert Python objects that Polars can't handle uniformly to plain scalars."""
     if v is None:
         return v
     if isinstance(v, datetime.datetime):
-        # datetime before date because datetime IS a date (subclass)
         return v.isoformat(sep=" ")
     if isinstance(v, datetime.date):
         return v.isoformat()
@@ -48,10 +30,60 @@ def _normalize_value(v):
     return v
 
 
-@validate_call(config=dict(arbitrary_types_allowed=True))
-def _normalize_rows(rows) -> list:
-    """Apply _normalize_value to every cell in every row."""
-    return [[_normalize_value(cell) for cell in row] for row in rows]
+# Per-column normalizers: only convert columns that need it
+_NORMALIZERS = {
+    datetime.datetime: lambda v: v.isoformat(sep=" "),
+    datetime.date: lambda v: v.isoformat(),
+    decimal.Decimal: float,
+    bytes: lambda v: v.decode("utf-8", errors="replace"),
+}
+
+# Cache: table_name -> {col_idx: normalizer_fn}  (populated on first batch)
+_COLUMN_TYPE_CACHE: dict[str, dict[int, object]] = {}
+
+
+def _detect_column_normalizers(rows, table_name: str = "") -> dict[int, object]:
+    """Inspect first non-None value per column; return map of col_idx -> normalizer."""
+    if table_name and table_name in _COLUMN_TYPE_CACHE:
+        return _COLUMN_TYPE_CACHE[table_name]
+
+    if not rows:
+        return {}
+
+    col_normalizers: dict[int, object] = {}
+    n_cols = len(rows[0])
+    for col_idx in range(n_cols):
+        for row in rows:
+            val = row[col_idx]
+            if val is not None:
+                norm = _NORMALIZERS.get(type(val))
+                if norm is not None:
+                    col_normalizers[col_idx] = norm
+                break
+
+    if table_name:
+        _COLUMN_TYPE_CACHE[table_name] = col_normalizers
+    return col_normalizers
+
+
+def _normalize_rows(rows, table_name: str = "") -> list:
+    """Normalize only columns that need it, using per-column type detection."""
+    if not rows:
+        return []
+
+    col_normalizers = _detect_column_normalizers(rows, table_name)
+    if not col_normalizers:
+        return [list(row) for row in rows]
+
+    result = []
+    for row in rows:
+        new_row = list(row)
+        for col_idx, normalizer in col_normalizers.items():
+            val = new_row[col_idx]
+            if val is not None:
+                new_row[col_idx] = normalizer(val)
+        result.append(new_row)
+    return result
 
 
 _WRITE_PREFIXES = (
@@ -209,7 +241,7 @@ def stream_table_paginated(
             rows = result.fetchall()
         if rows:
             yield pl.DataFrame(
-                _normalize_rows(rows),
+                _normalize_rows(rows, table_name),
                 schema=columns,
                 orient="row",
                 infer_schema_length=len(rows),
@@ -246,7 +278,68 @@ def stream_table_offset(
         rows = result.fetchall()
     if rows:
         yield pl.DataFrame(
-            _normalize_rows(rows),
+            _normalize_rows(rows, table_name),
+            schema=columns,
+            orient="row",
+            infer_schema_length=len(rows),
+        )
+
+
+def stream_table_keyset(
+    handler: "NDDBHandler",
+    table_name: str,
+    batch_size: int,
+    last_id: int | None = None,
+    id_column: str = "nd_auto_increment_id",
+) -> Iterator[pl.DataFrame]:
+    """Fetch batch_size rows using keyset pagination (O(1) per batch with index).
+
+    Unlike OFFSET pagination, each batch costs the same regardless of position.
+    Returns rows ordered by id_column, starting after last_id.
+    """
+    qi = handler._qi
+    dialect = handler.engine.dialect.name
+
+    if dialect == "mssql":
+        if last_id is not None:
+            query = text(
+                f"SELECT * FROM {qi(table_name)} "
+                f"WHERE {qi(id_column)} > :last_id "
+                f"ORDER BY {qi(id_column)} "
+                f"OFFSET 0 ROWS FETCH NEXT :batch_size ROWS ONLY"
+            )
+            params: dict = {"last_id": last_id, "batch_size": batch_size}
+        else:
+            query = text(
+                f"SELECT * FROM {qi(table_name)} "
+                f"ORDER BY {qi(id_column)} "
+                f"OFFSET 0 ROWS FETCH NEXT :batch_size ROWS ONLY"
+            )
+            params = {"batch_size": batch_size}
+    else:
+        if last_id is not None:
+            query = text(
+                f"SELECT * FROM {qi(table_name)} "
+                f"WHERE {qi(id_column)} > :last_id "
+                f"ORDER BY {qi(id_column)} "
+                f"LIMIT :batch_size"
+            )
+            params = {"last_id": last_id, "batch_size": batch_size}
+        else:
+            query = text(
+                f"SELECT * FROM {qi(table_name)} "
+                f"ORDER BY {qi(id_column)} "
+                f"LIMIT :batch_size"
+            )
+            params = {"batch_size": batch_size}
+
+    with handler.engine.connect() as conn:
+        result = conn.execute(query, params)
+        columns = list(result.keys())
+        rows = result.fetchall()
+    if rows:
+        yield pl.DataFrame(
+            _normalize_rows(rows, table_name),
             schema=columns,
             orient="row",
             infer_schema_length=len(rows),
@@ -266,25 +359,30 @@ class NDDBHandler:
         self.metadata.bind = self.engine
         self.Session = sessionmaker(bind=self.engine)
         self.session = self.Session()
+        self._columns_cache: dict[str, list[dict]] = {}
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+
     def _qi(self, identifier: str) -> str:
         """Quote a table or column identifier for the current dialect."""
         if self.engine.dialect.name == "mssql":
             return f"[{identifier}]"
         return f"`{identifier}`"
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+
     def close(self):
         self.session.close()
         self.engine.dispose()
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
-    def get_columns(self, table_name: str) -> list[dict]:
-        inspector = reflection.Inspector.from_engine(self.engine)
-        return inspector.get_columns(table_name)
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+    def get_columns(self, table_name: str) -> list[dict]:
+        if table_name in self._columns_cache:
+            return self._columns_cache[table_name]
+        inspector = reflection.Inspector.from_engine(self.engine)
+        columns = inspector.get_columns(table_name)
+        self._columns_cache[table_name] = columns
+        return columns
+
+
     def _assert_writable(self, operation: str):
         if self.read_only:
             raise RuntimeError(
@@ -292,7 +390,7 @@ class NDDBHandler:
                 "Write operations must target the destination database."
             )
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+
     def insert_to_db(self, rows: list[dict], table_name: str, batch_size: int = 10000):
         self._assert_writable(f"INSERT into {table_name}")
         import pymysql
@@ -392,7 +490,7 @@ class NDDBHandler:
             f"Table {dest_table_name} created in destination database with modified schema."
         )
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+
     def get_column_type(self, col_info):
         col_nullable = col_info.get("null", None)
         col_type = col_info["type"]
@@ -424,12 +522,12 @@ class NDDBHandler:
         except ProgrammingError:
             return False
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+
     def get_all_tables(self) -> list[str]:
         inspector = reflection.Inspector.from_engine(self.engine)
         return inspector.get_table_names()
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+
     def get_rows_count(self, table_name: str) -> int:
         """Fast estimated row count using catalog metadata (no full table scan).
 
@@ -477,7 +575,7 @@ class NDDBHandler:
             result = conn.execute(func.count().select().select_from(table))
             return result.scalar()
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+
     def get_exact_row_count(self, table_name: str) -> int:
         """Return exact row count via COUNT(*).
 
@@ -489,7 +587,7 @@ class NDDBHandler:
             result = conn.execute(text(f"SELECT COUNT(*) FROM {qi(table_name)}"))
             return int(result.scalar())
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+
     def get_min_max_id(self, table_name: str, id_column: str = "nd_auto_increment_id") -> tuple[int, int] | None:
         """Return (min_id, max_id) for the given table's ID column, or None."""
         qi = self._qi
@@ -506,7 +604,7 @@ class NDDBHandler:
             except Exception:
                 return None
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+
     def get_keyset_pagination_ranges(self, table_name: str, id_column: str = "nd_auto_increment_id", batch_size: int = 100000) -> List[Dict[str, int]]:
         qi = self._qi
         min_max_query = text(
@@ -532,7 +630,7 @@ class NDDBHandler:
         return ranges
 
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+
     def stream_table_as_dataframes_in_range(
         self,
         table_name: str,
@@ -569,7 +667,7 @@ class NDDBHandler:
                 if not rows:
                     break
                 yield pl.DataFrame(
-                    _normalize_rows(rows),
+                    _normalize_rows(rows, table_name),
                     schema=columns,
                     orient="row",
                     infer_schema_length=len(rows),
@@ -577,7 +675,7 @@ class NDDBHandler:
         finally:
             conn.close()
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+
     def stream_table_as_dataframes(self, table_name: str, batch_size: int) -> Iterator[pl.DataFrame]:
         """Stream a table as an iterator of Polars DataFrames using a server-side cursor.
 
@@ -605,7 +703,7 @@ class NDDBHandler:
                 if not rows:
                     break
                 yield pl.DataFrame(
-                    _normalize_rows(rows),
+                    _normalize_rows(rows, table_name),
                     schema=columns,
                     orient="row",
                     # Scan every row in the batch before fixing column dtypes.
@@ -618,7 +716,7 @@ class NDDBHandler:
         finally:
             conn.close()
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+
     def insert_dataframe_in_batches(self, df: pl.DataFrame, table_name: str, batch_size: int = 10000) -> None:
         """Insert a Polars DataFrame into the given MySQL table in batches.
 
@@ -739,15 +837,3 @@ class NDDBHandler:
         finally:
             conn.close()
 
-
-# ---------------------------------------------------------------------------
-# Deferred @validate_call for methods with "NDDBHandler" forward references.
-# Pydantic's validate_call eagerly resolves type hints at decoration time,
-# but during class body execution NDDBHandler isn't yet in module scope.
-# Applying the decorator here (after the class is defined) lets the forward
-# reference resolve normally.
-# ---------------------------------------------------------------------------
-_vc = validate_call(config=dict(arbitrary_types_allowed=True))
-NDDBHandler.create_table_in_dest = _vc(NDDBHandler.create_table_in_dest)
-NDDBHandler.create_table_in_dest_if_not_exists = _vc(NDDBHandler.create_table_in_dest_if_not_exists)
-NDDBHandler._table_exists = _vc(NDDBHandler._table_exists)

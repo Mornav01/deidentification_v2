@@ -11,12 +11,23 @@ from celery import shared_task
 from sqlalchemy.orm import Session
 
 from deid.config.task_models import FetchTaskConfig
-from deid.core.dbPkg.dbhandler import NDDBHandler, stream_table_offset
+from deid.core.dbPkg.dbhandler import NDDBHandler, stream_table_keyset
 from deid.models.base import create_state_engine
 from deid.models.state import BatchState
 from deid.staging import batch_fetched_path
 
 logger = logging.getLogger("deid.tasks.fetch")
+
+# Module-level handler cache for connection reuse across tasks
+_handler_cache: dict[str, NDDBHandler] = {}
+
+
+def _get_cached_handler(conn_str: str, read_only: bool = False) -> NDDBHandler:
+    """Return a cached NDDBHandler, creating one if needed."""
+    key = f"{conn_str}::{read_only}"
+    if key not in _handler_cache:
+        _handler_cache[key] = NDDBHandler(conn_str, read_only=read_only)
+    return _handler_cache[key]
 
 
 @shared_task(bind=True, name="deid.tasks.fetch.fetch_batch")
@@ -26,25 +37,25 @@ def fetch_batch(self, raw_config: dict):
     batch_tag = f"{config.start_id}-{config.end_id}"
     root = _staging_root(config)
 
-    # 1. Fetch rows from source
-    source = NDDBHandler(config.source_conn_str, read_only=True)
-    try:
-        col_info = source.get_columns(config.table_name)
-        col_schema = {}
-        for c in col_info:
-            length = getattr(c.get("type"), "length", None)
-            col_schema[c["name"]] = {
-                "type": str(c.get("type", "")),
-                "length": int(length) if length else None,
-            }
+    # 1. Fetch rows from source using keyset pagination (O(1) per batch)
+    source = _get_cached_handler(config.source_conn_str, read_only=True)
+    col_info = source.get_columns(config.table_name)
+    col_schema = {}
+    for c in col_info:
+        length = getattr(c.get("type"), "length", None)
+        col_schema[c["name"]] = {
+            "type": str(c.get("type", "")),
+            "length": int(length) if length else None,
+        }
 
-        limit = config.end_id - config.start_id + 1
-        frames = list(stream_table_offset(
-            source, config.table_name,
-            offset=config.start_id, limit=limit,
-        ))
-    finally:
-        source.close()
+    id_col = config.id_column
+    batch_size = config.end_id - config.start_id + 1
+    frames = list(stream_table_keyset(
+        source, config.table_name,
+        batch_size=batch_size,
+        last_id=config.last_fetched_id,
+        id_column=id_col,
+    ))
 
     if not frames:
         _update_batch_status(config, "done")
@@ -52,6 +63,14 @@ def fetch_batch(self, raw_config: dict):
                 "end_id": config.end_id, "status": "done", "rows": 0}
 
     df = pl.concat(frames)
+
+    # Extract actual ID range for idempotent write DELETE
+    if id_col in df.columns:
+        actual_start_id = int(df[id_col].min())
+        actual_end_id = int(df[id_col].max())
+    else:
+        actual_start_id = config.start_id
+        actual_end_id = config.end_id
 
     # 2. Write Arrow IPC with embedded column schema metadata
     target = batch_fetched_path(root, config.table_name, config.start_id, config.end_id)
@@ -61,16 +80,21 @@ def fetch_batch(self, raw_config: dict):
     arrow_table = df.to_arrow()
     existing_meta = arrow_table.schema.metadata or {}
     existing_meta[b"deid_column_schema"] = json.dumps(col_schema).encode()
+    existing_meta[b"deid_actual_start_id"] = str(actual_start_id).encode()
+    existing_meta[b"deid_actual_end_id"] = str(actual_end_id).encode()
     arrow_table = arrow_table.replace_schema_metadata(existing_meta)
 
     with ipc.new_file(str(tmp_path), arrow_table.schema) as writer:
         writer.write_table(arrow_table)
     os.rename(tmp_path, target)
 
-    # 3. Update BatchState: pending -> fetched
-    _update_batch_status(config, "fetched")
+    # 3. Update BatchState: pending -> fetched (record actual_end_id for watchdog recovery)
+    _update_batch_status(config, "fetched", actual_end_id=actual_end_id)
 
-    # 4. Dispatch process_batch
+    # 4. Self-chain: dispatch next pending batch for this table
+    _dispatch_next_fetch(config, raw_config, actual_end_id)
+
+    # 5. Dispatch process_batch for this batch
     from deid.tasks.process import process_batch
     process_config = {
         "table_name": config.table_name,
@@ -94,12 +118,35 @@ def fetch_batch(self, raw_config: dict):
             "end_id": config.end_id, "status": "fetched", "rows": df.height}
 
 
+def _dispatch_next_fetch(config: FetchTaskConfig, raw_config: dict, last_fetched_id: int):
+    """Find and dispatch the next pending batch for this table (keyset self-chaining)."""
+    engine = create_state_engine(config.state_db_path)
+    from deid.models.base import create_all_state_tables
+    create_all_state_tables(engine)
+    try:
+        with Session(engine) as session:
+            next_batch = (
+                session.query(BatchState)
+                .filter_by(table_name=config.table_name, status="pending")
+                .order_by(BatchState.start_id)
+                .first()
+            )
+            if next_batch:
+                next_cfg = {**raw_config}
+                next_cfg["start_id"] = next_batch.start_id
+                next_cfg["end_id"] = next_batch.end_id
+                next_cfg["last_fetched_id"] = last_fetched_id
+                fetch_batch.apply_async(args=[next_cfg], queue="deid-fetch")
+    finally:
+        engine.dispose()
+
+
 def _staging_root(config: FetchTaskConfig):
     from pathlib import Path
     return Path(config.staging_root)
 
 
-def _update_batch_status(config: FetchTaskConfig, status: str):
+def _update_batch_status(config: FetchTaskConfig, status: str, actual_end_id: int | None = None):
     engine = create_state_engine(config.state_db_path)
     from deid.models.base import create_all_state_tables
     create_all_state_tables(engine)
@@ -111,5 +158,7 @@ def _update_batch_status(config: FetchTaskConfig, status: str):
         ).first()
         if batch:
             batch.status = status
+            if actual_end_id is not None:
+                batch.actual_end_id = actual_end_id
             session.commit()
     engine.dispose()

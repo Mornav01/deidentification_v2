@@ -7,10 +7,8 @@ from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, UniqueConstr
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from deid.models.base import StateBase
-from pydantic import validate_call
 
 
-@validate_call(config=dict(arbitrary_types_allowed=True))
 def _utcnow():
     return datetime.now(timezone.utc)
 
@@ -70,6 +68,7 @@ class BatchState(StateBase):
     table_name: Mapped[str] = mapped_column(String, index=True)
     start_id: Mapped[int] = mapped_column(Integer)
     end_id: Mapped[int] = mapped_column(Integer)
+    actual_end_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String, default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)

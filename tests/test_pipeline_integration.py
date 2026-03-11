@@ -51,7 +51,7 @@ def test_fetch_process_write_chain(pipeline_env):
         "col1": ["val1", "val2", "val3"],
     })
 
-    def mock_paginated(handler, table_name, min_id, max_id, page_size, id_column="nd_auto_increment_id"):
+    def mock_offset(handler, table_name, batch_size, last_id=None, id_column="nd_auto_increment_id"):
         yield mock_df
 
     # Build fetch config dict with extra keys that get forwarded through the chain.
@@ -71,7 +71,7 @@ def test_fetch_process_write_chain(pipeline_env):
     }
 
     with patch("deid.tasks.fetch.NDDBHandler") as mock_src, \
-         patch("deid.tasks.fetch.stream_table_paginated", side_effect=mock_paginated), \
+         patch("deid.tasks.fetch.stream_table_keyset", side_effect=mock_offset), \
          patch("deid.tasks.process.NDDBHandler") as mock_proc_src, \
          patch("deid.tasks.process.ReferenceMappingDataFrameJoiner") as mock_ref, \
          patch("deid.tasks.process.JoinMapping") as mock_jm, \

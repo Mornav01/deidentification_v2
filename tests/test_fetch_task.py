@@ -51,11 +51,11 @@ def test_fetch_batch_writes_arrow_and_updates_state(tmp_path, state_engine):
         "name": ["a", "b", "c", "d", "e"],
     })
 
-    def mock_paginated(handler, table_name, min_id, max_id, page_size, id_column="nd_auto_increment_id"):
+    def mock_keyset(handler, table_name, batch_size, last_id=None, id_column="nd_auto_increment_id"):
         yield mock_df
 
     with patch("deid.tasks.fetch.NDDBHandler") as mock_handler_cls, \
-         patch("deid.tasks.fetch.stream_table_paginated", side_effect=mock_paginated), \
+         patch("deid.tasks.fetch.stream_table_keyset", side_effect=mock_keyset), \
          patch("deid.tasks.process.process_batch") as mock_process:
         mock_handler = MagicMock()
         mock_handler.get_columns.return_value = [
@@ -112,11 +112,11 @@ def test_fetch_batch_empty_range_marks_done(tmp_path, state_engine):
         staging_root=staging_root,
     )
 
-    def mock_paginated_empty(handler, table_name, min_id, max_id, page_size, id_column="nd_auto_increment_id"):
+    def mock_keyset_empty(handler, table_name, batch_size, last_id=None, id_column="nd_auto_increment_id"):
         return iter([])  # no data
 
     with patch("deid.tasks.fetch.NDDBHandler") as mock_handler_cls, \
-         patch("deid.tasks.fetch.stream_table_paginated", side_effect=mock_paginated_empty):
+         patch("deid.tasks.fetch.stream_table_keyset", side_effect=mock_keyset_empty):
         mock_handler = MagicMock()
         mock_handler.get_columns.return_value = []
         mock_handler_cls.return_value = mock_handler
