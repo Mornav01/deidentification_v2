@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 
 from celery import Celery
 from celery.signals import worker_process_init
@@ -58,6 +59,8 @@ celery = get_celery_app()
 # ---------------------------------------------------------------------------
 
 _preloaded_data: dict = {}
+_preload_ready = threading.Event()   # set once _preload_mappings() finishes
+_preload_thread: threading.Thread | None = None
 _preload_logger = logging.getLogger("deid.tasks.preload")
 
 
@@ -122,14 +125,35 @@ def _preload_mappings(app: Celery) -> None:
             _preload_logger.warning("Failed to preload PII table: %s", e)
 
 
-def get_preloaded_data() -> dict:
-    """Return the preloaded data dict (empty if not a process worker or not yet loaded)."""
+def get_preloaded_data(timeout: float = 60.0) -> dict:
+    """Return the preloaded data dict.
+
+    If a background preload thread is running, waits up to *timeout* seconds
+    for it to finish.  Returns an empty dict on timeout so callers fall back
+    to the SQL path.
+    """
+    if _preload_thread is not None and not _preload_ready.is_set():
+        _preload_ready.wait(timeout=timeout)
     return _preloaded_data
+
+
+def _run_preload_in_background(app: Celery) -> None:
+    """Start _preload_mappings in a daemon thread and set _preload_ready when done."""
+    global _preload_thread
+
+    def _target():
+        try:
+            _preload_mappings(app)
+        finally:
+            _preload_ready.set()
+
+    _preload_thread = threading.Thread(target=_target, daemon=True, name="deid-preload")
+    _preload_thread.start()
 
 
 @worker_process_init.connect
 def _on_worker_process_init(**kwargs):
     queue = os.environ.get("DEID_WORKER_QUEUE", "")
     if queue == "deid-process":
-        _preload_logger.info("Process worker starting — preloading mapping tables...")
-        _preload_mappings(get_celery_app())
+        _preload_logger.info("Process worker starting — preloading mapping tables in background...")
+        _run_preload_in_background(get_celery_app())
