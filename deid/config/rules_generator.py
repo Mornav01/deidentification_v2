@@ -25,6 +25,28 @@ from deid.core.dbPkg.dbhandler import create_read_only_engine
 
 logger = logging.getLogger("deid.config")
 
+# ── camelCase / PascalCase → snake_case normaliser ───────────────────────────
+import regex as _regex
+
+_CAMEL_RE1 = _regex.compile(r"([a-z0-9])([A-Z])")
+_CAMEL_RE2 = _regex.compile(r"([A-Z]+)([A-Z][a-z])")
+
+
+def normalize_column_name(name: str) -> str:
+    """Normalise a column name to lower-case snake_case for pattern matching.
+
+    Handles camelCase, PascalCase, and UPPER_CASE conventions::
+
+        patientId      → patient_id
+        PatientDOB     → patient_dob
+        emergencyPhone → emergency_phone
+        first_name     → first_name  (unchanged)
+    """
+    s = _CAMEL_RE1.sub(r"\1_\2", name)
+    s = _CAMEL_RE2.sub(r"\1_\2", s)
+    return s.lower()
+
+
 # ── Auto-assignment patterns (first match wins) ─────────────────────────────
 COLUMN_RULES = [
     (re.compile(r"(?i)^patient_?id$"), "PATIENT_ID"),
@@ -45,8 +67,8 @@ COLUMN_RULES = [
     (re.compile(r"(?i)(^|_)(phone|fax|cell|mobile|home_?phone|work_?phone|phone_?number)($|_)"), "MASK"),
     (re.compile(r"(?i)(^|_)(email|e_?mail|email_?address)($|_)"), "MASK"),
     (re.compile(r"(?i)(^|_)(address|addr|street|address_?line|city|state|county)($|_)"), "MASK"),
-    (re.compile(r"(?i)(^|_)(notes?|comment|narrative|description|free_?text|remarks|memo|clinical_?notes?)($|_)"), "GENERIC_NOTES"),
-    (re.compile(r"(?i)(^|_)(doc_?content|document_?text|document_?body|doc_?text|doc_?body|bin_?content|blob_?content|text_?content|content_?text|report_?text|clinical_?text|note_?text)($|_)"), "GENERIC_NOTES"),
+    (re.compile(r"(?i)(^|_)(notes?|comment|narrative|description|free_?text|remarks|memo|clinical_?notes?)($|_)"), "NOTES"),
+    (re.compile(r"(?i)(^|_)(doc_?content|document_?text|document_?body|doc_?text|doc_?body|bin_?content|blob_?content|text_?content|content_?text|report_?text|clinical_?text|note_?text)($|_)"), "NOTES"),
 ]
 
 DATE_TYPE_PATTERN = re.compile(r"(?i)(DATE|TIME|TIMESTAMP)")
@@ -56,8 +78,9 @@ LARGE_TEXT_TYPE_PATTERN = re.compile(r"(?i)(LONGTEXT|MEDIUMTEXT|NTEXT|NVARCHAR\s
 @validate_call(config=dict(arbitrary_types_allowed=True))
 def auto_assign_rule(column_name: str, data_type: str) -> str:
     """Return a rule string if the column name/type matches known patterns, else ''."""
+    normalized = normalize_column_name(column_name)
     for pattern, rule in COLUMN_RULES:
-        if pattern.search(column_name):
+        if pattern.search(normalized):
             return rule
     if DATE_TYPE_PATTERN.search(data_type):
         return "DATE_OFFSET"

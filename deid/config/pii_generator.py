@@ -20,6 +20,8 @@ except ImportError:
     except ImportError:
         import re  # type: ignore[no-redef]
 
+from deid.config.rules_generator import normalize_column_name
+
 logger = logging.getLogger("deid.config")
 
 # Rules whose columns carry PII values useful for notes masking.
@@ -60,9 +62,10 @@ _MASKING_PATTERNS = [
 _FIRST_NAME_PAT = re.compile(r"(?i)(^|_)(first_?name|fname)($|_)")
 _LAST_NAME_PAT = re.compile(r"(?i)(^|_)(last_?name|lname)($|_)")
 
-def _is_pii_column(column_name: str) -> bool:                                   
-    """Return True if column_name matches any known PII pattern."""               
-    return any(p.search(column_name) for p in _PII_COLUMN_PATTERNS)                                                                                           
+def _is_pii_column(column_name: str) -> bool:
+    """Return True if column_name matches any known PII pattern."""
+    normalized = normalize_column_name(column_name)
+    return any(p.search(normalized) for p in _PII_COLUMN_PATTERNS)                                                                                           
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
 def _classify_column(column_name: str) -> tuple[str, str]:
@@ -71,8 +74,9 @@ def _classify_column(column_name: str) -> tuple[str, str]:
     Known PII patterns get specific masking values; unrecognized columns
     get a generic ``((COLUMN_NAME))`` mask so they are still included.
     """
+    normalized = normalize_column_name(column_name)
     for pattern, masking_value, category in _MASKING_PATTERNS:
-        if pattern.search(column_name):
+        if pattern.search(normalized):
             if masking_value is None:
                 masking_value = f"(({column_name.upper()}))"
             return masking_value, category
@@ -128,7 +132,7 @@ def _from_source_db(source_db) -> dict[str, dict]:
         # Find a patient-ID column.
         patient_id_col = None
         for cn in col_names:
-            if _PATIENT_ID_PAT.search(cn):
+            if _PATIENT_ID_PAT.search(normalize_column_name(cn)):
                 patient_id_col = cn
                 break
         if not patient_id_col:
@@ -217,9 +221,10 @@ def generate_pii_config(pii_tables_config: dict) -> dict:
                         "min_length": 2,
                     }
 
-                if _FIRST_NAME_PAT.search(col):
+                normalized_col = normalize_column_name(col)
+                if _FIRST_NAME_PAT.search(normalized_col):
                     first_name_cols.append(prefixed)
-                elif _LAST_NAME_PAT.search(col):
+                elif _LAST_NAME_PAT.search(normalized_col):
                     last_name_cols.append(prefixed)
 
     config: dict = {}
