@@ -11,7 +11,7 @@ from celery import shared_task
 from sqlalchemy.orm import Session
 
 from deid.config.task_models import FetchTaskConfig
-from deid.core.dbPkg.dbhandler import NDDBHandler, stream_table_paginated
+from deid.core.dbPkg.dbhandler import NDDBHandler, stream_table_offset
 from deid.models.base import create_state_engine
 from deid.models.state import BatchState
 from deid.staging import batch_fetched_path
@@ -38,10 +38,10 @@ def fetch_batch(self, raw_config: dict):
                 "length": int(length) if length else None,
             }
 
-        frames = list(stream_table_paginated(
+        limit = config.end_id - config.start_id + 1
+        frames = list(stream_table_offset(
             source, config.table_name,
-            config.start_id, config.end_id,
-            config.batch_size, config.id_column,
+            offset=config.start_id, limit=limit,
         ))
     finally:
         source.close()

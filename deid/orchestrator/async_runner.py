@@ -144,10 +144,10 @@ async def _setup_phase(config: DeidConfig, state_engine):
 
     loop = asyncio.get_event_loop()
 
-    # ── 1. Gather row counts for all tables in parallel ──────────────────
+    # ── 1. Gather exact row counts for all tables in parallel ─────────────
     @validate_call(config=dict(arbitrary_types_allowed=True))
     async def _get_count(table_name: str) -> tuple[str, int]:
-        count = await loop.run_in_executor(None, source.get_rows_count, table_name)
+        count = await loop.run_in_executor(None, source.get_exact_row_count, table_name)
         logger.info("  %s: %s rows", table_name, f"{count:,}")
         return table_name, count
 
@@ -156,21 +156,9 @@ async def _setup_phase(config: DeidConfig, state_engine):
     count_results = await asyncio.gather(*[_get_count(n) for n in table_names])
     table_row_counts = dict(count_results)
 
-    # ── 2. Gather min/max IDs for all tables in parallel ─────────────────
-    table_id_ranges = {}
-    logger.info("Setup: fetching ID ranges for %d tables...", len(table_names))
+    table_id_ranges = {}  # kept for return value compatibility
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
-    async def _get_range(table_name: str) -> tuple[str, tuple[int, int] | None]:
-        mm = await loop.run_in_executor(None, source.get_min_max_id, table_name)
-        return table_name, mm
-
-    range_results = await asyncio.gather(*[_get_range(n) for n in table_names])
-    for name, mm in range_results:
-        if mm:
-            table_id_ranges[name] = mm
-
-    # ── 3. Persist state (sequential — SQLite writes) ────────────────────
+    # ── 2. Persist state (sequential — SQLite writes) ────────────────────
     with Session(state_engine) as session:
         db_cfg = session.query(DbConfig).first()
         if not db_cfg:
@@ -197,7 +185,7 @@ async def _setup_phase(config: DeidConfig, state_engine):
 
     logger.info("Setup: complete — %d tables registered.", len(config.tables))
 
-    # ── 4. Pre-split tables into BatchState rows ──────────────────────────
+    # ── 3. Pre-split tables into BatchState rows (OFFSET-based) ─────────
     from deid.models.state import BatchState
     from deid.staging import get_staging_root, cleanup_tmp_files
 
@@ -207,31 +195,24 @@ async def _setup_phase(config: DeidConfig, state_engine):
     with Session(state_engine) as session:
         for table_cfg in config.tables:
             tname = table_cfg.name
-            mm = table_id_ranges.get(tname)
-            if not mm:
-                # Table without integer IDs — single sentinel batch
-                existing = session.query(BatchState).filter_by(
-                    table_name=tname, start_id=-1, end_id=-1
-                ).first()
-                if not existing:
-                    session.add(BatchState(table_name=tname, start_id=-1, end_id=-1, status="pending"))
+            row_count = table_row_counts.get(tname, 0)
+            if row_count == 0:
                 continue
 
-            min_id, max_id = mm
-            current = min_id
-            while current <= max_id:
-                end = min(current + batch_size - 1, max_id)
+            offset = 0
+            while offset < row_count:
+                end = offset + batch_size - 1
                 existing = session.query(BatchState).filter_by(
-                    table_name=tname, start_id=current, end_id=end
+                    table_name=tname, start_id=offset, end_id=end
                 ).first()
                 if not existing:
                     session.add(BatchState(
-                        table_name=tname, start_id=current, end_id=end, status="pending"
+                        table_name=tname, start_id=offset, end_id=end, status="pending"
                     ))
-                current = end + 1
+                offset += batch_size
         session.commit()
 
-    # ── 5. Cleanup stale .tmp files ───────────────────────────────────────
+    # ── 4. Cleanup stale .tmp files ───────────────────────────────────────
     cleanup_tmp_files(staging_root)
 
     logger.info("Setup: pre-split %d tables into BatchState rows.", len(config.tables))

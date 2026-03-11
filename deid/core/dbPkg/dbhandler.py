@@ -217,6 +217,42 @@ def stream_table_paginated(
         chunk_start = chunk_end + 1
 
 
+def stream_table_offset(
+    handler: "NDDBHandler",
+    table_name: str,
+    offset: int,
+    limit: int,
+) -> Iterator[pl.DataFrame]:
+    """Fetch exactly *limit* rows starting at *offset* using OFFSET/LIMIT.
+
+    Column-agnostic: works on any table regardless of primary key layout.
+    Returns a single DataFrame (the whole slice) to keep the interface
+    consistent with ``stream_table_paginated``.
+    """
+    qi = handler._qi
+    dialect = handler.engine.dialect.name
+    if dialect == "mssql":
+        # MSSQL requires ORDER BY for OFFSET; (SELECT NULL) avoids picking a column.
+        query = text(
+            f"SELECT * FROM {qi(table_name)} "
+            f"ORDER BY (SELECT NULL) OFFSET :offset ROWS FETCH NEXT :limit ROWS ONLY"
+        )
+    else:
+        query = text(f"SELECT * FROM {qi(table_name)} LIMIT :limit OFFSET :offset")
+
+    with handler.engine.connect() as conn:
+        result = conn.execute(query, {"offset": offset, "limit": limit})
+        columns = list(result.keys())
+        rows = result.fetchall()
+    if rows:
+        yield pl.DataFrame(
+            _normalize_rows(rows),
+            schema=columns,
+            orient="row",
+            infer_schema_length=len(rows),
+        )
+
+
 class NDDBHandler:
     def __init__(self, connection_string: str, read_only: bool = False):
         self.read_only = read_only
@@ -440,6 +476,18 @@ class NDDBHandler:
             table = Table(table_name, MetaData(), autoload_with=self.engine)
             result = conn.execute(func.count().select().select_from(table))
             return result.scalar()
+
+    @validate_call(config=dict(arbitrary_types_allowed=True))
+    def get_exact_row_count(self, table_name: str) -> int:
+        """Return exact row count via COUNT(*).
+
+        Slower than ``get_rows_count`` (which uses catalog estimates) but
+        accurate — required for OFFSET-based batch splitting.
+        """
+        qi = self._qi
+        with self.engine.connect() as conn:
+            result = conn.execute(text(f"SELECT COUNT(*) FROM {qi(table_name)}"))
+            return int(result.scalar())
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_min_max_id(self, table_name: str, id_column: str = "nd_auto_increment_id") -> tuple[int, int] | None:
