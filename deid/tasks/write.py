@@ -11,8 +11,9 @@ from celery import shared_task
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from deid.config.task_models import WriteTaskConfig
+from deid.config.task_models import LogLevel, WriteTaskConfig
 from deid.core.dbPkg.dbhandler import NDDBHandler
+from deid.core.log_publisher import get_peak_memory_mb, make_log_record, publish_log
 from deid.models.base import create_state_engine
 from deid.models.state import BatchState, TableState
 from deid.staging import batch_processed_path
@@ -21,6 +22,11 @@ logger = logging.getLogger("deid.tasks.write")
 
 # Module-level handler cache for connection reuse across tasks
 _handler_cache: dict[str, NDDBHandler] = {}
+
+
+def _publish(config: WriteTaskConfig, level: LogLevel, phase: str, message: str, **kwargs):
+    if config.redis_url:
+        publish_log(config.redis_url, make_log_record(level, config.table_name, phase, message, **kwargs))
 
 
 def _get_cached_handler(conn_str: str) -> NDDBHandler:
@@ -35,6 +41,28 @@ def write_batch(self, raw_config: dict):
     """Read processed Arrow file, insert to dest DB in a single transaction."""
     config = WriteTaskConfig(**raw_config)
     batch_tag = f"{config.start_id}-{config.end_id}"
+    import time
+    t0 = time.monotonic()
+    try:
+        result = _write_batch_inner(config, batch_tag)
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        _publish(config, LogLevel.INFO, "write",
+                 f"batch {batch_tag} written",
+                 batch=config.start_id, rows_in_batch=result.get("rows", 0),
+                 rows_succeeded=result.get("rows", 0),
+                 start_id=config.start_id, end_id=config.end_id,
+                 duration_ms=duration_ms, peak_memory_mb=get_peak_memory_mb())
+        return result
+    except Exception as exc:
+        import traceback
+        _publish(config, LogLevel.ERROR, "write",
+                 f"batch {batch_tag} failed: {exc}",
+                 start_id=config.start_id, end_id=config.end_id,
+                 error=traceback.format_exc())
+        raise
+
+
+def _write_batch_inner(config: WriteTaskConfig, batch_tag: str):
     root = Path(config.staging_root)
 
     proc_path = batch_processed_path(root, config.table_name, config.start_id, config.end_id)

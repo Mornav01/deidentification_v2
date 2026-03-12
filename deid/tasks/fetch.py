@@ -10,8 +10,9 @@ import pyarrow.ipc as ipc
 from celery import shared_task
 from sqlalchemy.orm import Session
 
-from deid.config.task_models import FetchTaskConfig
+from deid.config.task_models import FetchTaskConfig, LogLevel
 from deid.core.dbPkg.dbhandler import NDDBHandler, stream_table_keyset
+from deid.core.log_publisher import get_peak_memory_mb, make_log_record, publish_log
 from deid.models.base import create_state_engine
 from deid.models.state import BatchState
 from deid.staging import batch_fetched_path
@@ -20,6 +21,11 @@ logger = logging.getLogger("deid.tasks.fetch")
 
 # Module-level handler cache for connection reuse across tasks
 _handler_cache: dict[str, NDDBHandler] = {}
+
+
+def _publish(config: FetchTaskConfig, level: LogLevel, phase: str, message: str, **kwargs):
+    if config.redis_url:
+        publish_log(config.redis_url, make_log_record(level, config.table_name, phase, message, **kwargs))
 
 
 def _get_cached_handler(conn_str: str, read_only: bool = False) -> NDDBHandler:
@@ -33,9 +39,31 @@ def _get_cached_handler(conn_str: str, read_only: bool = False) -> NDDBHandler:
 @shared_task(bind=True, name="deid.tasks.fetch.fetch_batch")
 def fetch_batch(self, raw_config: dict):
     """Fetch a batch of rows from source DB and write to Arrow IPC file."""
+    import time
     config = FetchTaskConfig(**raw_config)
     batch_tag = f"{config.start_id}-{config.end_id}"
     root = _staging_root(config)
+    t0 = time.monotonic()
+    try:
+        result = _fetch_batch_inner(config, raw_config, batch_tag, root)
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        _publish(config, LogLevel.INFO, "fetch",
+                 f"batch {batch_tag} fetched",
+                 batch=config.start_id, rows_in_batch=result.get("rows", 0),
+                 rows_succeeded=result.get("rows", 0),
+                 start_id=config.start_id, end_id=config.end_id,
+                 duration_ms=duration_ms, peak_memory_mb=get_peak_memory_mb())
+        return result
+    except Exception as exc:
+        import traceback
+        _publish(config, LogLevel.ERROR, "fetch",
+                 f"batch {batch_tag} failed: {exc}",
+                 start_id=config.start_id, end_id=config.end_id,
+                 error=traceback.format_exc())
+        raise
+
+
+def _fetch_batch_inner(config: FetchTaskConfig, raw_config: dict, batch_tag: str, root):
 
     # 1. Fetch rows from source using keyset pagination (O(1) per batch)
     source = _get_cached_handler(config.source_conn_str, read_only=True)
@@ -113,7 +141,6 @@ def fetch_batch(self, raw_config: dict):
     process_batch.apply_async(args=[process_config], queue="deid-process")
 
     logger.info("Fetched %s batch %s (%d rows)", config.table_name, batch_tag, df.height)
-
     return {"table": config.table_name, "start_id": config.start_id,
             "end_id": config.end_id, "status": "fetched", "rows": df.height}
 

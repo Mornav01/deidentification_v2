@@ -11,8 +11,9 @@ import pyarrow.ipc as ipc
 from celery import shared_task
 from sqlalchemy.orm import Session
 
-from deid.config.task_models import ProcessTaskConfig
+from deid.config.task_models import LogLevel, ProcessTaskConfig
 from deid.core.dbPkg.dbhandler import NDDBHandler
+from deid.core.log_publisher import get_peak_memory_mb, make_log_record, publish_log
 from deid.core.ops_df.jointables import ReferenceMappingDataFrameJoiner
 from deid.core.ops_df.utility import join_dataframes
 from deid.core.process_df.base import DeIdentifier
@@ -31,10 +32,38 @@ from deid.staging import batch_fetched_path, batch_processed_path
 logger = logging.getLogger("deid.tasks.process")
 
 
+def _publish(config: ProcessTaskConfig, level: LogLevel, phase: str, message: str, **kwargs):
+    if config.redis_url:
+        publish_log(config.redis_url, make_log_record(level, config.table_name, phase, message, **kwargs))
+
+
 @shared_task(bind=True, name="deid.tasks.process.process_batch")
 def process_batch(self, raw_config: dict):
     """Read fetched Arrow file, de-identify, write processed Arrow file."""
     config = ProcessTaskConfig(**raw_config)
+    batch_tag = f"{config.start_id}-{config.end_id}"
+    import time
+    t0 = time.monotonic()
+    try:
+        result = _process_batch_inner(config, raw_config)
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        _publish(config, LogLevel.INFO, "process",
+                 f"batch {batch_tag} processed",
+                 batch=config.start_id, rows_in_batch=result.get("rows", 0),
+                 rows_succeeded=result.get("rows", 0),
+                 start_id=config.start_id, end_id=config.end_id,
+                 duration_ms=duration_ms, peak_memory_mb=get_peak_memory_mb())
+        return result
+    except Exception as exc:
+        import traceback
+        _publish(config, LogLevel.ERROR, "process",
+                 f"batch {batch_tag} failed: {exc}",
+                 start_id=config.start_id, end_id=config.end_id,
+                 error=traceback.format_exc())
+        raise
+
+
+def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
     root = Path(config.staging_root)
 
     fetched = batch_fetched_path(root, config.table_name, config.start_id, config.end_id)

@@ -5,6 +5,7 @@ import json
 import logging
 import resource
 import sys
+import time
 from pathlib import Path
 
 from deid.config.task_models import BatchFailure, LogLevel, LogRecord
@@ -35,6 +36,8 @@ class LogCollector:
         self._peak_worker_mb = 0
         self._failure_count = 0
         self._stop = False
+        self._records_since_summary = 0
+        self._run_start = time.monotonic()
 
     def _ensure_table(self, table: str):
         if table not in self._table_stats:
@@ -77,14 +80,21 @@ class LogCollector:
         if record.peak_memory_mb is not None and record.peak_memory_mb > self._peak_worker_mb:
             self._peak_worker_mb = record.peak_memory_mb
 
-        # Handle errors — write to failures file.
+        # Handle errors — write to failures file and flush summary immediately.
         if record.level == LogLevel.ERROR or record.level == "ERROR":
             ts["batches_failed"] += 1
             if record.error:
                 ts["errors"].append(record.error)
             self._write_failure(record)
-        elif record.batch is not None and record.rows_in_batch is not None:
-            ts["batches_completed"] += 1
+            self.write_summary()
+            self._records_since_summary = 0
+        else:
+            if record.batch is not None and record.rows_in_batch is not None:
+                ts["batches_completed"] += 1
+            # Flush summary every 50 non-error records.
+            self._records_since_summary += 1
+            if self._records_since_summary % 50 == 0:
+                self.write_summary()
 
     def _format_line(self, record: LogRecord) -> str:
         level = record.level if isinstance(record.level, str) else record.level.value
@@ -132,8 +142,11 @@ class LogCollector:
         else:
             orch_mb = ru_maxrss // 1024
 
+        wall_time_s = round(time.monotonic() - self._run_start, 1)
+
         return {
             "run_timestamp": self._run_ts,
+            "wall_time_s": wall_time_s,
             "totals": {
                 "tables": len(self._table_stats),
                 "tables_completed": tables_completed,
@@ -167,11 +180,20 @@ class LogCollector:
         t = stats["totals"]
         m = stats["memory"]
 
+        ws = stats["wall_time_s"]
+        if ws >= 3600:
+            wall_str = f"{int(ws // 3600)}h {int((ws % 3600) // 60)}m {int(ws % 60)}s"
+        elif ws >= 60:
+            wall_str = f"{int(ws // 60)}m {int(ws % 60)}s"
+        else:
+            wall_str = f"{ws}s"
+
         lines = [
             "",
             "=" * 60,
             f"  Run Summary — {self._run_ts.replace('_', ' ')}",
             "=" * 60,
+            f"  Wall time:   {wall_str}",
             f"  Peak Memory: {m['peak_total_mb']} MB "
             f"(orchestrator: {m['peak_orchestrator_mb']} MB, workers: {m['peak_worker_mb']} MB)",
             f"  Tables:      {t['tables']} total | {t['tables_completed']} completed | {t['tables_failed']} failed",
