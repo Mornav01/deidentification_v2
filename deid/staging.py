@@ -55,6 +55,11 @@ def reconcile(state_engine, root: Path) -> None:
     from deid.models.state import BatchState
 
     with Session(state_engine) as session:
+        # "dispatched" means a task was queued but not yet running — safe to reset
+        # on startup since the Celery queue is gone after a restart.
+        session.query(BatchState).filter_by(status="dispatched").update({"status": "pending"})
+        session.commit()
+
         batches = session.query(BatchState).filter(
             BatchState.status.in_(["fetched", "processed"])
         ).all()

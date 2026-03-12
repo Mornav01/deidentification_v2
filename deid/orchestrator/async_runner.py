@@ -242,19 +242,19 @@ async def _deidentify_phase(config, state_engine):
                 "No BatchState rows found. Run the 'setup' phase first."
             )
 
-    # Initial dispatch: only the FIRST pending batch per table (keyset self-chaining)
+    # Initial dispatch: atomically claim and dispatch the FIRST pending batch per table.
+    from deid.tasks.fetch import _claim_next_pending_batch
     with Session(state_engine) as session:
-        dispatched_tables: set[str] = set()
-        for batch in (
-            session.query(BatchState)
-            .filter_by(status="pending")
-            .order_by(BatchState.table_name, BatchState.start_id)
-            .all()
-        ):
-            if batch.table_name not in dispatched_tables:
+        table_names_pending = [
+            r[0] for r in session.query(BatchState.table_name)
+            .filter_by(status="pending").distinct().all()
+        ]
+    for tname in table_names_pending:
+        with Session(state_engine) as session:
+            batch = _claim_next_pending_batch(session, tname)
+            if batch:
                 cfg = _build_fetch_config(config, batch, staging_root, mappings_conn_str)
                 fetch_batch.apply_async(args=[cfg], queue="deid-fetch")
-                dispatched_tables.add(batch.table_name)
 
         # Resume in-progress batches (fetched -> process, processed -> write)
         for batch in session.query(BatchState).filter_by(status="fetched").all():
@@ -290,8 +290,10 @@ async def _deidentify_phase(config, state_engine):
             )
             break
 
-        # Watchdog: re-dispatch stalled table chains (pending with no in-flight work)
+        # Watchdog: re-dispatch stalled table chains (pending with no in-flight work).
+        # "dispatched", "fetched", and "processed" all count as in-flight.
         if 0 < done_count < total:
+            from deid.tasks.fetch import _claim_next_pending_batch
             with Session(state_engine) as session:
                 table_names_with_pending = [
                     r[0] for r in session.query(BatchState.table_name)
@@ -299,37 +301,39 @@ async def _deidentify_phase(config, state_engine):
                     .distinct()
                     .all()
                 ]
-                for tname in table_names_with_pending:
-                    in_flight = session.query(BatchState).filter(
+                stalled = [
+                    tname for tname in table_names_with_pending
+                    if session.query(BatchState).filter(
                         BatchState.table_name == tname,
-                        BatchState.status.in_(["fetched", "processed"]),
-                    ).count()
-                    if in_flight == 0:
-                        first_pending = (
-                            session.query(BatchState)
-                            .filter_by(table_name=tname, status="pending")
-                            .order_by(BatchState.start_id)
-                            .first()
+                        BatchState.status.in_(["dispatched", "fetched", "processed"]),
+                    ).count() == 0
+                ]
+
+            for tname in stalled:
+                with Session(state_engine) as session:
+                    last_done = (
+                        session.query(BatchState)
+                        .filter_by(table_name=tname, status="done")
+                        .order_by(BatchState.end_id.desc())
+                        .first()
+                    )
+                    last_fetched_id = (
+                        last_done.actual_end_id
+                        if last_done and last_done.actual_end_id is not None
+                        else None
+                    )
+                    batch = _claim_next_pending_batch(session, tname)
+                    if batch:
+                        cfg = _build_fetch_config(
+                            config, batch, staging_root, mappings_conn_str
                         )
-                        if first_pending:
-                            cfg = _build_fetch_config(
-                                config, first_pending, staging_root, mappings_conn_str
-                            )
-                            # Find last_fetched_id from the most recent done batch so
-                            # keyset pagination resumes from where the chain broke, not row 0.
-                            last_done = (
-                                session.query(BatchState)
-                                .filter_by(table_name=tname, status="done")
-                                .order_by(BatchState.end_id.desc())
-                                .first()
-                            )
-                            if last_done and last_done.actual_end_id is not None:
-                                cfg["last_fetched_id"] = last_done.actual_end_id
-                            fetch_batch.apply_async(args=[cfg], queue="deid-fetch")
-                            logger.warning(
-                                "Re-dispatched stalled fetch chain for table %s (last_fetched_id=%s)",
-                                tname, cfg.get("last_fetched_id"),
-                            )
+                        if last_fetched_id is not None:
+                            cfg["last_fetched_id"] = last_fetched_id
+                        fetch_batch.apply_async(args=[cfg], queue="deid-fetch")
+                        logger.warning(
+                            "Re-dispatched stalled fetch chain for table %s (last_fetched_id=%s)",
+                            tname, last_fetched_id,
+                        )
 
 
 def _rules_to_table_details(rules: dict[str, str], table_name: str = "") -> dict:

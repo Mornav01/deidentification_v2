@@ -145,19 +145,41 @@ def _fetch_batch_inner(config: FetchTaskConfig, raw_config: dict, batch_tag: str
             "end_id": config.end_id, "status": "fetched", "rows": df.height}
 
 
+def _claim_next_pending_batch(session: Session, table_name: str) -> "BatchState | None":
+    """Atomically claim the next pending batch by setting status='dispatched'.
+
+    Uses a guarded UPDATE (WHERE status='pending') so two concurrent workers
+    racing on the same row get rowcount=1 and rowcount=0 respectively — only
+    the winner proceeds to dispatch.
+    """
+    from sqlalchemy import text
+    candidate = (
+        session.query(BatchState)
+        .filter_by(table_name=table_name, status="pending")
+        .order_by(BatchState.start_id)
+        .first()
+    )
+    if candidate is None:
+        return None
+    result = session.execute(
+        text("UPDATE batch_states SET status = 'dispatched' WHERE id = :id AND status = 'pending'"),
+        {"id": candidate.id},
+    )
+    session.commit()
+    if result.rowcount == 0:
+        return None  # another worker claimed it first
+    candidate.status = "dispatched"
+    return candidate
+
+
 def _dispatch_next_fetch(config: FetchTaskConfig, raw_config: dict, last_fetched_id: int):
-    """Find and dispatch the next pending batch for this table (keyset self-chaining)."""
+    """Atomically claim and dispatch the next pending batch for this table."""
     engine = create_state_engine(config.state_db_path)
     from deid.models.base import create_all_state_tables
     create_all_state_tables(engine)
     try:
         with Session(engine) as session:
-            next_batch = (
-                session.query(BatchState)
-                .filter_by(table_name=config.table_name, status="pending")
-                .order_by(BatchState.start_id)
-                .first()
-            )
+            next_batch = _claim_next_pending_batch(session, config.table_name)
             if next_batch:
                 next_cfg = {**raw_config}
                 next_cfg["start_id"] = next_batch.start_id
