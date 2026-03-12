@@ -228,8 +228,10 @@ def stream_table_paginated(
     may buffer the entire result set even with ``stream_results=True``).
     """
     qi = handler._qi
+    dialect = handler.engine.dialect.name
+    nolock = " WITH (NOLOCK)" if dialect == "mssql" else ""
     query = text(
-        f"SELECT * FROM {qi(table_name)} "
+        f"SELECT * FROM {qi(table_name)}{nolock} "
         f"WHERE {qi(id_column)} BETWEEN :start AND :end"
     )
     chunk_start = min_id
@@ -266,7 +268,7 @@ def stream_table_offset(
     if dialect == "mssql":
         # MSSQL requires ORDER BY for OFFSET; (SELECT NULL) avoids picking a column.
         query = text(
-            f"SELECT * FROM {qi(table_name)} "
+            f"SELECT * FROM {qi(table_name)} WITH (NOLOCK) "
             f"ORDER BY (SELECT NULL) OFFSET :offset ROWS FETCH NEXT :limit ROWS ONLY"
         )
     else:
@@ -303,7 +305,7 @@ def stream_table_keyset(
     if dialect == "mssql":
         if last_id is not None:
             query = text(
-                f"SELECT * FROM {qi(table_name)} "
+                f"SELECT * FROM {qi(table_name)} WITH (NOLOCK) "
                 f"WHERE {qi(id_column)} > :last_id "
                 f"ORDER BY {qi(id_column)} "
                 f"OFFSET 0 ROWS FETCH NEXT :batch_size ROWS ONLY"
@@ -311,7 +313,7 @@ def stream_table_keyset(
             params: dict = {"last_id": last_id, "batch_size": batch_size}
         else:
             query = text(
-                f"SELECT * FROM {qi(table_name)} "
+                f"SELECT * FROM {qi(table_name)} WITH (NOLOCK) "
                 f"ORDER BY {qi(id_column)} "
                 f"OFFSET 0 ROWS FETCH NEXT :batch_size ROWS ONLY"
             )
@@ -334,7 +336,7 @@ def stream_table_keyset(
             params = {"batch_size": batch_size}
 
     with handler.engine.connect() as conn:
-        result = conn.execute(query, params)
+        result = conn.execution_options(stream_results=True).execute(query, params)
         columns = list(result.keys())
         rows = result.fetchall()
     if rows:
@@ -349,10 +351,13 @@ def stream_table_keyset(
 class NDDBHandler:
     def __init__(self, connection_string: str, read_only: bool = False):
         self.read_only = read_only
-        engine_kwargs = dict(pool_size=5, max_overflow=5, pool_timeout=30, pool_recycle=1800, pool_pre_ping=True)
         if read_only:
+            # Read-only workers need a single connection; keeping the pool
+            # small avoids flooding the source DB when many workers run.
+            engine_kwargs = dict(pool_size=1, max_overflow=0, pool_timeout=30, pool_recycle=1800, pool_pre_ping=True)
             self.engine = create_read_only_engine(connection_string, **engine_kwargs)
         else:
+            engine_kwargs = dict(pool_size=5, max_overflow=5, pool_timeout=30, pool_recycle=1800, pool_pre_ping=True)
             self.engine = create_engine(connection_string, **engine_kwargs)
 
         self.metadata = MetaData()
@@ -583,17 +588,19 @@ class NDDBHandler:
         accurate — required for OFFSET-based batch splitting.
         """
         qi = self._qi
+        nolock = " WITH (NOLOCK)" if self.engine.dialect.name == "mssql" else ""
         with self.engine.connect() as conn:
-            result = conn.execute(text(f"SELECT COUNT(*) FROM {qi(table_name)}"))
+            result = conn.execute(text(f"SELECT COUNT(*) FROM {qi(table_name)}{nolock}"))
             return int(result.scalar())
 
 
     def get_min_max_id(self, table_name: str, id_column: str = "nd_auto_increment_id") -> tuple[int, int] | None:
         """Return (min_id, max_id) for the given table's ID column, or None."""
         qi = self._qi
+        nolock = " WITH (NOLOCK)" if self.engine.dialect.name == "mssql" else ""
         query = text(
             f"SELECT MIN({qi(id_column)}), MAX({qi(id_column)}) "
-            f"FROM {qi(table_name)} WHERE {qi(id_column)} IS NOT NULL"
+            f"FROM {qi(table_name)}{nolock} WHERE {qi(id_column)} IS NOT NULL"
         )
         with self.engine.connect() as conn:
             try:
@@ -607,9 +614,10 @@ class NDDBHandler:
 
     def get_keyset_pagination_ranges(self, table_name: str, id_column: str = "nd_auto_increment_id", batch_size: int = 100000) -> List[Dict[str, int]]:
         qi = self._qi
+        nolock = " WITH (NOLOCK)" if self.engine.dialect.name == "mssql" else ""
         min_max_query = text(
             f"SELECT MIN({qi(id_column)}), MAX({qi(id_column)}) "
-            f"FROM {qi(table_name)} WHERE {qi(id_column)} IS NOT NULL"
+            f"FROM {qi(table_name)}{nolock} WHERE {qi(id_column)} IS NOT NULL"
         )
         with self.engine.connect() as conn:
             try:
@@ -651,8 +659,9 @@ class NDDBHandler:
         exhausted, keeping memory at O(batch_size).
         """
         qi = self._qi
+        nolock = " WITH (NOLOCK)" if self.engine.dialect.name == "mssql" else ""
         query = text(
-            f"SELECT * FROM {qi(table_name)} "
+            f"SELECT * FROM {qi(table_name)}{nolock} "
             f"WHERE {qi(id_column)} BETWEEN :start_id AND :end_id"
         )
         conn = self.engine.connect().execution_options(
@@ -690,7 +699,8 @@ class NDDBHandler:
         Yields Polars DataFrames rather than Pandas to exploit Polars' faster
         joins, column expressions, and lower memory footprint downstream.
         """
-        query = text(f"SELECT * FROM {self._qi(table_name)}")
+        nolock = " WITH (NOLOCK)" if self.engine.dialect.name == "mssql" else ""
+        query = text(f"SELECT * FROM {self._qi(table_name)}{nolock}")
         conn = self.engine.connect().execution_options(
             stream_results=True,
             max_row_buffer=batch_size,
@@ -796,8 +806,9 @@ class NDDBHandler:
     def fetch_distinct_values(self, table_name: str, column_name: str, batch_size: int = 10000) -> Iterator[str]:
         """Yield distinct non-NULL values of a single column from *table_name*."""
         qi = self._qi
+        nolock = " WITH (NOLOCK)" if self.engine.dialect.name == "mssql" else ""
         query = text(
-            f"SELECT DISTINCT {qi(column_name)} FROM {qi(table_name)} "
+            f"SELECT DISTINCT {qi(column_name)} FROM {qi(table_name)}{nolock} "
             f"WHERE {qi(column_name)} IS NOT NULL"
         )
         conn = self.engine.connect().execution_options(
@@ -818,8 +829,9 @@ class NDDBHandler:
     def fetch_distinct_pairs(self, table_name: str, col_a: str, col_b: str, batch_size: int = 10000) -> Iterator[tuple[str, str]]:
         """Yield distinct non-NULL (col_a, col_b) pairs from *table_name*."""
         qi = self._qi
+        nolock = " WITH (NOLOCK)" if self.engine.dialect.name == "mssql" else ""
         query = text(
-            f"SELECT DISTINCT {qi(col_a)}, {qi(col_b)} FROM {qi(table_name)} "
+            f"SELECT DISTINCT {qi(col_a)}, {qi(col_b)} FROM {qi(table_name)}{nolock} "
             f"WHERE {qi(col_a)} IS NOT NULL AND {qi(col_b)} IS NOT NULL"
         )
         conn = self.engine.connect().execution_options(

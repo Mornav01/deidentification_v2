@@ -84,13 +84,14 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
     table_details = config.table_details
     key_phi_columns = get_key_phi_column_list(table_details.get("columns_details", []))
 
-    # 2. Reference mapping resolution (needs source DB)
-    source = NDDBHandler(config.source_conn_str, read_only=True)
-    try:
-        ref_joiner = ReferenceMappingDataFrameJoiner(source, df, table_details, key_phi_columns)
-        df, key_phi_columns = ref_joiner.join_dataframe()
-    finally:
-        source.close()
+    # 2. Reference mapping resolution (needs source DB only if reference_mapping is configured)
+    if table_details.get("reference_mapping"):
+        source = NDDBHandler(config.source_conn_str, read_only=True)
+        try:
+            ref_joiner = ReferenceMappingDataFrameJoiner(source, df, table_details, key_phi_columns)
+            df, key_phi_columns = ref_joiner.join_dataframe()
+        finally:
+            source.close()
 
     # 3. Mapping joins
     preloaded = get_preloaded_data()

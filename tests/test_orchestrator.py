@@ -43,7 +43,7 @@ def test_setup_phase_creates_batch_states(tmp_path):
     )
 
     mock_handler = MagicMock()
-    mock_handler.get_exact_row_count.return_value = 5000
+    mock_handler.get_rows_count.return_value = 5000
     mock_handler.get_min_max_id.return_value = (1, 5000)
 
     from deid.models.base import create_state_engine, create_all_state_tables
@@ -80,7 +80,7 @@ def test_setup_phase_small_table(tmp_path):
     )
 
     mock_handler = MagicMock()
-    mock_handler.get_exact_row_count.return_value = 100  # less than batch_size=1000
+    mock_handler.get_rows_count.return_value = 100  # less than batch_size=1000
 
     from deid.models.base import create_state_engine, create_all_state_tables
     state_engine = create_state_engine(str(tmp_path / "state.db"))
