@@ -259,9 +259,22 @@ async def _deidentify_phase(config, state_engine):
         ]
     for tname in table_names_pending:
         with Session(state_engine) as session:
+            last_done = (
+                session.query(BatchState)
+                .filter_by(table_name=tname, status="done")
+                .order_by(BatchState.end_id.desc())
+                .first()
+            )
+            last_fetched_id = (
+                last_done.actual_end_id
+                if last_done and last_done.actual_end_id is not None
+                else None
+            )
             batch = _claim_next_pending_batch(session, tname)
             if batch:
                 cfg = _build_fetch_config(config, batch, staging_root, mappings_conn_str)
+                if last_fetched_id is not None:
+                    cfg["last_fetched_id"] = last_fetched_id
                 fetch_batch.apply_async(args=[cfg], queue="deid-fetch")
 
     # Resume in-progress batches (fetched -> process, processed -> write)
