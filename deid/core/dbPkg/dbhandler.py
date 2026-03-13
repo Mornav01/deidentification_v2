@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, event, MetaData, Table, text, func, Column
+from sqlalchemy import create_engine, event, inspect, MetaData, Table, text, func, Column
 from sqlalchemy.engine import reflection
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import ProgrammingError
@@ -354,7 +354,7 @@ class NDDBHandler:
         if read_only:
             # Read-only workers need a single connection; keeping the pool
             # small avoids flooding the source DB when many workers run.
-            engine_kwargs = dict(pool_size=1, max_overflow=0, pool_timeout=30, pool_recycle=1800, pool_pre_ping=True)
+            engine_kwargs = dict(pool_size=1, max_overflow=2, pool_timeout=30, pool_recycle=1800, pool_pre_ping=True)
             self.engine = create_read_only_engine(connection_string, **engine_kwargs)
         else:
             engine_kwargs = dict(pool_size=5, max_overflow=5, pool_timeout=30, pool_recycle=1800, pool_pre_ping=True)
@@ -381,8 +381,8 @@ class NDDBHandler:
     def get_columns(self, table_name: str) -> list[dict]:
         if table_name in self._columns_cache:
             return self._columns_cache[table_name]
-        inspector = reflection.Inspector.from_engine(self.engine)
-        columns = inspector.get_columns(table_name)
+        with self.engine.connect() as conn:
+            columns = list(inspect(conn).get_columns(table_name))
         self._columns_cache[table_name] = columns
         return columns
 
