@@ -134,7 +134,7 @@ def get_preloaded_data(timeout: float = 60.0) -> dict:
     """
     if _preload_thread is not None and not _preload_ready.is_set():
         _preload_ready.wait(timeout=timeout)
-    return _preloaded_data
+    return dict(_preloaded_data)
 
 
 def _run_preload_in_background(app: Celery) -> None:

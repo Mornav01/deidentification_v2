@@ -92,6 +92,7 @@ async def run(config: DeidConfig, config_path: str):
     table_row_counts = {}
     table_id_ranges = {}
 
+    _run_exc = None
     try:
         if "setup" in config.phases:
             logger.info("Phase: setup")
@@ -107,6 +108,9 @@ async def run(config: DeidConfig, config_path: str):
             logger.info("Phase: qc")
             await _qc_phase(config, state_engine)
 
+    except Exception as exc:
+        _run_exc = exc
+        raise
     finally:
         # Stop collector and write summary.
         collector.stop()
@@ -127,7 +131,7 @@ async def run(config: DeidConfig, config_path: str):
         # Update RunLog with stats and completion time.
         with Session(state_engine) as session:
             log = session.get(RunLog, run_log_id)
-            log.status = "completed"
+            log.status = "failed" if _run_exc else "completed"
             log.completed_at = datetime.now(timezone.utc)
             log.stats = summary
             session.commit()
@@ -162,10 +166,14 @@ async def _setup_phase(config: DeidConfig, state_engine):
     with Session(state_engine) as session:
         db_cfg = session.query(DbConfig).first()
         if not db_cfg:
+            # Store only non-secret connection info (host:port/database) in
+            # state.db — never persist passwords to the SQLite file.
+            src = config.source_db
+            dst = config.destination_db
             db_cfg = DbConfig(
                 name="default",
-                source_conn_str=config.source_db.connection_string(),
-                dest_conn_str=config.destination_db.connection_string(),
+                source_conn_str=f"{src.type}://{src.host}:{src.port}/{src.database}",
+                dest_conn_str=f"{dst.type}://{dst.host}:{dst.port}/{dst.database}",
             )
             session.add(db_cfg)
             session.commit()
@@ -256,7 +264,8 @@ async def _deidentify_phase(config, state_engine):
                 cfg = _build_fetch_config(config, batch, staging_root, mappings_conn_str)
                 fetch_batch.apply_async(args=[cfg], queue="deid-fetch")
 
-        # Resume in-progress batches (fetched -> process, processed -> write)
+    # Resume in-progress batches (fetched -> process, processed -> write)
+    with Session(state_engine) as session:
         for batch in session.query(BatchState).filter_by(status="fetched").all():
             cfg = _build_process_config(config, batch, staging_root, mappings_conn_str)
             process_batch.apply_async(args=[cfg], queue="deid-process")
@@ -448,7 +457,7 @@ async def _qc_phase(config, state_engine):
             dest_conn_str=config.destination_db.connection_string(),
             offset_days=config.deidentification.date_offset_days,
             sample_size=config.qc.sample_size,
-            table_config={},
+            table_config=_get_table_details(config, tname),
         )
         qc_tasks.append(run_qc.s(qc_config.model_dump()))
 

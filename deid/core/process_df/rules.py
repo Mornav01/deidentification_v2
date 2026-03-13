@@ -319,7 +319,7 @@ class PatientDOBRule(BaseDateOffsetRule):
                 parsed = date_parser.parse(match.group(0))
                 return parsed.year
         except Exception as e:
-            match_val = match.group(0) if "match" in dir() and match else text
+            match_val = match.group(0) if match else text
             for fmt in ("%m%d%Y", "%d%m%Y"):
                 try:
                     parsed = datetime.strptime(str(match_val).strip(), fmt)

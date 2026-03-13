@@ -71,7 +71,9 @@ def parse_args():
 def _db_url(schema: str) -> str:
     """Build a MySQL connection URL. Override via DB_USER / DB_PASS / DB_HOST / DB_PORT env vars."""
     user     = os.environ.get("DB_USER", "ndadmin")
-    password = os.environ.get("DB_PASS", "ndADMIN%402025")
+    password = os.environ.get("DB_PASS")
+    if not password:
+        raise ValueError("DB_PASS environment variable is required and must not be empty")
     host     = os.environ.get("DB_HOST", "localhost")
     port     = os.environ.get("DB_PORT", "3306")
     return f"mysql+pymysql://{user}:{password}@{host}:{port}/{schema}"

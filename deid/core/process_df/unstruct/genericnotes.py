@@ -185,9 +185,24 @@ class GenericNotesRule(RuleBase):
                             combined = delim.join(df[col_name].fill_null("").to_list())
                             combined = compiled_std.sub(repl, combined)
                             parts = combined.split(delim)
-                            df = df.with_columns(
-                                pl.Series(col_name, parts, dtype=pl.Utf8)
-                            )
+                            if len(parts) != df.height:
+                                nd_logger.warning(
+                                    f"[{self.__class__.__name__}] Delimiter collision in concat-and-split "
+                                    f"for key '{key}'; falling back to row-by-row replacement"
+                                )
+                                df = df.with_columns(
+                                    pl.col(col_name)
+                                    .map_elements(
+                                        lambda text, _c=compiled_std, _r=repl: _c.sub(_r, text)
+                                        if isinstance(text, str) else text,
+                                        return_dtype=pl.Utf8,
+                                    )
+                                    .alias(col_name)
+                                )
+                            else:
+                                df = df.with_columns(
+                                    pl.Series(col_name, parts, dtype=pl.Utf8)
+                                )
                         else:
                             df = df.with_columns(
                                 pl.col(col_name)

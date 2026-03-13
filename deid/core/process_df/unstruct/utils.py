@@ -151,9 +151,9 @@ GENERIC_REGEX_DICT = {
     },
     "facility_location": {
         "masking_value": "((FacilityLocation))",
-        "regex": [
-            r"\b(?:Amherst|Buffalo|gatescircle|gates circle|OrchardPark|Orchard Park|Batavia)\b"
-        ],
+        # Facility names should be configured per-deployment in config.yaml,
+        # not hardcoded here. This is left empty by default.
+        "regex": [],
         "processing_func": None,
     }
 }

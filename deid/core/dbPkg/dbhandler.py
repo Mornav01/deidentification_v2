@@ -361,7 +361,6 @@ class NDDBHandler:
             self.engine = create_engine(connection_string, **engine_kwargs)
 
         self.metadata = MetaData()
-        self.metadata.bind = self.engine
         self.Session = sessionmaker(bind=self.engine)
         self.session = self.Session()
         self._columns_cache: dict[str, list[dict]] = {}
@@ -398,7 +397,6 @@ class NDDBHandler:
 
     def insert_to_db(self, rows: list[dict], table_name: str, batch_size: int = 10000):
         self._assert_writable(f"INSERT into {table_name}")
-        import pymysql
         if not rows:
             nd_logger.warning(f"No rows to insert into {table_name}.")
             return
@@ -419,9 +417,10 @@ class NDDBHandler:
             cursor.executemany(sql, data)
             connection.commit()
             nd_logger.info(f"Inserted {len(rows)} rows into {table_name} successfully.")
-        except pymysql.err.OperationalError as e:
+        except Exception as e:
             connection.rollback()
             nd_logger.error(f"Error inserting into {table_name}: {e}")
+            raise
         finally:
             cursor.close()
             connection.close()
@@ -521,11 +520,8 @@ class NDDBHandler:
         )
 
     def _table_exists(self, dest_handler: "NDDBHandler", table_name: str) -> bool:
-        try:
-            dest_handler.session.execute(text(f"SELECT 1 FROM {table_name} LIMIT 1"))
-            return True
-        except ProgrammingError:
-            return False
+        inspector = reflection.Inspector.from_engine(dest_handler.engine)
+        return inspector.has_table(table_name)
 
 
     def get_all_tables(self) -> list[str]:
@@ -664,11 +660,11 @@ class NDDBHandler:
             f"SELECT * FROM {qi(table_name)}{nolock} "
             f"WHERE {qi(id_column)} BETWEEN :start_id AND :end_id"
         )
-        conn = self.engine.connect().execution_options(
-            stream_results=True,
-            max_row_buffer=batch_size,
-        )
-        try:
+        with self.engine.connect() as conn:
+            conn = conn.execution_options(
+                stream_results=True,
+                max_row_buffer=batch_size,
+            )
             result = conn.execute(query, {"start_id": start_id, "end_id": end_id})
             columns = list(result.keys())
             while True:
@@ -681,8 +677,6 @@ class NDDBHandler:
                     orient="row",
                     infer_schema_length=len(rows),
                 )
-        finally:
-            conn.close()
 
 
     def stream_table_as_dataframes(self, table_name: str, batch_size: int) -> Iterator[pl.DataFrame]:
@@ -701,11 +695,11 @@ class NDDBHandler:
         """
         nolock = " WITH (NOLOCK)" if self.engine.dialect.name == "mssql" else ""
         query = text(f"SELECT * FROM {self._qi(table_name)}{nolock}")
-        conn = self.engine.connect().execution_options(
-            stream_results=True,
-            max_row_buffer=batch_size,
-        )
-        try:
+        with self.engine.connect() as conn:
+            conn = conn.execution_options(
+                stream_results=True,
+                max_row_buffer=batch_size,
+            )
             result = conn.execute(query)
             columns = list(result.keys())
             while True:
@@ -723,8 +717,6 @@ class NDDBHandler:
                     # (e.g. "7/29/2019"), Polars raises ComputeError.
                     infer_schema_length=len(rows),
                 )
-        finally:
-            conn.close()
 
 
     def insert_dataframe_in_batches(self, df: pl.DataFrame, table_name: str, batch_size: int = 10000) -> None:
@@ -811,11 +803,11 @@ class NDDBHandler:
             f"SELECT DISTINCT {qi(column_name)} FROM {qi(table_name)}{nolock} "
             f"WHERE {qi(column_name)} IS NOT NULL"
         )
-        conn = self.engine.connect().execution_options(
-            stream_results=True,
-            max_row_buffer=batch_size,
-        )
-        try:
+        with self.engine.connect() as conn:
+            conn = conn.execution_options(
+                stream_results=True,
+                max_row_buffer=batch_size,
+            )
             result = conn.execute(query)
             while True:
                 rows = result.fetchmany(batch_size)
@@ -823,8 +815,6 @@ class NDDBHandler:
                     break
                 for row in rows:
                     yield str(row[0])
-        finally:
-            conn.close()
 
     def fetch_distinct_pairs(self, table_name: str, col_a: str, col_b: str, batch_size: int = 10000) -> Iterator[tuple[str, str]]:
         """Yield distinct non-NULL (col_a, col_b) pairs from *table_name*."""
@@ -834,11 +824,11 @@ class NDDBHandler:
             f"SELECT DISTINCT {qi(col_a)}, {qi(col_b)} FROM {qi(table_name)}{nolock} "
             f"WHERE {qi(col_a)} IS NOT NULL AND {qi(col_b)} IS NOT NULL"
         )
-        conn = self.engine.connect().execution_options(
-            stream_results=True,
-            max_row_buffer=batch_size,
-        )
-        try:
+        with self.engine.connect() as conn:
+            conn = conn.execution_options(
+                stream_results=True,
+                max_row_buffer=batch_size,
+            )
             result = conn.execute(query)
             while True:
                 rows = result.fetchmany(batch_size)
@@ -846,6 +836,4 @@ class NDDBHandler:
                     break
                 for row in rows:
                     yield (str(row[0]), str(row[1]))
-        finally:
-            conn.close()
 

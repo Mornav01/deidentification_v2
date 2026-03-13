@@ -9,7 +9,7 @@ from deid.config.task_models import LogLevel
 from deid.core.log_publisher import make_log_record, maybe_log, get_peak_memory_mb
 from deid.core.logger import nd_logger
 from deid.core.dbPkg import NDDBHandler
-from deid.core.dbPkg.dbhandler import stream_from_ipc_cache
+from deid.core.dbPkg.dbhandler import stream_from_ipc_cache, stream_table_paginated
 from deid.core.ops_df.jointables import ReferenceMappingDataFrameJoiner
 from deid.core.ops_df.utility import DistinctValueFetcher, join_dataframes
 from sqlalchemy import Table, String, MetaData, select, cast
@@ -583,6 +583,7 @@ def start_de_identification_for_table(
                     start_id=start_id,
                     end_id=end_id,
                 ))
+                break  # stop processing further batches on error
 
     writer_thread = threading.Thread(target=_background_writer, daemon=True)
     writer_thread.start()
@@ -599,10 +600,23 @@ def start_de_identification_for_table(
             id_column=id_column,
         )
     elif start_id is not None and end_id is not None:
-        stream = source_db_connection.stream_table_as_dataframes_in_range(
-            table_name, batch_size,
-            start_id=start_id, end_id=end_id, id_column=id_column,
-        )
+        if source_db_connection.engine.dialect.name == "mssql":
+            # MSSQL/pymssql doesn't support true server-side cursors: holding a
+            # streaming connection open between fetchmany() calls (while mapping
+            # joins and NLP run) causes the server to drop the TCP connection
+            # after its query timeout → FreeTDS error 20017 "Unexpected EOF".
+            # stream_table_paginated issues a fresh bounded SELECT per batch so
+            # the connection is never held idle across processing work.
+            stream = stream_table_paginated(
+                source_db_connection, table_name,
+                min_id=start_id, max_id=end_id, page_size=batch_size,
+                id_column=id_column,
+            )
+        else:
+            stream = source_db_connection.stream_table_as_dataframes_in_range(
+                table_name, batch_size,
+                start_id=start_id, end_id=end_id, id_column=id_column,
+            )
     else:
         stream = source_db_connection.stream_table_as_dataframes(
             table_name, batch_size
