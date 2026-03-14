@@ -36,7 +36,15 @@ def _get_cached_handler(conn_str: str) -> NDDBHandler:
     return _handler_cache[conn_str]
 
 
-@shared_task(bind=True, name="deid.tasks.write.write_batch")
+_LOCK_WAIT_ERRORS = ("lock wait timeout", "deadlock found", "1205", "1213")
+
+
+def _is_lock_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(s in msg for s in _LOCK_WAIT_ERRORS)
+
+
+@shared_task(bind=True, name="deid.tasks.write.write_batch", max_retries=5)
 def write_batch(self, raw_config: dict):
     """Read processed Arrow file, insert to dest DB in a single transaction."""
     config = WriteTaskConfig(**raw_config)
@@ -55,6 +63,14 @@ def write_batch(self, raw_config: dict):
         return result
     except Exception as exc:
         import traceback
+        if _is_lock_error(exc) and self.request.retries < self.max_retries:
+            countdown = 10 * (2 ** self.request.retries)  # 10s, 20s, 40s, 80s, 160s
+            logger.warning(
+                "Lock wait timeout on %s batch %s (retry %d/%d in %ds)",
+                config.table_name, batch_tag, self.request.retries + 1,
+                self.max_retries, countdown,
+            )
+            raise self.retry(exc=exc, countdown=countdown)
         _publish(config, LogLevel.ERROR, "write",
                  f"batch {batch_tag} failed: {exc}",
                  start_id=config.start_id, end_id=config.end_id,
