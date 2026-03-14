@@ -191,6 +191,9 @@ def _clean_type_str(raw: str) -> str:
     upper = s.upper()
     if upper in ("VARCHAR", "NVARCHAR"):
         return "LONGTEXT"
+    # MSSQL XML type has no MySQL equivalent — store as LONGTEXT
+    if upper == "XML":
+        return "LONGTEXT"
     if upper in ("CHAR", "NCHAR"):
         return f"{s}(255)"
     if upper in ("VARBINARY", "BINARY"):

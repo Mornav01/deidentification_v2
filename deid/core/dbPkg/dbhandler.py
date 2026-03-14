@@ -303,9 +303,10 @@ def stream_table_keyset(
     dialect = handler.engine.dialect.name
 
     if dialect == "mssql":
+        sel = handler._mssql_select_clause(table_name)
         if last_id is not None:
             query = text(
-                f"SELECT * FROM {qi(table_name)} WITH (NOLOCK) "
+                f"SELECT {sel} FROM {qi(table_name)} WITH (NOLOCK) "
                 f"WHERE {qi(id_column)} > :last_id "
                 f"ORDER BY {qi(id_column)} "
                 f"OFFSET 0 ROWS FETCH NEXT :batch_size ROWS ONLY"
@@ -313,7 +314,7 @@ def stream_table_keyset(
             params: dict = {"last_id": last_id, "batch_size": batch_size}
         else:
             query = text(
-                f"SELECT * FROM {qi(table_name)} WITH (NOLOCK) "
+                f"SELECT {sel} FROM {qi(table_name)} WITH (NOLOCK) "
                 f"ORDER BY {qi(id_column)} "
                 f"OFFSET 0 ROWS FETCH NEXT :batch_size ROWS ONLY"
             )
@@ -385,6 +386,33 @@ class NDDBHandler:
             columns = list(inspect(conn).get_columns(table_name))
         self._columns_cache[table_name] = columns
         return columns
+
+    def _mssql_select_clause(self, table_name: str) -> str:
+        """Build a SELECT column list for MSSQL that casts XML columns to NVARCHAR(MAX).
+
+        FreeTDS cannot deserialize the MSSQL-native XML wire type and raises
+        'xml serialization failed'.  Casting to NVARCHAR(MAX) returns the XML
+        payload as a plain Unicode string that pymssql can handle.
+
+        Falls back to '*' for non-MSSQL dialects or if column info is unavailable.
+        """
+        if self.engine.dialect.name != "mssql":
+            return "*"
+        try:
+            columns = self.get_columns(table_name)
+        except Exception:
+            return "*"
+        qi = self._qi
+        parts = []
+        for col in columns:
+            type_name = type(col.get("type")).__name__.upper()
+            if "XML" in type_name:
+                parts.append(
+                    f"CAST({qi(col['name'])} AS NVARCHAR(MAX)) AS {qi(col['name'])}"
+                )
+            else:
+                parts.append(qi(col["name"]))
+        return ", ".join(parts) if parts else "*"
 
 
     def _assert_writable(self, operation: str):
