@@ -58,37 +58,33 @@ def run_command(
 
 
 def _start_workers(cfg, config_path: str = "") -> list[subprocess.Popen]:
-    """Spawn three Celery worker subprocesses (fetch, process, write)."""
+    """Spawn Celery worker subprocesses: fetch, process, and one write worker per table."""
     import os
     global_mtpc = cfg.workers.max_tasks_per_child
-    worker_configs = [
+    shared_configs = [
         ("deid-fetch", cfg.workers.fetchers, "fetch",
          cfg.workers.max_tasks_per_child_fetch or global_mtpc),
         ("deid-process", cfg.workers.processors, "process",
          cfg.workers.max_tasks_per_child_process or global_mtpc),
-        ("deid-write", cfg.workers.writers, "write",
-         cfg.workers.max_tasks_per_child_write or global_mtpc),
     ]
 
     processes = []
-    for queue, concurrency, name, mtpc in worker_configs:
-        cmd = [
-            sys.executable, "-m", "celery",
-            "-A", "deid.tasks.celery_app",
-            "worker",
-            f"--queues={queue}",
-            f"--concurrency={concurrency}",
-            f"--hostname={name}@%n",
-            "--pool=prefork",
-            f"--max-tasks-per-child={mtpc}",
-            "--loglevel=info",
-            "--without-heartbeat",
-            "--without-mingle",
-            "--without-gossip",
-        ]
+    for queue, concurrency, name, mtpc in shared_configs:
+        cmd = _worker_cmd(queue, concurrency, name, mtpc)
         env = {**os.environ, "DEID_WORKER_QUEUE": queue, "DEID_CONFIG_PATH": config_path}
         proc = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr, env=env)
         logger.info("Started %s worker (pid=%d, concurrency=%d, mtpc=%d)", name, proc.pid, concurrency, mtpc)
+        processes.append(proc)
+
+    # One dedicated write worker per table (concurrency=1 serialises writes,
+    # preventing MySQL lock-wait timeouts from concurrent INSERTs on the same table).
+    for table in cfg.tables:
+        queue = f"deid-write-{table.name}"
+        name = f"write-{table.name}"
+        cmd = _worker_cmd(queue, 1, name, global_mtpc)
+        env = {**os.environ, "DEID_WORKER_QUEUE": queue, "DEID_CONFIG_PATH": config_path}
+        proc = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr, env=env)
+        logger.info("Started write worker for table '%s' (pid=%d)", table.name, proc.pid)
         processes.append(proc)
 
     time.sleep(3)
@@ -99,6 +95,23 @@ def _start_workers(cfg, config_path: str = "") -> list[subprocess.Popen]:
             )
 
     return processes
+
+
+def _worker_cmd(queue: str, concurrency: int, name: str, mtpc: int) -> list[str]:
+    return [
+        sys.executable, "-m", "celery",
+        "-A", "deid.tasks.celery_app",
+        "worker",
+        f"--queues={queue}",
+        f"--concurrency={concurrency}",
+        f"--hostname={name}@%n",
+        "--pool=prefork",
+        f"--max-tasks-per-child={mtpc}",
+        "--loglevel=info",
+        "--without-heartbeat",
+        "--without-mingle",
+        "--without-gossip",
+    ]
 
 
 def _stop_workers(processes: list[subprocess.Popen]):

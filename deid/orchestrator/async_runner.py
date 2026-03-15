@@ -284,7 +284,7 @@ async def _deidentify_phase(config, state_engine):
             process_batch.apply_async(args=[cfg], queue="deid-process")
         for batch in session.query(BatchState).filter_by(status="processed").all():
             cfg = _build_write_config(config, batch, staging_root)
-            write_batch.apply_async(args=[cfg], queue="deid-write")
+            write_batch.apply_async(args=[cfg], queue=f"deid-write-{batch.table_name}")
 
     # Poll for completion
     last_done_count = 0

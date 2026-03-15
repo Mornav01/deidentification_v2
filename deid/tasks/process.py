@@ -203,7 +203,7 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
         "run_config": config.run_config,
         **{k: raw_config[k] for k in ("dest_conn_str", "id_column") if k in raw_config},
     }
-    write_batch.apply_async(args=[write_config], queue="deid-write")
+    write_batch.apply_async(args=[write_config], queue=f"deid-write-{config.table_name}")
 
     logger.info("Processed %s batch %d-%d (%d rows)",
                 config.table_name, config.start_id, config.end_id, df.height)
