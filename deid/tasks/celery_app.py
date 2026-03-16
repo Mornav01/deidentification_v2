@@ -76,13 +76,13 @@ def _preload_mappings(app: Celery) -> None:
     from pathlib import Path
 
     import polars as pl
-    from sqlalchemy import create_engine, text
+    from sqlalchemy import text
 
     from deid.config.loader import load_config
+    from deid.models.base import create_read_only_mappings_engine
 
     cfg = load_config(Path(config_path))
-    mappings_conn_str = f"sqlite:///{cfg.mappings_db_path}"
-    engine = create_engine(mappings_conn_str)
+    engine = create_read_only_mappings_engine(cfg.mappings_db_path)
 
     try:
         with engine.connect() as conn:
@@ -109,7 +109,8 @@ def _preload_mappings(app: Celery) -> None:
     # Load PII table if configured
     if getattr(cfg, "pii_db", None):
         try:
-            pii_engine = create_engine(cfg.pii_db["master_connection_str"])
+            from deid.core.dbPkg.dbhandler import create_read_only_engine
+            pii_engine = create_read_only_engine(cfg.pii_db["master_connection_str"])
             with pii_engine.connect() as conn:
                 result = conn.execute(text("SELECT * FROM pii_data_table"))
                 cols = list(result.keys())

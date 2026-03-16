@@ -135,6 +135,8 @@ def create_read_only_engine(connection_string: str, **kwargs):
             cursor.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED")
         elif dialect == "snowflake":
             cursor.execute("ALTER SESSION SET TRANSACTION_DEFAULT_ISOLATION_LEVEL = 'READ COMMITTED'")
+        elif dialect == "sqlite":
+            cursor.execute("PRAGMA query_only=ON")
         cursor.close()
 
     @event.listens_for(engine, "before_cursor_execute")
@@ -142,7 +144,7 @@ def create_read_only_engine(connection_string: str, **kwargs):
         stmt_upper = statement.lstrip().upper()
         if stmt_upper.startswith(_WRITE_PREFIXES):
             raise RuntimeError(
-                f"Refusing write operation on read-only (source) engine: "
+                f"Refusing write operation on read-only engine: "
                 f"{statement[:120]}..."
             )
 
@@ -946,12 +948,12 @@ class NDDBHandler:
         nd_logger.info(f"[DBHandler] Completed insertion into '{table_name}'.")
 
     def fetch_distinct_values(self, table_name: str, column_name: str, batch_size: int = 10000) -> Iterator[str]:
-        """Yield distinct non-NULL values of a single column from *table_name*."""
+        """Yield distinct non-NULL, non-empty values of a single column from *table_name*."""
         qi = self._qi
         nolock = " WITH (NOLOCK)" if self.engine.dialect.name == "mssql" else ""
         query = text(
             f"SELECT DISTINCT {qi(column_name)} FROM {qi(table_name)}{nolock} "
-            f"WHERE {qi(column_name)} IS NOT NULL"
+            f"WHERE {qi(column_name)} IS NOT NULL AND {qi(column_name)} != ''"
         )
         with self.engine.connect() as conn:
             conn = conn.execution_options(
@@ -964,15 +966,18 @@ class NDDBHandler:
                 if not rows:
                     break
                 for row in rows:
-                    yield str(row[0])
+                    val = str(row[0]).strip()
+                    if val:
+                        yield val
 
     def fetch_distinct_pairs(self, table_name: str, col_a: str, col_b: str, batch_size: int = 10000) -> Iterator[tuple[str, str]]:
-        """Yield distinct non-NULL (col_a, col_b) pairs from *table_name*."""
+        """Yield distinct non-NULL, non-empty (col_a, col_b) pairs from *table_name*."""
         qi = self._qi
         nolock = " WITH (NOLOCK)" if self.engine.dialect.name == "mssql" else ""
         query = text(
             f"SELECT DISTINCT {qi(col_a)}, {qi(col_b)} FROM {qi(table_name)}{nolock} "
-            f"WHERE {qi(col_a)} IS NOT NULL AND {qi(col_b)} IS NOT NULL"
+            f"WHERE {qi(col_a)} IS NOT NULL AND {qi(col_b)} IS NOT NULL "
+            f"AND {qi(col_a)} != '' AND {qi(col_b)} != ''"
         )
         with self.engine.connect() as conn:
             conn = conn.execution_options(
@@ -985,5 +990,7 @@ class NDDBHandler:
                 if not rows:
                     break
                 for row in rows:
-                    yield (str(row[0]), str(row[1]))
+                    a, b = str(row[0]).strip(), str(row[1]).strip()
+                    if a and b:
+                        yield (a, b)
 
