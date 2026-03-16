@@ -13,7 +13,9 @@ from deid.config.schema import DeidConfig
 from deid.config.task_models import QCTaskConfig
 from pydantic import validate_call
 from deid.models.base import (
+    create_all_failed_rows_tables,
     create_all_state_tables,
+    create_failed_rows_engine,
     create_mappings_engine,
     create_state_engine,
 )
@@ -34,6 +36,9 @@ async def run(config: DeidConfig, config_path: str):
     state_engine = create_state_engine(config.state_db_path)
     create_all_state_tables(state_engine)
     mappings_engine = create_mappings_engine(config.mappings_db_path)
+    failed_rows_engine = create_failed_rows_engine(config.failed_rows_db_path)
+    create_all_failed_rows_tables(failed_rows_engine)
+    failed_rows_engine.dispose()
 
     # ── Load pii_config from file if needed ───────────────────────────────
     if config.pii_db and not config.pii_config and config.pii_config_path:

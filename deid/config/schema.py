@@ -98,6 +98,7 @@ class DeidConfig(BaseModel):
     destination_db: DbConfig
     state_db_path: str = "./state.db"
     mappings_db_path: str = ""
+    failed_rows_db_path: str = "./failed_rows.db"
     redis_url: str = "redis://localhost:6379/0"
     deidentification: DeidentificationSettings = DeidentificationSettings()
     tables: Optional[list[TableConfig]] = None

@@ -53,6 +53,7 @@ def _build_table_config(config: DeidConfig, table_name: str, rules: dict) -> dic
         run_config={
             "redis_url": config.redis_url,
             "log_verbosity": config.logging.log_verbosity.value,
+            "failed_rows_db_path": config.failed_rows_db_path,
         },
     )
     return task_config.model_dump()
