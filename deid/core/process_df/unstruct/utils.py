@@ -1,10 +1,3 @@
-import re          # standard lib – re.Match type hint + fallback
-try:
-    import re2
-except ImportError:
-    import re as re2  # type: ignore[no-redef]
-
-
 DRIVER_LICENSE_PATTERNS = [
     # Context-based matches (e.g., "DL:", "License No:", etc.)
     r"(?i)\b(?:DL|DL#|DL No\.?|License No\.?|Driver'?s License)\s*[:#]?\s*[A-Z]?\d{5,13}\b",
@@ -56,81 +49,79 @@ GENERIC_REGEX_DICT = {
     },
     "date": {
         "masking_value": None,
+        # (?!\w) replaced with \b throughout — all patterns end on \w chars so the
+        # assertions are equivalent, but \b is re2-compatible (no lookahead needed).
         "regex": r"""
     (?:
         # ISO Format (YYYY-MM-DD)
-        \b\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])(?!\w)|
+        \b\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\b|
 
         # ISO-like Format (YYYY/MM/DD)
-        \b\d{4}/(?:0[1-9]|1[0-2])/(?:0[1-9]|[12]\d|3[01])(?!\w)|
+        \b\d{4}/(?:0[1-9]|1[0-2])/(?:0[1-9]|[12]\d|3[01])\b|
 
         # Common American Format (MM/DD/YYYY or MM-DD-YYYY)
-        \b(?:0[1-9]|1[0-2])[/-](?:0[1-9]|[12]\d|3[01])[/-]\d{4}(?!\w)|
+        \b(?:0[1-9]|1[0-2])[/-](?:0[1-9]|[12]\d|3[01])[/-]\d{4}\b|
 
         # European Format (DD/MM/YYYY or DD-MM-YYYY)
-        \b(?:0[1-9]|[12]\d|3[01])[/-](?:0[1-9]|1[0-2])[/-]\d{4}(?!\w)|
+        \b(?:0[1-9]|[12]\d|3[01])[/-](?:0[1-9]|1[0-2])[/-]\d{4}\b|
 
         # Short Year Formats (MM/DD/YY or DD/MM/YY)
-        \b(?:0[1-9]|1[0-2])[/-](?:0[1-9]|[12]\d|3[01])[/-]\d{2}(?!\w)|
-        \b(?:0[1-9]|[12]\d|3[01])[/-](?:0[1-9]|1[0-2])[/-]\d{2}(?!\w)|
+        \b(?:0[1-9]|1[0-2])[/-](?:0[1-9]|[12]\d|3[01])[/-]\d{2}\b|
+        \b(?:0[1-9]|[12]\d|3[01])[/-](?:0[1-9]|1[0-2])[/-]\d{2}\b|
 
         # Textual Formats with Full Year
         # DD Month YYYY
         \b(?:0[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?\s+
         (?:January|February|March|April|May|June|July|August|September|October|November|December|
         Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)
-        (?:,?\s+)\d{4}(?!\w)|
+        (?:,?\s+)\d{4}\b|
 
         # Month DD, YYYY
         \b(?:January|February|March|April|May|June|July|August|September|October|November|December|
         Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)
-        \s+(?:0[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?(?:,?\s+)\d{4}(?!\w)|
+        \s+(?:0[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?(?:,?\s+)\d{4}\b|
 
         # Month YYYY
         \b(?:January|February|March|April|May|June|July|August|September|October|November|December|
         Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)
-        \s+\d{4}(?!\w)|
+        \s+\d{4}\b|
 
         # YYYY Month
         \b\d{4}\s+
         (?:January|February|March|April|May|June|July|August|September|October|November|December|
-        Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)(?!\w)|
+        Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\b|
 
         # Abbreviated Formats (without year)
         # Month DD
         \b(?:January|February|March|April|May|June|July|August|September|October|November|December|
         Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)
-        \s+(?:0[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?(?!\w)|
+        \s+(?:0[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?\b|
 
         # MM DD YYYY
-        \b(?:0?[1-9]|1[0-2])/(?:0?[1-9]|[12]\d|3[01])/\d{4}(?!\w)|
+        \b(?:0?[1-9]|1[0-2])/(?:0?[1-9]|[12]\d|3[01])/\d{4}\b|
 
         # MM-DD-YYYY
-        \b(?:0?[1-9]|1[0-2])-(?:0?[1-9]|[12]\d|3[01])-\d{4}(?!\w)|
+        \b(?:0?[1-9]|1[0-2])-(?:0?[1-9]|[12]\d|3[01])-\d{4}\b|
 
         # MM.DD.YYYY
-        \b(?:0?[1-9]|1[0-2])\.(?:0?[1-9]|[12]\d|3[01])\.\d{4}(?!\w)|
+        \b(?:0?[1-9]|1[0-2])\.(?:0?[1-9]|[12]\d|3[01])\.\d{4}\b|
 
         # DD.MM.YYYY
-        \b(?:0?[1-9]|[12]\d|3[01])\.(?:0?[1-9]|1[0-2])\.\d{4}(?!\w) |
+        \b(?:0?[1-9]|[12]\d|3[01])\.(?:0?[1-9]|1[0-2])\.\d{4}\b|
 
         # YYYY.MM.DD
-        \b\d{4}\.(?:0?[1-9]|1[0-2])\.(?:0?[1-9]|[12]\d|3[01])(?!\w) |
-
-
-        # MM-DD-YYYY
-        \b(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])-\d{4}(?!\w) |
+        \b\d{4}\.(?:0?[1-9]|1[0-2])\.(?:0?[1-9]|[12]\d|3[01])\b|
 
         # Short Format (M/D/YY or MM/DD/YY)
-        \b(?:0?[1-9]|1[0-2])[/-](?:0?[1-9]|[12]\d|3[01])[/-]\d{2}(?!\w)|
+        \b(?:0?[1-9]|1[0-2])[/-](?:0?[1-9]|[12]\d|3[01])[/-]\d{2}\b|
 
         # "%m.%d.%y"
-        \b(?:0?[1-9]|1[0-2])\.(?:0?[1-9]|[12]\d|3[01])\.\d{2}(?!\w) |
+        \b(?:0?[1-9]|1[0-2])\.(?:0?[1-9]|[12]\d|3[01])\.\d{2}\b|
 
         # DD Month
         \b(?:0[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?\s+
         (?:January|February|March|April|May|June|July|August|September|October|November|December|
-        Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)(?!\w)
+        Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\b
 
     )
 """,

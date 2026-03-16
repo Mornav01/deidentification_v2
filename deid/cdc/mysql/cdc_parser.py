@@ -1,5 +1,11 @@
 import os
-import re
+try:
+    import re2
+except ImportError:
+    try:
+        import regex as re2  # type: ignore[no-redef]
+    except ImportError:
+        import re as re2  # type: ignore[no-redef]
 import json
 import argparse
 import subprocess
@@ -182,13 +188,13 @@ def worker_parse(binlog_path, p0_tables_set, queue, run_date, end_date=None):
     Producer process that parses a binlog file and pushes records to the queue.
     """
     # --- Precompiled regex (big speed improvement) ---
-    RE_USE = re.compile(r"[Uu][Ss][Ee] `(.*?)`")
-    RE_STMT = re.compile(r"^(INSERT|UPDATE)\s+", re.IGNORECASE)
-    RE_TABLE = re.compile(r"(?:INTO|UPDATE|FROM)\s+`?([a-zA-Z0-9_]+)`?(?:\.`?([a-zA-Z0-9_]+)`?)?", re.IGNORECASE)
+    RE_USE = re2.compile(r"[Uu][Ss][Ee] `(.*?)`")
+    RE_STMT = re2.compile(r"(?i)^(INSERT|UPDATE)\s+")
+    RE_TABLE = re2.compile(r"(?i)(?:INTO|UPDATE|FROM)\s+`?([a-zA-Z0-9_]+)`?(?:\.`?([a-zA-Z0-9_]+)`?)?")
     # Match: ### INSERT INTO `schema`.`table` or ### INSERT INTO schema.table
-    RE_ROW_INSERT = re.compile(r"### INSERT INTO (?:`([^`]+)`\.`([^`]+)`|([^`\.\s]+)\.([^`\.\s]+))")
-    RE_ROW_UPDATE = re.compile(r"### UPDATE (?:`([^`]+)`\.`([^`]+)`|([^`\.\s]+)\.([^`\.\s]+))")
-    RE_ROW_TABLE = re.compile(r"### table: `.*?`\.`(.*?)`")
+    RE_ROW_INSERT = re2.compile(r"### INSERT INTO (?:`([^`]+)`\.`([^`]+)`|([^`\.\s]+)\.([^`\.\s]+))")
+    RE_ROW_UPDATE = re2.compile(r"### UPDATE (?:`([^`]+)`\.`([^`]+)`|([^`\.\s]+)\.([^`\.\s]+))")
+    RE_ROW_TABLE = re2.compile(r"### table: `.*?`\.`(.*?)`")
  
     current_schema = None
     current_op = None

@@ -1,8 +1,11 @@
-import re          # standard lib – re.Match type hint + fallback
+import re          # stdlib – kept for type hints (re.Match, re.Pattern)
 try:
     import re2
 except ImportError:
-    import re as re2  # type: ignore[no-redef]
+    try:
+        import regex as re2  # type: ignore[no-redef]
+    except ImportError:
+        import re as re2  # type: ignore[no-redef]
 
 DATE_PATTERN_NOTES = (
     # 1. ISO style: YYYY-MM-DD with optional time and fractional seconds

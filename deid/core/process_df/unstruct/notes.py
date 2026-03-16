@@ -1,11 +1,18 @@
 import polars as pl
-import re          # standard lib – re.Match type hint + fallback
+import re          # stdlib – kept for type hints (re.Pattern, re.Match)
 import datetime
 import decimal
 try:
     import re2
 except ImportError:
-    import re as re2  # type: ignore[no-redef]
+    try:
+        import regex as re2  # type: ignore[no-redef]
+    except ImportError:
+        import re as re2  # type: ignore[no-redef]
+try:
+    import regex as _regex
+except ImportError:
+    import re as _regex  # type: ignore[no-redef]
 import itertools
 from typing import List
 from deid.core.process_df.rules import RuleBase
@@ -169,72 +176,74 @@ class NotesRule(RuleBase):
 
         text_list = df[text_column].cast(pl.Utf8).to_list()
 
-        
-        def build_replacements(row: dict) -> dict:
-            replacements = {}
+        # Extract only the ~6 ID columns as lists — avoids converting the entire
+        # (potentially 50+ column) DataFrame to Python dicts just to read 6 values.
+        _cols = df.columns
 
-            # ----------------------------------------------------------------
-            # dict.get(key, default) only uses `default` when the KEY is absent.
-            # If the column exists but the value is None (no mapping found),
-            # dict.get returns None — and str(None) = "None" which would corrupt
-            # the notes text.  Always use the explicit `if val is not None` form.
-            # ----------------------------------------------------------------
+        def _str_list(col):
+            return df[col].cast(pl.Utf8).to_list() if col and col in _cols else [None] * df.height
 
-            if encounter_id_col and row.get(encounter_id_col) is not None:
-                original = str(row[encounter_id_col])
-                nd_enc = row.get("nd_encounter_id")
-                replacement = str(nd_enc) if nd_enc is not None else "((ENCOUNTER_ID))"
-                replacements[re2.escape(original)] = replacement
+        def _int_str_list(col):
+            """Normalise Float64/Int64 ID column to int-string list (avoids "9097.0")."""
+            if not col or col not in _cols:
+                return [None] * df.height
+            col_s = df[col]
+            # Float64 → Int64 → Utf8 strips the decimal (9097.0 → "9097").
+            # Where that cast yields null (non-numeric strings), fill_null falls back
+            # to the original Utf8 representation; original nulls remain null.
+            int_s = col_s.cast(pl.Float64, strict=False).cast(pl.Int64, strict=False).cast(pl.Utf8)
+            return int_s.fill_null(col_s.cast(pl.Utf8)).to_list()
 
-            if appointment_id_col and row.get(appointment_id_col) is not None:
-                original = str(row[appointment_id_col])
-                nd_appt = row.get("nd_appointment_id")
-                replacement = str(nd_appt) if nd_appt is not None else "((APPOINTMENT_ID))"
-                replacements[re2.escape(original)] = replacement
+        enc_orig_list  = _str_list(encounter_id_col)
+        nd_enc_list    = _str_list("nd_encounter_id")
+        appt_orig_list = _str_list(appointment_id_col)
+        nd_appt_list   = _str_list("nd_appointment_id")
+        pid_orig_list  = _int_str_list(patient_id_col)
+        ref_orig_list  = _int_str_list(reference_pid_col)
+        nd_pid_list    = _int_str_list("_resolved_nd_patient_id")
 
-            for col in [patient_id_col, reference_pid_col]:
-                if col and row.get(col) is not None:
-                    # _resolved_patient_id may be Float64 after a Polars join →
-                    # str(9097.0) = "9097.0" which won't match "9097" in the text.
-                    # Normalise to int string the same way we do for nd_pid below.
-                    original = str(row[col])
-                    nd_pid = row.get("_resolved_nd_patient_id")
-                    if nd_pid is not None:
-                        try:
-                            # Use float() first to handle both "67890" and "67890.0"
-                            # (Polars may emit float strings when the column is Float64).
-                            replacement = str(int(float(nd_pid)))
-                        except (ValueError, TypeError):
-                            replacement = str(nd_pid)
-                    else:
-                        replacement = "((PATIENT_ID))"
-                    replacements[re2.escape(original)] = replacement
+        # Pre-compile regex patterns keyed by unique original-ID string.
+        # Uses `regex` module (middle tier: supports lookbehind, faster than stdlib re).
+        # Avoids re-cache thrashing when >512 unique encounter IDs exist per batch.
+        _pattern_cache: dict = {}
 
-            return replacements
+        def _compiled(original: str):
+            pat = _pattern_cache.get(original)
+            if pat is None:
+                pat = _regex.compile(rf"(?<!\d){re2.escape(original)}(?!\d)")
+                _pattern_cache[original] = pat
+            return pat
 
-        rows_as_dicts = df.to_dicts()
         result = []
-        for text, row in zip(text_list, rows_as_dicts):
-            try:
-                replacements = build_replacements(row)
-            except Exception as e:
-                nd_logger.warning(
-                    f"[{self.__class__.__name__}] build_replacements failed for a row: {e}"
-                )
+        for i, text in enumerate(text_list):
+            if not isinstance(text, str):
                 result.append(text)
                 continue
-            for pattern, repl in replacements.items():
-                try:
-                    # Use standard re (not re2) here: RE2 doesn't support lookbehind.
-                    # (?<!\d){pattern}(?!\d) is the correct semantic — only skip when
-                    # the ID is immediately adjacent to another digit (e.g. "12309097"
-                    # should NOT replace the embedded 9097).  \b would also exclude
-                    # word-chars like "_" which is too restrictive.
-                    text = re.sub(rf"(?<!\d){pattern}(?!\d)", repl, text)
-                except Exception as e:
-                    nd_logger.warning(
-                        f"[{self.__class__.__name__}] Regex error for pattern {pattern}: {e}"
-                    )
+            try:
+                # Encounter ID
+                enc = enc_orig_list[i]
+                if enc is not None:
+                    nd_enc = nd_enc_list[i]
+                    repl = nd_enc if nd_enc is not None else "((ENCOUNTER_ID))"
+                    text = _compiled(enc).sub(repl, text)
+                # Appointment ID
+                appt = appt_orig_list[i]
+                if appt is not None:
+                    nd_appt = nd_appt_list[i]
+                    repl = nd_appt if nd_appt is not None else "((APPOINTMENT_ID))"
+                    text = _compiled(appt).sub(repl, text)
+                # Patient ID and reference PID share the same anonymised replacement
+                nd_pid_repl = nd_pid_list[i] if nd_pid_list[i] is not None else "((PATIENT_ID))"
+                pid = pid_orig_list[i]
+                if pid is not None:
+                    text = _compiled(pid).sub(nd_pid_repl, text)
+                ref = ref_orig_list[i]
+                if ref is not None:
+                    text = _compiled(ref).sub(nd_pid_repl, text)
+            except Exception as e:
+                nd_logger.warning(
+                    f"[{self.__class__.__name__}] Key-PHI replacement failed for a row: {e}"
+                )
             result.append(text)
 
         df = df.with_columns(pl.Series(text_column, result, dtype=pl.Utf8))
@@ -321,11 +330,14 @@ class NotesRule(RuleBase):
 
         lookup_col = "_resolved_patient_id"
         has_pid = lookup_col in df.columns
-        pid_list = (
-            [_normalize_pid(v) for v in df[lookup_col].to_list()]
-            if has_pid
-            else [None] * df.height
-        )
+        if has_pid:
+            # Vectorized equivalent of [_normalize_pid(v) for v in df[col].to_list()]:
+            # cast Float64→Int64 in Rust (strips ".0"), fall back to original for non-numeric.
+            _int_list  = df[lookup_col].cast(pl.Float64, strict=False).cast(pl.Int64, strict=False).to_list()
+            _orig_list = df[lookup_col].to_list()
+            pid_list = [iv if iv is not None else ov for iv, ov in zip(_int_list, _orig_list)]
+        else:
+            pid_list = [None] * df.height
 
         mask_config   = self.pii_config.get("mask", {})
         dob_config    = self.pii_config.get("dob", {})
@@ -383,19 +395,22 @@ class NotesRule(RuleBase):
         pid_to_dobs:    dict = {}   # pid → {date: year_str}
         pid_to_combine: dict = {}   # pid → list[{col: val}]
 
-        for row in (
+        _pii_prepared = (
             pii_df
             .select(all_select)
             .with_columns([pl.col(c).cast(pl.Utf8).fill_null("") for c in cast_to_utf8])
-            .to_dicts()
-        ):
-            pid = _normalize_pid(row.get("patient_id"))
+        )
+        _pii_col_lists = {col: _pii_prepared[col].to_list() for col in all_select}
+        _pid_col = _pii_col_lists.get("patient_id", [None] * _pii_prepared.height)
+
+        for i in range(_pii_prepared.height):
+            pid = _normalize_pid(_pid_col[i])
 
             # --- exact-match mask patterns ---
             if pii_cols:
                 entry = pid_to_mask.setdefault(pid, {})
                 for config_key, actual_col in pii_cols:
-                    val = row[actual_col].strip()
+                    val = _pii_col_lists[actual_col][i].strip()
                     if not val:
                         continue
                     min_len = mask_config[config_key].get("min_length", 2)
@@ -407,7 +422,7 @@ class NotesRule(RuleBase):
             if dob_cols:
                 dob_map = pid_to_dobs.setdefault(pid, {})
                 for config_key, actual_col in dob_cols:
-                    val = row[actual_col].strip()
+                    val = _pii_col_lists[actual_col][i].strip()
                     if not val:
                         continue
                     try:
@@ -418,7 +433,32 @@ class NotesRule(RuleBase):
 
             # --- combine source rows ---
             if combine_rules:
-                pid_to_combine.setdefault(pid, []).append(row)
+                pid_to_combine.setdefault(pid, []).append(
+                    {col: _pii_col_lists[col][i] for col in all_select}
+                )
+
+        # Compile per-patient mask alternation regexes (one regex per masking_value).
+        # Replaces N × P individual re2.sub calls with N × distinct_values calls.
+        pid_to_compiled_mask: dict = {}  # pid → [(compiled_re, masking_value)]
+        for pid, patterns in pid_to_mask.items():
+            by_value: dict = {}
+            for pat, val in patterns.items():
+                by_value.setdefault(val, []).append(pat)
+            compiled_list = []
+            for masking_val, pats in by_value.items():
+                try:
+                    compiled_list.append((re2.compile("|".join(pats)), masking_val))
+                except Exception as exc:
+                    nd_logger.warning(
+                        f"[{self.__class__.__name__}] mask compile failed for pid={pid}: {exc}"
+                    )
+                    for p in pats:
+                        try:
+                            compiled_list.append((re2.compile(p), masking_val))
+                        except Exception:
+                            pass
+            if compiled_list:
+                pid_to_compiled_mask[pid] = compiled_list
 
         # Pre-compute combined-pattern compiled regexes per patient.
         # (itertools.permutations across ALL records for that patient.)
@@ -521,11 +561,11 @@ class NotesRule(RuleBase):
                 result.append(text)
                 continue
 
-            # exact-match mask
+            # exact-match mask — use pre-compiled alternation regex per masking_value
             text_before_mask = text
-            for pattern, repl in pid_to_mask.get(pid, {}).items():
+            for compiled_re, repl in pid_to_compiled_mask.get(pid, []):
                 try:
-                    text = re2.sub(pattern, repl, text)
+                    text = compiled_re.sub(repl, text)
                 except Exception:
                     pass
             if text != text_before_mask:
@@ -593,11 +633,12 @@ class NotesRule(RuleBase):
 
         lookup_col = "_resolved_patient_id"
         has_pid = lookup_col in df.columns
-        pid_list = (
-            [_normalize_pid(v) for v in df[lookup_col].to_list()]
-            if has_pid
-            else [None] * df.height
-        )
+        if has_pid:
+            _int_list  = df[lookup_col].cast(pl.Float64, strict=False).cast(pl.Int64, strict=False).to_list()
+            _orig_list = df[lookup_col].to_list()
+            pid_list = [iv if iv is not None else ov for iv, ov in zip(_int_list, _orig_list)]
+        else:
+            pid_list = [None] * df.height
 
         for table_config in self.secondary_pii_configs:
             table_name = table_config.get("table_name")
@@ -627,17 +668,20 @@ class NotesRule(RuleBase):
             )
             pid_to_map: dict = {}
             select_cols = ["patient_id"] + [t[1] for t in pii_cols_tuples]
-            for row in (
+            _pii2_prepared = (
                 pii_df_raw
                 .select(select_cols)
                 .cast({c: pl.Utf8 for c in select_cols if c != "patient_id"})
                 .fill_null("")
-                .to_dicts()
-            ):
-                pid = _normalize_pid(row["patient_id"])
+            )
+            _pii2_col_lists = {col: _pii2_prepared[col].to_list() for col in select_cols}
+            _pid2_col = _pii2_col_lists["patient_id"]
+
+            for i in range(_pii2_prepared.height):
+                pid = _normalize_pid(_pid2_col[i])
                 entry = pid_to_map.setdefault(pid, {})
                 for config_key, actual_col in pii_cols_tuples:
-                    val = row[actual_col].strip()
+                    val = _pii2_col_lists[actual_col][i].strip()
                     if not val:
                         continue
                     min_len = mask_config[config_key].get("min_length", 2)
@@ -735,12 +779,13 @@ class NotesRule(RuleBase):
             # Deduplicate: build one map per unique patient (33k instead of 100k).
             pii_cols_only = pii_rows_df.select(pii_columns)
             pid_series = pii_rows_df[lookup_col].to_list()
+            pii_col_lists = {col: pii_cols_only[col].to_list() for col in pii_columns}
 
             # Map patient_id → replacement_map (computed lazily, cached in dict).
             pid_to_map: dict = {}
-            for pid, row in zip(pid_series, pii_cols_only.to_dicts()):
+            for i, pid in enumerate(pid_series):
                 if pid not in pid_to_map:
-                    pid_to_map[pid] = _build_map(row)
+                    pid_to_map[pid] = _build_map({col: pii_col_lists[col][i] for col in pii_columns})
 
             pii_replacements = [pid_to_map.get(pid, {}) for pid in pid_series]
             nd_logger.debug(
@@ -748,8 +793,12 @@ class NotesRule(RuleBase):
                 f"for {len(pii_replacements)} rows."
             )
         else:
-            # Fallback: no patient key available — build per-row as before.
-            pii_replacements = [_build_map(row) for row in pii_rows_df.to_dicts()]
+            # Fallback: no patient key available — build per-row.
+            pii_col_lists = {col: pii_rows_df[col].to_list() for col in pii_columns}
+            pii_replacements = [
+                _build_map({col: pii_col_lists[col][i] for col in pii_columns})
+                for i in range(pii_rows_df.height)
+            ]
 
         
         def replace_row(text: str, replacements: dict) -> str:
@@ -782,13 +831,14 @@ class NotesRule(RuleBase):
             return masked_col
 
         date_pattern = re2.compile(DATE_PATTERN_NOTES)
-        dob_rows = df_batch.select(dob_columns).to_dicts()
+        dob_col_lists = {col: df_batch[col].to_list() for col in dob_columns}
+        n_rows = df_batch.height
         dob_replacements_list = []
 
-        for row in dob_rows:
+        for i in range(n_rows):
             row_map: dict = {}
             for col in dob_columns:
-                val = row[col]
+                val = dob_col_lists[col][i]
                 if val is not None and str(val).strip():
                     try:
                         parsed_dob = date_parser.parse(str(val), fuzzy=True).date()
@@ -837,12 +887,13 @@ class NotesRule(RuleBase):
             if not cols:
                 continue
 
-            
-            def generate_patterns(row: dict) -> List[str]:
+            col_lists = {col: df_batch[col].to_list() for col in cols}
+
+            def generate_patterns(i: int) -> List[str]:
                 values = [
-                    str(row[col]).strip()
+                    str(col_lists[col][i]).strip()
                     for col in cols
-                    if row[col] is not None and str(row[col]).strip()
+                    if col_lists[col][i] is not None and str(col_lists[col][i]).strip()
                 ]
                 combinations: set = set()
                 for r in range(1, len(values) + 1):
@@ -852,8 +903,7 @@ class NotesRule(RuleBase):
                             combinations.add(combined)
                 return list(combinations)
 
-            rows_as_dicts = df_batch.select(cols).to_dicts()
-            patterns_list = [generate_patterns(row) for row in rows_as_dicts]
+            patterns_list = [generate_patterns(i) for i in range(df_batch.height)]
             pattern_map[rule_name] = {
                 "patterns_list": patterns_list,
                 "masking_value": masking_value,
@@ -876,23 +926,34 @@ class NotesRule(RuleBase):
             patterns_list: list[List[str]] = info["patterns_list"]
             masking_value: str = info["masking_value"]
 
-            
-            def mask_row(note_text: str, patterns: List[str]) -> str:
-                if not patterns or not isinstance(note_text, str):
-                    return note_text
-                try:
-                    sorted_patterns = sorted(patterns, key=len, reverse=True)
-                    compiled = re2.compile(
-                        "(?i)" + "|".join(rf"\b{re2.escape(p)}\b" for p in sorted_patterns),
-                    )
-                    return compiled.sub(masking_value, note_text)
-                except Exception as e:
-                    nd_logger.warning(
-                        f"[{self.__class__.__name__}] [{rule_name}] Regex failed: {e}"
-                    )
-                    return note_text
+            # Pre-compile once per unique pattern set (many rows share the same patient →
+            # same patterns). Avoids N re2.compile() calls when U << N unique patients.
+            _cache: dict = {}
+            compiled_list = []
+            for pats in patterns_list:
+                if not pats:
+                    compiled_list.append(None)
+                    continue
+                key = tuple(sorted(pats))
+                if key not in _cache:
+                    try:
+                        _cache[key] = re2.compile(
+                            "(?i)" + "|".join(
+                                rf"\b{re2.escape(p)}\b"
+                                for p in sorted(pats, key=len, reverse=True)
+                            )
+                        )
+                    except Exception as e:
+                        nd_logger.warning(
+                            f"[{self.__class__.__name__}] [{rule_name}] Regex failed: {e}"
+                        )
+                        _cache[key] = None
+                compiled_list.append(_cache[key])
 
-            text_list = [mask_row(t, p) for t, p in zip(text_list, patterns_list)]
+            text_list = [
+                cr.sub(masking_value, t) if cr is not None and isinstance(t, str) else t
+                for t, cr in zip(text_list, compiled_list)
+            ]
 
         nd_logger.info(
             f"[{self.__class__.__name__}] Combined-PII masking completed."
@@ -970,10 +1031,8 @@ class NotesRule(RuleBase):
         # Normalise text: collapse whitespace, strip control chars.
         df = df.with_columns(
             pl.col(text_column)
-            .map_elements(
-                lambda x: "" if x is None else str(x),
-                return_dtype=pl.Utf8,
-            )
+            .fill_null("")
+            .cast(pl.Utf8)
             .str.replace_all(r"\s+", " ")
             .str.replace_all(r"\^", " ")
             .str.strip_chars()
@@ -1008,9 +1067,13 @@ class NotesRule(RuleBase):
         )
 
         # Step 2 ── XML tag masking
+        _xml_repl = xml_tag_replacements
         df = df.with_columns(
-            pl.col(text_column).map_elements(
-                lambda text: deidentify_xml_tags(text, xml_tag_replacements),
+            pl.col(text_column).map_batches(
+                lambda s, _r=_xml_repl: pl.Series(
+                    [deidentify_xml_tags(t, _r) for t in s.to_list()],
+                    dtype=pl.Utf8,
+                ),
                 return_dtype=pl.Utf8,
             ).alias(text_column)
         )

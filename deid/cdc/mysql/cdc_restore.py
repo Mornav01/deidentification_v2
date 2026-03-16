@@ -5,7 +5,13 @@ import pandas as pd
 from datetime import datetime
 from collections import defaultdict
 import json
-import re
+try:
+    import re2
+except ImportError:
+    try:
+        import regex as re2  # type: ignore[no-redef]
+    except ImportError:
+        import re as re2  # type: ignore[no-redef]
 import argparse
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -22,7 +28,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Compiled once — avoids redundant recompilation for every CDC row
-_RE_VALUES = re.compile(r"\)\s*VALUES\s*\(", re.IGNORECASE)
+_RE_VALUES = re2.compile(r"(?i)\)\s*VALUES\s*\(")
 
 # All audit columns added/ensured on every CDC-touched staging table
 _ALTER_COLS = [

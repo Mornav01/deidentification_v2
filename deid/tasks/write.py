@@ -4,6 +4,13 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+try:
+    import re2
+except ImportError:
+    try:
+        import regex as re2  # type: ignore[no-redef]
+    except ImportError:
+        import re as re2  # type: ignore[no-redef]
 
 import polars as pl
 import pyarrow.ipc as ipc
@@ -174,15 +181,14 @@ def _update_batch_status_and_check_table(config: WriteTaskConfig):
 
 def _clean_type_str(raw: str) -> str:
     """Normalize a SQLAlchemy type repr for use in DDL."""
-    import re
     s = raw.strip()
     # Remove trailing () from types like "LONGTEXT()" → "LONGTEXT"
     if s.endswith("()"):
         s = s[:-2]
     # Strip COLLATE clauses — dest DB may not support the same collation
-    s = re.sub(r"\s+COLLATE\s+\S+", "", s, flags=re.IGNORECASE)
+    s = re2.sub(r"(?i)\s+COLLATE\s+\S+", "", s)
     # Strip CHARACTER SET clauses
-    s = re.sub(r"\s+CHARACTER\s+SET\s+\S+", "", s, flags=re.IGNORECASE)
+    s = re2.sub(r"(?i)\s+CHARACTER\s+SET\s+\S+", "", s)
     s = s.strip()
     # NullType() stringifies to "NULL" — not a valid column type
     if not s or s.upper() == "NULL" or s.upper() == "NULLTYPE":

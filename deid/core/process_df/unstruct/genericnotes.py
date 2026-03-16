@@ -1,9 +1,16 @@
 import polars as pl
-import re          # standard lib – re.Match type hint + fallback
+import re          # stdlib – kept for type hints (re.Match, re.Pattern)
 try:
     import re2
 except ImportError:
-    import re as re2  # type: ignore[no-redef]
+    try:
+        import regex as re2  # type: ignore[no-redef]
+    except ImportError:
+        import re as re2  # type: ignore[no-redef]
+try:
+    import regex as _regex
+except ImportError:
+    import re as _regex  # type: ignore[no-redef]
 from typing import Dict
 from .utils import GENERIC_REGEX_DICT
 from deid.core.process_df.rules import RuleBase, BaseDateOffsetRule
@@ -24,7 +31,7 @@ def _get_compiled(pattern: str) -> tuple[bool, object, re.Pattern | None]:
         _REGEX_CACHE[pattern] = (True, compiled_re2, None)
     except Exception:
         try:
-            compiled_std = re.compile(pattern)
+            compiled_std = _regex.compile(pattern)
             _REGEX_CACHE[pattern] = (False, None, compiled_std)
         except Exception:
             _REGEX_CACHE[pattern] = (False, None, None)
@@ -37,7 +44,7 @@ _DELIMITERS = ["\x00", "\x01", "\x02", "\x03", "\x00\x01\x00"]
 def _pick_delimiter(series: pl.Series) -> str:
     """Return a delimiter string not present anywhere in the series data."""
     for delim in _DELIMITERS:
-        if not series.str.contains(re.escape(delim)).any():
+        if not series.str.contains(re2.escape(delim)).any():
             return delim
     return _DELIMITERS[-1]
 
@@ -45,7 +52,7 @@ def _pick_delimiter(series: pl.Series) -> str:
 def _can_match_empty(pattern: str) -> bool:
     """Return True if the pattern can match the empty string."""
     try:
-        return re.match(pattern, "") is not None
+        return _regex.match(pattern, "") is not None
     except Exception:
         return True
 
@@ -133,12 +140,16 @@ class GenericNotesRule(RuleBase):
                             f"{pattern!r} ({e})"
                         )
                         continue
-                    # map_elements is needed because the replacement is a Python callable
-                    # (not a plain string), and Polars str.replace_all only accepts strings.
+                    # map_batches amortizes per-element FFI overhead vs map_elements.
+                    # The replacement is a Python callable so we can't use str.replace_all.
+                    _c = compiled
                     df = df.with_columns(
-                        pl.col(col_name).map_elements(
-                            lambda text: compiled.sub(mask_address, text)
-                            if isinstance(text, str) else text,
+                        pl.col(col_name).map_batches(
+                            lambda s, _c=_c: pl.Series(
+                                [_c.sub(mask_address, t) if isinstance(t, str) else t
+                                 for t in s.to_list()],
+                                dtype=pl.Utf8,
+                            ),
                             return_dtype=pl.Utf8,
                         ).alias(col_name)
                     )
@@ -150,10 +161,14 @@ class GenericNotesRule(RuleBase):
                 # Custom processing function (e.g. fuzzy replacement).
                 for pattern in patterns:
                     compiled = re2.compile(f"(?i){pattern}")
+                    _c, _f, _v = compiled, processing_func, masking_value
                     df = df.with_columns(
-                        pl.col(col_name).map_elements(
-                            lambda text: processing_func(text, compiled, masking_value)
-                            if isinstance(text, str) else text,
+                        pl.col(col_name).map_batches(
+                            lambda s, _c=_c, _f=_f, _v=_v: pl.Series(
+                                [_f(t, _c, _v) if isinstance(t, str) else t
+                                 for t in s.to_list()],
+                                dtype=pl.Utf8,
+                            ),
                             return_dtype=pl.Utf8,
                         ).alias(col_name)
                     )
@@ -165,7 +180,7 @@ class GenericNotesRule(RuleBase):
                 # Simple regex replacement.
                 # Fast path: RE2-compatible patterns → Polars str.replace_all (Rust regex).
                 # Fallback: patterns with lookahead/lookbehind that RE2 can't compile →
-                #   standard `re.sub` via map_elements.  Slower but correct.
+                #   standard `re.sub` via map_batches.  Slower than RE2 path but correct.
                 for pattern in patterns:
                     is_re2, compiled_re2, compiled_std = _get_compiled(pattern)
                     if is_re2:
@@ -192,9 +207,12 @@ class GenericNotesRule(RuleBase):
                                 )
                                 df = df.with_columns(
                                     pl.col(col_name)
-                                    .map_elements(
-                                        lambda text, _c=compiled_std, _r=repl: _c.sub(_r, text)
-                                        if isinstance(text, str) else text,
+                                    .map_batches(
+                                        lambda s, _c=compiled_std, _r=repl: pl.Series(
+                                            [_c.sub(_r, t) if isinstance(t, str) else t
+                                             for t in s.to_list()],
+                                            dtype=pl.Utf8,
+                                        ),
                                         return_dtype=pl.Utf8,
                                     )
                                     .alias(col_name)
@@ -206,9 +224,12 @@ class GenericNotesRule(RuleBase):
                         else:
                             df = df.with_columns(
                                 pl.col(col_name)
-                                .map_elements(
-                                    lambda text, _c=compiled_std, _r=repl: _c.sub(_r, text)
-                                    if isinstance(text, str) else text,
+                                .map_batches(
+                                    lambda s, _c=compiled_std, _r=repl: pl.Series(
+                                        [_c.sub(_r, t) if isinstance(t, str) else t
+                                         for t in s.to_list()],
+                                        dtype=pl.Utf8,
+                                    ),
                                     return_dtype=pl.Utf8,
                                 )
                                 .alias(col_name)

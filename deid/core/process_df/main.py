@@ -452,19 +452,25 @@ def _serialize_dict_values(df: pl.DataFrame) -> pl.DataFrame:
     columns (which may hold dicts from JSON columns) to Utf8 JSON strings.
     """
     
-    def _serialize_cell(val):
-        if isinstance(val, dict):
-            try:
-                return json.dumps(val, default=str)
-            except Exception:
-                return str(val)
-        return val
+    def _serialize_batch(s: pl.Series) -> pl.Series:
+        results = []
+        for val in s.to_list():
+            if isinstance(val, dict):
+                try:
+                    results.append(json.dumps(val, default=str))
+                except Exception:
+                    results.append(str(val))
+            elif val is None:
+                results.append(None)
+            else:
+                results.append(str(val))
+        return pl.Series(results, dtype=pl.Utf8)
 
     for col in df.columns:
         if df[col].dtype == pl.Object:
             df = df.with_columns(
                 pl.col(col)
-                .map_elements(_serialize_cell, return_dtype=pl.Utf8)
+                .map_batches(_serialize_batch, return_dtype=pl.Utf8)
                 .alias(col)
             )
     return df

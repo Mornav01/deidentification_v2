@@ -2,11 +2,14 @@ import polars as pl
 from datetime import timedelta, datetime
 from typing import Dict
 from enum import Enum
-import re          # standard lib – re.Match type hint + fallback
+import re          # stdlib – kept for type hints (re.Match, re.Pattern)
 try:
     import re2
 except ImportError:
-    import re as re2  # type: ignore[no-redef]
+    try:
+        import regex as re2  # type: ignore[no-redef]
+    except ImportError:
+        import re as re2  # type: ignore[no-redef]
 from dateutil import parser as date_parser
 from deid.core.process_df.constants import DATE_PATTERN_GENERAL, ZIP_CODE_PATTERNS
 from deid.core.logger import nd_logger
@@ -241,19 +244,20 @@ class BaseDateOffsetRule(RuleBase):
         table_name = column_config.get("table_name", "")
         cache_key = (table_name, col_name)
         if cache_key not in _DATE_FORMAT_CACHE:
-            texts_sample = df[col_name].cast(pl.Utf8).drop_nulls().head(20).to_list()
-            texts_sample = [t for t in texts_sample if t and t.strip()]
+            _s = df[col_name].cast(pl.Utf8).drop_nulls()
+            texts_sample = _s.filter(_s.str.strip_chars().str.len_chars() > 0).head(20).to_list()
             _DATE_FORMAT_CACHE[cache_key] = _detect_formats(texts_sample)
         formats = _DATE_FORMAT_CACHE[cache_key]
 
         # Build string representation and find which rows have date patterns.
         texts = df[col_name].cast(pl.Utf8)
-        mask_list = texts.str.contains(self.COMPILED_DATE_PATTERN.pattern).to_list()
-        matched = sum(1 for m in mask_list if m)
+        contains = texts.str.contains(self.COMPILED_DATE_PATTERN.pattern)
+        matched = contains.sum()  # vectorized count — no Python materialisation
         nd_logger.info(f"[{self.__class__.__name__}] Found {matched} rows with date patterns.")
 
         if matched > 0:
-            text_list = texts.to_list()
+            mask_list  = contains.to_list()
+            text_list  = texts.to_list()
             offset_list = self._get_offset_list(df)
             result = [
                 self._shift_text(t, o, formats) if m else t
@@ -263,15 +267,18 @@ class BaseDateOffsetRule(RuleBase):
 
         # Normalize to MySQL DATETIME using strptime (not dateutil)
         if self.format_as_datetime:
-            def fast_normalize(val) -> str | None:
-                if val is None or str(val).strip() == "":
-                    return None
-                parsed = _fast_parse(str(val), formats)
-                if parsed:
-                    return parsed.strftime("%Y-%m-%d %H:%M:%S")
-                return None
+            _formats = formats
+            def _normalize_batch(s: pl.Series, _f=_formats) -> pl.Series:
+                results = []
+                for val in s.to_list():
+                    if val is None or str(val).strip() == "":
+                        results.append(None)
+                    else:
+                        parsed = _fast_parse(str(val), _f)
+                        results.append(parsed.strftime("%Y-%m-%d %H:%M:%S") if parsed else None)
+                return pl.Series(results, dtype=pl.Utf8)
             df = df.with_columns(
-                pl.col(col_name).map_elements(fast_normalize, return_dtype=pl.Utf8)
+                pl.col(col_name).map_batches(_normalize_batch, return_dtype=pl.Utf8)
             )
 
         nd_logger.info(f"[{self.__class__.__name__}] Completed.")
@@ -340,14 +347,15 @@ class PatientDOBRule(BaseDateOffsetRule):
             return df
 
         texts = df[col_name].cast(pl.Utf8)
-        mask_list = texts.str.contains(self.COMPILED_DATE_PATTERN.pattern).to_list()
+        contains = texts.str.contains(self.COMPILED_DATE_PATTERN.pattern)
 
-        if not any(mask_list):
+        if contains.sum() == 0:
             nd_logger.info(
                 f"[{self.__class__.__name__}] No date patterns found. Returning original DataFrame."
             )
             return df
 
+        mask_list = contains.to_list()
         text_list = texts.to_list()
         result = [self.extract_year(t) if m else None for t, m in zip(text_list, mask_list)]
 
@@ -358,7 +366,7 @@ class PatientDOBRule(BaseDateOffsetRule):
 
 
 # ---------------------------------------------------------------------------
-# ZIP-code masking rule  (element-wise map — Polars map_elements)
+# ZIP-code masking rule  (vectorized Polars when/then expressions)
 # ---------------------------------------------------------------------------
 
 class ZIPCodeRule(RuleBase):
