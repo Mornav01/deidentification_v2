@@ -4,9 +4,17 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import ProgrammingError
 from deid.core.logger import nd_logger
 from sqlalchemy import String
+from sqlalchemy.types import Enum as SAEnum
 import datetime
 import decimal
 import os
+try:
+    import re2 as re
+except ImportError:
+    try:
+        import regex as re  # type: ignore[no-redef]
+    except ImportError:
+        import re  # type: ignore[no-redef]
 import polars as pl
 from typing import Iterator, List, Dict
 from pydantic import validate_call
@@ -84,6 +92,15 @@ def _normalize_rows(rows, table_name: str = "") -> list:
                 new_row[col_idx] = normalizer(val)
         result.append(new_row)
     return result
+
+
+def _parse_mssql_table_ref(table_name: str, default_schema: str = "dbo") -> tuple[str | None, str]:
+    """Parse MSSQL table reference into (schema, name).
+    'dbo.users' → ('dbo', 'users'); 'users' → ('dbo', 'users')."""
+    if "." in table_name:
+        parts = table_name.split(".", 1)
+        return parts[0].strip("[]"), parts[1].strip("[]")
+    return default_schema, table_name
 
 
 _WRITE_PREFIXES = (
@@ -365,14 +382,30 @@ class NDDBHandler:
         self.Session = sessionmaker(bind=self.engine)
         self.session = self.Session()
         self._columns_cache: dict[str, list[dict]] = {}
+        self._is_mssql = self.engine.dialect.name == "mssql"
+        # Caches (valid_columns, max_lengths) per table — avoids repeated DB
+        # round-trips in insert_dataframe_in_batches when writing many batches.
+        self._insert_schema_cache: dict[str, tuple[list[str], dict[str, int]]] = {}
 
 
     def _qi(self, identifier: str) -> str:
         """Quote a table or column identifier for the current dialect."""
-        if self.engine.dialect.name == "mssql":
+        if self._is_mssql:
             return f"[{identifier}]"
         return f"`{identifier}`"
 
+    def _table_ref(self, table_name: str) -> tuple[str | None, str]:
+        """Return (schema, name) for reflection. MSSQL: ('dbo','users'); MySQL: (None,'users')."""
+        if self._is_mssql:
+            return _parse_mssql_table_ref(table_name)
+        return None, table_name
+
+    def _reflect_table(self, table_name: str) -> Table:
+        """Return a reflected Table with correct schema for the dialect."""
+        schema, name = self._table_ref(table_name)
+        if schema:
+            return Table(name, self.metadata, schema=schema, autoload_with=self.engine)
+        return Table(name, self.metadata, autoload_with=self.engine)
 
     def close(self):
         self.session.close()
@@ -382,8 +415,23 @@ class NDDBHandler:
     def get_columns(self, table_name: str) -> list[dict]:
         if table_name in self._columns_cache:
             return self._columns_cache[table_name]
-        with self.engine.connect() as conn:
-            columns = list(inspect(conn).get_columns(table_name))
+        if self._is_mssql:
+            # MSSQL/pymssql: Inspector.get_columns(name, schema=) can fail on views;
+            # Table reflection is more robust for schema-qualified names.
+            schema, name = self._table_ref(table_name)
+            try:
+                inspector = reflection.Inspector.from_engine(self.engine)
+                columns = list(inspector.get_columns(name, schema=schema))
+            except Exception as e:
+                nd_logger.debug(f"[DBHandler] get_columns({name}, schema={schema}) failed: {e}")
+                table = self._reflect_table(table_name)
+                columns = [
+                    {"name": c.name, "type": c.type, "nullable": c.nullable}
+                    for c in table.columns
+                ]
+        else:
+            with self.engine.connect() as conn:
+                columns = list(inspect(conn).get_columns(table_name))
         self._columns_cache[table_name] = columns
         return columns
 
@@ -495,9 +543,12 @@ class NDDBHandler:
         dest_handler._assert_writable(f"CREATE TABLE {dest_table_name or source_table_name}")
         dest_table_name = dest_table_name or source_table_name
 
-        source_table = Table(
-            source_table_name, self.metadata, autoload_with=self.engine
-        )
+        # When copying from MSSQL (dbo.users) to MySQL, strip the schema prefix —
+        # MySQL doesn't use schema-qualified table names in the same way.
+        if dest_handler.engine.dialect.name == "mysql" and "." in str(dest_table_name):
+            dest_table_name = dest_table_name.split(".", 1)[-1]
+
+        source_table = self._reflect_table(source_table_name)
         cross_dialect = self.engine.dialect.name != dest_handler.engine.dialect.name
         mapped_columns = []
         for column in source_table.columns:
@@ -511,6 +562,12 @@ class NDDBHandler:
                 )
             else:
                 col_type = self._portable_type(column.type) if cross_dialect else column.type
+                # ENUM columns become VARCHAR(255) in the destination.
+                # De-identification writes placeholder values (e.g. "((PATIENT_NAME))")
+                # that are not in the original enum set — MySQL would reject them.
+                if isinstance(col_type, SAEnum):
+                    from sqlalchemy.dialects.mysql import VARCHAR
+                    col_type = VARCHAR(255)
                 mapped_columns.append(
                     Column(col_name, col_type, nullable=column.nullable)
                 )
@@ -554,6 +611,16 @@ class NDDBHandler:
 
     def get_all_tables(self) -> list[str]:
         inspector = reflection.Inspector.from_engine(self.engine)
+        if self._is_mssql:
+            # MSSQL: enumerate all schemas and return schema.table so callers can
+            # later pass the full name to _reflect_table / _table_ref correctly.
+            tables = []
+            for schema in inspector.get_schema_names():
+                if schema in ("sys", "INFORMATION_SCHEMA", "guest"):
+                    continue
+                for name in inspector.get_table_names(schema=schema):
+                    tables.append(f"{schema}.{name}")
+            return tables
         return inspector.get_table_names()
 
 
@@ -764,47 +831,102 @@ class NDDBHandler:
             nd_logger.warning(f"[DBHandler] Empty DataFrame. Nothing to insert into '{table_name}'.")
             return
 
-        # ── 1. Keep only columns that exist in the destination table ──────────
-        col_defs = self.get_columns(table_name)
-        valid_columns = [c["name"] for c in col_defs]
+        # ── 1. Schema lookup (cached per table to avoid repeated DB round-trips) ─
+        cached = self._insert_schema_cache.get(table_name)
+        if cached is not None:
+            valid_columns, max_lengths = cached
+        else:
+            col_defs = self.get_columns(table_name)
+            valid_columns = [c["name"] for c in col_defs]
+
+            # Build {col_name: max_len} for VARCHAR/CHAR columns so we can truncate
+            # before insert and avoid MySQL 1265 "Data truncated" errors.
+            max_lengths: dict[str, int] = {}
+            for col_def in col_defs:
+                col_name = col_def["name"]
+                col_type = col_def.get("type")
+                length = None
+                if col_type is not None:
+                    length = getattr(col_type, "length", None)
+                    # Some SQLAlchemy dialect wrappers nest the real type one level down.
+                    if length is None and hasattr(col_type, "type"):
+                        length = getattr(col_type.type, "length", None)
+                if length and length > 0:
+                    max_lengths[col_name] = int(length)
+
+            # MySQL fallback: information_schema.COLUMNS (reflection sometimes misses lengths)
+            if self.engine.dialect.name == "mysql":
+                try:
+                    db_name = self.engine.url.database
+                    if db_name:
+                        r = self.session.execute(
+                            text(
+                                "SELECT COLUMN_NAME, CHARACTER_MAXIMUM_LENGTH FROM "
+                                "information_schema.COLUMNS "
+                                "WHERE TABLE_SCHEMA = :dbname AND TABLE_NAME = :tname "
+                                "AND CHARACTER_MAXIMUM_LENGTH IS NOT NULL"
+                            ),
+                            {"dbname": db_name, "tname": table_name},
+                        )
+                    else:
+                        r = self.session.execute(
+                            text(
+                                "SELECT COLUMN_NAME, CHARACTER_MAXIMUM_LENGTH FROM "
+                                "information_schema.COLUMNS "
+                                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :tname "
+                                "AND CHARACTER_MAXIMUM_LENGTH IS NOT NULL"
+                            ),
+                            {"tname": table_name},
+                        )
+                    for row in r:
+                        cname, max_len = row[0], row[1]
+                        if cname not in max_lengths and max_len and max_len > 0:
+                            max_lengths[cname] = int(max_len)
+                except Exception as e:
+                    nd_logger.debug(f"[DBHandler] information_schema fallback: {e}")
+
+                # SHOW COLUMNS fallback: parses varchar(n) from the Type string
+                missing = [c for c in valid_columns if c not in max_lengths]
+                if missing:
+                    try:
+                        r = self.session.execute(text(f"SHOW COLUMNS FROM `{table_name}`"))
+                        for row in r:
+                            cname, col_type_str = row[0], str(row[1] or "")
+                            if cname not in max_lengths:
+                                m = re.search(r"char\s*\(\s*(\d+)\s*\)", col_type_str, re.I)
+                                if m:
+                                    max_lengths[cname] = int(m.group(1))
+                    except Exception as e:
+                        nd_logger.debug(f"[DBHandler] SHOW COLUMNS fallback: {e}")
+
+            self._insert_schema_cache[table_name] = (valid_columns, max_lengths)
+
         select_cols = [c for c in valid_columns if c in df.columns]
         df = df.select(select_cols)
 
-        # ── 2. Build a {col_name: max_len} map for bounded-string columns ─────
-        # SQLAlchemy returns String / VARCHAR types with a `.length` attribute.
-        # We only truncate columns that are (a) present in the DataFrame AND
-        # (b) have a non-null, positive length declared in the schema.
-        max_lengths: dict[str, int] = {}
-        for col_def in col_defs:
-            col_name = col_def["name"]
-            if col_name not in df.columns:
-                continue
-            col_type = col_def.get("type")
-            length = getattr(col_type, "length", None)
-            if length and length > 0:
-                max_lengths[col_name] = int(length)
-
-        # ── 3. Truncate string columns that exceed the declared max-length ────
-        _STRING_DTYPES = {pl.Utf8, pl.String, pl.Categorical}
+        # ── 2. Truncate columns that exceed their declared max-length ─────────
+        # Only columns in max_lengths have a declared varchar length. We cast+slice
+        # unconditionally — Polars handles non-string types via cast(Utf8) safely,
+        # and this avoids a per-column dtype lookup.
         if max_lengths:
             truncate_exprs = []
             for col_name, max_len in max_lengths.items():
-                try:
-                    col_dtype = df[col_name].dtype
-                except Exception:
+                if col_name not in df.columns:
                     continue
-                if col_dtype in _STRING_DTYPES or str(col_dtype) in ("Utf8", "String"):
+                try:
                     truncate_exprs.append(
                         pl.col(col_name)
                         .cast(pl.Utf8)
                         .str.slice(0, max_len)
                         .alias(col_name)
                     )
+                except Exception as e:
+                    nd_logger.warning(f"[DBHandler] Could not add truncation for '{col_name}': {e}")
             if truncate_exprs:
                 df = df.with_columns(truncate_exprs)
-                nd_logger.debug(
-                    f"[DBHandler] Safety-truncated {len(truncate_exprs)} string "
-                    f"column(s) to their declared max lengths for '{table_name}'."
+                nd_logger.info(
+                    f"[DBHandler] Truncated {len(truncate_exprs)} column(s) to schema "
+                    f"max lengths for '{table_name}'."
                 )
 
         total_rows = df.height
