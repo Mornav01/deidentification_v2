@@ -34,6 +34,8 @@ class LogCollector:
         self._table_stats: dict[str, dict] = {}
         self._global_warnings = 0
         self._peak_worker_mb = 0
+        self._worker_latest_by_pid: dict[int, int] = {}  # {pid: last reported mb}
+        self._peak_concurrent_workers_mb = 0  # peak of sum(latest per pid)
         self._failure_count = 0
         self._stop = False
         self._records_since_summary = 0
@@ -76,9 +78,15 @@ class LogCollector:
             ts["warnings"] += 1
             self._global_warnings += 1
 
-        # Track peak worker memory.
-        if record.peak_memory_mb is not None and record.peak_memory_mb > self._peak_worker_mb:
-            self._peak_worker_mb = record.peak_memory_mb
+        # Track peak worker memory — per PID for accurate concurrent total.
+        if record.peak_memory_mb is not None:
+            if record.peak_memory_mb > self._peak_worker_mb:
+                self._peak_worker_mb = record.peak_memory_mb
+            if record.worker_pid is not None:
+                self._worker_latest_by_pid[record.worker_pid] = record.peak_memory_mb
+                concurrent_total = sum(self._worker_latest_by_pid.values())
+                if concurrent_total > self._peak_concurrent_workers_mb:
+                    self._peak_concurrent_workers_mb = concurrent_total
 
         # Handle errors — write to failures file and flush summary immediately.
         if record.level == LogLevel.ERROR or record.level == "ERROR":
@@ -156,9 +164,11 @@ class LogCollector:
                 "warnings": total_warnings,
             },
             "memory": {
-                "peak_worker_mb": self._peak_worker_mb,
+                "peak_single_worker_mb": self._peak_worker_mb,
+                "peak_concurrent_workers_mb": self._peak_concurrent_workers_mb,
+                "worker_count": len(self._worker_latest_by_pid),
                 "peak_orchestrator_mb": orch_mb,
-                "peak_total_mb": max(self._peak_worker_mb, orch_mb),
+                "peak_total_mb": self._peak_concurrent_workers_mb + orch_mb,
             },
             "tables": {
                 name: dict(ts) for name, ts in self._table_stats.items()
@@ -194,8 +204,9 @@ class LogCollector:
             f"  Run Summary — {self._run_ts.replace('_', ' ')}",
             "=" * 60,
             f"  Wall time:   {wall_str}",
-            f"  Peak Memory: {m['peak_total_mb']} MB "
-            f"(orchestrator: {m['peak_orchestrator_mb']} MB, workers: {m['peak_worker_mb']} MB)",
+            f"  Peak Memory: {m['peak_total_mb']} MB total "
+            f"(orchestrator: {m['peak_orchestrator_mb']} MB, "
+            f"workers: {m['peak_concurrent_workers_mb']} MB across {m['worker_count']} processes)",
             f"  Tables:      {t['tables']} total | {t['tables_completed']} completed | {t['tables_failed']} failed",
             f"  Rows:        {t['rows_succeeded'] + t['rows_failed']:,} processed | "
             f"{t['rows_succeeded']:,} succeeded | {t['rows_failed']:,} failed",

@@ -101,12 +101,16 @@ def test_log_collector_tracks_peak_memory(tmp_path):
         log_dir=str(tmp_path),
         run_timestamp="2026-03-09_14-30-00",
     )
-    collector.handle_record(_make_record(peak_memory_mb=200))
-    collector.handle_record(_make_record(peak_memory_mb=500))
-    collector.handle_record(_make_record(peak_memory_mb=300))
+    # Two different worker PIDs reporting at overlapping times
+    collector.handle_record(_make_record(peak_memory_mb=200, worker_pid=1001))
+    collector.handle_record(_make_record(peak_memory_mb=500, worker_pid=1002))
+    collector.handle_record(_make_record(peak_memory_mb=300, worker_pid=1001))
 
     stats = collector.get_stats()
-    assert stats["memory"]["peak_worker_mb"] == 500
+    assert stats["memory"]["peak_single_worker_mb"] == 500
+    # Peak concurrent: after 3rd record, pid 1001=300 + pid 1002=500 = 800
+    assert stats["memory"]["peak_concurrent_workers_mb"] == 800
+    assert stats["memory"]["worker_count"] == 2
     collector.close()
 
 

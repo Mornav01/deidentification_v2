@@ -92,7 +92,7 @@ def test_full_logging_pipeline(tmp_path):
     assert stats["totals"]["rows_succeeded"] == 4497
     assert stats["totals"]["rows_failed"] == 3
     assert stats["totals"]["warnings"] == 1
-    assert stats["memory"]["peak_worker_mb"] == 400
+    assert stats["memory"]["peak_single_worker_mb"] == 400
 
     # Verify summary generation.
     summary = collector.write_summary()

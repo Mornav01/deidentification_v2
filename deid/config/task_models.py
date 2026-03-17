@@ -30,6 +30,7 @@ class LogRecord(BaseModel):
     start_id: int | None = None
     end_id: int | None = None
     peak_memory_mb: int | None = None
+    worker_pid: int | None = None
 
 
 class BatchFailure(BaseModel):

@@ -1,6 +1,7 @@
 """Publish structured log records to Redis for the LogCollector."""
 from __future__ import annotations
 
+import os
 import resource
 import sys
 from datetime import datetime, timezone
@@ -50,6 +51,7 @@ def make_log_record(
         table=table,
         phase=phase,
         message=message,
+        worker_pid=os.getpid(),
         **kwargs,
     )
 
