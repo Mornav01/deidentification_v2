@@ -456,7 +456,6 @@ def _build_write_config(config, batch, staging_root):
 @validate_call(config=dict(arbitrary_types_allowed=True))
 async def _qc_phase(config, state_engine):
     """Dispatch QC tasks for completed tables."""
-    from celery import group as celery_group
     from deid.tasks.qc import run_qc
 
     with Session(state_engine) as session:
@@ -467,7 +466,8 @@ async def _qc_phase(config, state_engine):
         logger.info("No completed tables for QC")
         return
 
-    qc_tasks = []
+    # Dispatch all QC tasks to deid-process workers, then wait for all results.
+    results = []
     for tname in table_names:
         qc_config = QCTaskConfig(
             table_name=tname,
@@ -477,8 +477,10 @@ async def _qc_phase(config, state_engine):
             sample_size=config.qc.sample_size,
             table_config=_get_table_details(config, tname),
         )
-        qc_tasks.append(run_qc.s(qc_config.model_dump()).set(queue="deid-process"))
+        r = run_qc.apply_async(args=[qc_config.model_dump()], queue="deid-process")
+        logger.info("Dispatched QC task for table '%s'", tname)
+        results.append((tname, r))
 
-    qc_group = celery_group(qc_tasks)
-    result = qc_group.apply_async()
-    result.get(timeout=config.workers.task_timeout)
+    for tname, r in results:
+        r.get(timeout=config.workers.task_timeout)
+        logger.info("QC completed for table '%s'", tname)
