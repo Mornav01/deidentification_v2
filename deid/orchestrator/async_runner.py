@@ -477,8 +477,8 @@ async def _qc_phase(config, state_engine):
             sample_size=config.qc.sample_size,
             table_config=_get_table_details(config, tname),
         )
-        qc_tasks.append(run_qc.s(qc_config.model_dump()))
+        qc_tasks.append(run_qc.s(qc_config.model_dump()).set(queue="deid-process"))
 
     qc_group = celery_group(qc_tasks)
-    result = qc_group.apply_async(queue="deid-process")
+    result = qc_group.apply_async()
     result.get(timeout=config.workers.task_timeout)
