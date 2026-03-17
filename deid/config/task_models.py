@@ -70,6 +70,7 @@ class ProcessTaskConfig(BaseModel):
     pii_config: dict | None = None
     pii_db_conn_str: dict | None = None
     secondary_pii_configs: list | None = None
+    failed_rows_db_path: str | None = None
     redis_url: str = ""
     run_config: dict | None = None
 

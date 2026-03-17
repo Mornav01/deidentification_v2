@@ -159,7 +159,11 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
     df = resolver.transform(df)
 
     # 5. Invalid row handling
-    row_handler = InvalidRowHandler(db_name="", table_name=config.table_name)
+    row_handler = InvalidRowHandler(
+        db_name=config.source_conn_str.split("/")[-1] if "/" in config.source_conn_str else "",
+        table_name=config.table_name,
+        db_path=config.failed_rows_db_path,
+    )
     df = row_handler.handle(df)
 
     # 6. De-identification

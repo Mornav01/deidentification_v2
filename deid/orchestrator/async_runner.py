@@ -433,6 +433,7 @@ def _build_process_config(config, batch, staging_root, mappings_conn_str):
         pii_config=config.pii_config,
         pii_db_conn_str=config.pii_db,
         secondary_pii_configs=config.secondary_pii_configs,
+        failed_rows_db_path=config.failed_rows_db_path,
         redis_url=config.redis_url,
     ).model_dump()
     # Extra field forwarded by process_batch to write_batch
