@@ -121,6 +121,24 @@ def _write_batch_inner(config: WriteTaskConfig, batch_tag: str):
     source_columns = [c for c in df.columns if c in col_schema]
     df = df.select(source_columns)
 
+    # 4a. Convert empty strings → NULL for numeric columns to avoid
+    #     MySQL 1366 "Incorrect integer value ''" errors.
+    _NUMERIC_TYPE_KEYWORDS = ("INT", "NUMERIC", "DECIMAL", "FLOAT", "DOUBLE", "REAL", "BIT")
+    nullify_exprs = []
+    for col_name, info in col_schema.items():
+        if col_name not in df.columns or df[col_name].dtype != pl.Utf8:
+            continue
+        type_str = (info.get("type") or "").upper()
+        if any(kw in type_str for kw in _NUMERIC_TYPE_KEYWORDS):
+            nullify_exprs.append(
+                pl.when(pl.col(col_name).str.strip_chars() == "")
+                .then(None)
+                .otherwise(pl.col(col_name))
+                .alias(col_name)
+            )
+    if nullify_exprs:
+        df = df.with_columns(nullify_exprs)
+
     # 5. Idempotent write: DELETE + INSERT in single transaction
     qi = dest._qi
     delete_sql = text(

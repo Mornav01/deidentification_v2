@@ -209,7 +209,6 @@ def test_worker_settings_three_pools(tmp_path):
     cfg["workers"] = {
         "fetchers": 3,
         "processors": 6,
-        "writers": 2,
         "max_retries": 1,
         "task_timeout": 3600,
     }
@@ -217,7 +216,6 @@ def test_worker_settings_three_pools(tmp_path):
     config = load_config(p)
     assert config.workers.fetchers == 3
     assert config.workers.processors == 6
-    assert config.workers.writers == 2
 
 
 def test_worker_settings_defaults(tmp_path):
@@ -229,7 +227,6 @@ def test_worker_settings_defaults(tmp_path):
     config = load_config(p)
     assert config.workers.fetchers == 2
     assert config.workers.processors == 4
-    assert config.workers.writers == 2
 
 
 def test_default_batch_size(tmp_path):

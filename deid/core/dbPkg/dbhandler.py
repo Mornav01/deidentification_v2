@@ -385,9 +385,9 @@ class NDDBHandler:
         self.session = self.Session()
         self._columns_cache: dict[str, list[dict]] = {}
         self._is_mssql = self.engine.dialect.name == "mssql"
-        # Caches (valid_columns, max_lengths) per table — avoids repeated DB
-        # round-trips in insert_dataframe_in_batches when writing many batches.
-        self._insert_schema_cache: dict[str, tuple[list[str], dict[str, int]]] = {}
+        # Caches (valid_columns, max_lengths, numeric_columns) per table — avoids
+        # repeated DB round-trips in insert_dataframe_in_batches when writing many batches.
+        self._insert_schema_cache: dict[str, tuple[list[str], dict[str, int], set[str]]] = {}
 
 
     def _qi(self, identifier: str) -> str:
@@ -836,10 +836,24 @@ class NDDBHandler:
         # ── 1. Schema lookup (cached per table to avoid repeated DB round-trips) ─
         cached = self._insert_schema_cache.get(table_name)
         if cached is not None:
-            valid_columns, max_lengths = cached
+            valid_columns, max_lengths, numeric_columns = cached
         else:
             col_defs = self.get_columns(table_name)
             valid_columns = [c["name"] for c in col_defs]
+
+            # Detect numeric/integer columns so we can convert empty strings → NULL
+            # and avoid MySQL 1366 "Incorrect integer value ''" errors.
+            _NUMERIC_TYPE_NAMES = (
+                "INTEGER", "INT", "SMALLINT", "BIGINT", "TINYINT", "MEDIUMINT",
+                "NUMERIC", "DECIMAL", "FLOAT", "DOUBLE", "REAL", "BIT",
+            )
+            numeric_columns: set[str] = set()
+            for col_def in col_defs:
+                col_type = col_def.get("type")
+                if col_type is not None:
+                    type_name = type(col_type).__name__.upper()
+                    if any(n in type_name for n in _NUMERIC_TYPE_NAMES):
+                        numeric_columns.add(col_def["name"])
 
             # Build {col_name: max_len} for VARCHAR/CHAR columns so we can truncate
             # before insert and avoid MySQL 1265 "Data truncated" errors.
@@ -901,7 +915,7 @@ class NDDBHandler:
                     except Exception as e:
                         nd_logger.debug(f"[DBHandler] SHOW COLUMNS fallback: {e}")
 
-            self._insert_schema_cache[table_name] = (valid_columns, max_lengths)
+            self._insert_schema_cache[table_name] = (valid_columns, max_lengths, numeric_columns)
 
         select_cols = [c for c in valid_columns if c in df.columns]
         df = df.select(select_cols)
@@ -930,6 +944,23 @@ class NDDBHandler:
                     f"[DBHandler] Truncated {len(truncate_exprs)} column(s) to schema "
                     f"max lengths for '{table_name}'."
                 )
+
+        # ── 3. Convert empty strings → NULL for numeric columns ─────────────
+        # MySQL strict mode rejects '' into INT/DECIMAL columns (error 1366).
+        if numeric_columns:
+            nullify_exprs = []
+            for col_name in numeric_columns:
+                if col_name not in df.columns:
+                    continue
+                if df[col_name].dtype == pl.Utf8:
+                    nullify_exprs.append(
+                        pl.when(pl.col(col_name).str.strip_chars() == "")
+                        .then(None)
+                        .otherwise(pl.col(col_name))
+                        .alias(col_name)
+                    )
+            if nullify_exprs:
+                df = df.with_columns(nullify_exprs)
 
         total_rows = df.height
         nd_logger.info(f"[DBHandler] Starting insertion of {total_rows} rows into '{table_name}' in batches of {batch_size}.")
