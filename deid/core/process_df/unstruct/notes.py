@@ -144,6 +144,7 @@ class NotesRule(RuleBase):
         self.secondary_pii_configs = secondary_pii_configs or []
         self.pii_data_df: pl.DataFrame | None = None
         self.secondary_pii_data_dfs: dict[str, pl.DataFrame] = {}
+        self._known_patient_ids: set = set()
         self.key_phi_columns = key_phi_columns
         nd_logger.info(f"[{self.__class__.__name__}] Initialized NotesRule.")
 
@@ -330,14 +331,11 @@ class NotesRule(RuleBase):
 
         lookup_col = "_resolved_patient_id"
         has_pid = lookup_col in df.columns
-        if has_pid:
-            # Vectorized equivalent of [_normalize_pid(v) for v in df[col].to_list()]:
-            # cast Float64→Int64 in Rust (strips ".0"), fall back to original for non-numeric.
-            _int_list  = df[lookup_col].cast(pl.Float64, strict=False).cast(pl.Int64, strict=False).to_list()
-            _orig_list = df[lookup_col].to_list()
-            pid_list = [iv if iv is not None else ov for iv, ov in zip(_int_list, _orig_list)]
-        else:
-            pid_list = [None] * df.height
+        pid_list = (
+            [_normalize_pid(v) for v in df[lookup_col].to_list()]
+            if has_pid
+            else [None] * df.height
+        )
 
         mask_config   = self.pii_config.get("mask", {})
         dob_config    = self.pii_config.get("dob", {})
@@ -633,12 +631,11 @@ class NotesRule(RuleBase):
 
         lookup_col = "_resolved_patient_id"
         has_pid = lookup_col in df.columns
-        if has_pid:
-            _int_list  = df[lookup_col].cast(pl.Float64, strict=False).cast(pl.Int64, strict=False).to_list()
-            _orig_list = df[lookup_col].to_list()
-            pid_list = [iv if iv is not None else ov for iv, ov in zip(_int_list, _orig_list)]
-        else:
-            pid_list = [None] * df.height
+        pid_list = (
+            [_normalize_pid(v) for v in df[lookup_col].to_list()]
+            if has_pid
+            else [None] * df.height
+        )
 
         for table_config in self.secondary_pii_configs:
             table_name = table_config.get("table_name")
@@ -1108,10 +1105,11 @@ class NotesRule(RuleBase):
                 _normalize_pid(v)
                 for v in df["_resolved_patient_id"].drop_nulls().unique().to_list()
             ]
-            if self.pii_data_df is None:
+            new_ids = set(patient_ids) - self._known_patient_ids - {None}
+            if new_ids:
                 self._get_pii_data_table(patient_ids)
-            if not self.secondary_pii_data_dfs:
                 self._get_secondary_pii_data_table(patient_ids)
+                self._known_patient_ids.update(new_ids)
             df = self.deidentify_primary_pii_values(df, column_details)
             df = self.deidentify_secondary_pii_values(df, column_details)
             nd_logger.info(

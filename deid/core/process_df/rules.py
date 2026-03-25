@@ -258,7 +258,7 @@ class BaseDateOffsetRule(RuleBase):
         offset_expr = self._get_offset_expr(df)
         col_str = pl.col(col_name).cast(pl.Utf8)
         null_or_empty = col_str.is_null() | (col_str.str.strip_chars().str.len_chars() == 0)
-        parsed = col_str.str.to_datetime(format=fmt, strict=False, use_earliest=True)
+        parsed = col_str.str.to_datetime(format=fmt, strict=False, ambiguous="earliest")
         shifted = (parsed + pl.duration(days=offset_expr)).dt.strftime(output_fmt)
 
         return df.with_columns(
