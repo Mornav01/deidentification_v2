@@ -45,7 +45,7 @@ class DbConfig(BaseModel):
 class DeidentificationSettings(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    batch_size: int = 1000
+    batch_size: int = 10000
     date_offset_days: int = 34
     patient_id_prefix: int = 10000000
     random_seed: int = 42
@@ -66,7 +66,7 @@ class WorkerSettings(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     fetchers: int = 2
-    processors: int = 4
+    processors: int = 16
     max_retries: int = 1
     task_timeout: int = 3600
     max_tasks_per_child: int = 1
