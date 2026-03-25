@@ -39,12 +39,12 @@ def _rules_to_table_details(rules: dict[str, str]) -> dict:
 def _build_table_config(config: DeidConfig, table_name: str, rules: dict) -> dict:
     """Build a validated config dict that gets passed to each Celery task."""
     table_details = _rules_to_table_details(rules)
-    mappings_conn_str = f"sqlite:///{config.mappings_db_path}"
+    mappings_conn_str = config.mappings_connection_string
     task_config = DeidentifyTaskConfig(
         table_name=table_name,
         source_conn_str=config.source_db.connection_string(),
         dest_conn_str=config.destination_db.connection_string(),
-        mappings_db_path=config.mappings_db_path,
+        mappings_db_path=mappings_conn_str,
         batch_size=config.deidentification.batch_size,
         offset_days=config.deidentification.date_offset_days,
         redis_url=config.redis_url,

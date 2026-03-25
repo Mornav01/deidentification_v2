@@ -82,7 +82,7 @@ async def _retry_run(config, batch_failures: list[BatchFailure]):
 
     state_engine = create_state_engine(config.state_db_path)
     staging_root = get_staging_root(config.state_db_path)
-    mappings_conn_str = f"sqlite:///{config.mappings_db_path}"
+    mappings_conn_str = config.mappings_connection_string
 
     # Reset failed batches to pending and dispatch fetch tasks.
     dispatched = 0

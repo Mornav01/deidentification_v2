@@ -21,6 +21,7 @@ def _register_commands():
     from deid.cli.generate_config import generate_config_command
     from deid.cli.mapping import mapping_command
     from deid.cli.pii_table import pii_table_command
+    from deid.cli.qc import qc_command
 
     app.command(name="run")(run_command)
     app.command(name="status")(status_command)
@@ -28,6 +29,7 @@ def _register_commands():
     app.command(name="generate-config")(generate_config_command)
     app.command(name="mapping")(mapping_command)
     app.command(name="pii-table")(pii_table_command)
+    app.command(name="qc")(qc_command)
 
     if importlib.util.find_spec("deid.cli.cdc") is not None:
         from deid.cli.cdc import cdc_command

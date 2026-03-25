@@ -95,10 +95,12 @@ class PatientIDRule(RuleBase):
         nd_logger.info(f"[{self.__class__.__name__}] Applying PatientIDRule for column: {column}")
         if "_resolved_nd_patient_id" in df.columns and column in df.columns:
             df = df.with_columns(pl.col("_resolved_nd_patient_id").alias(column))
-        else:
+        elif column in df.columns:
             nd_logger.warning(
-                f"[{self.__class__.__name__}] Missing _resolved_nd_patient_id or {column}"
+                f"[{self.__class__.__name__}] _resolved_nd_patient_id missing — "
+                f"nulling '{column}' to prevent PHI leakage"
             )
+            df = df.with_columns(pl.lit(None).cast(df[column].dtype).alias(column))
         return df
 
 
@@ -109,10 +111,12 @@ class EncounterIDRule(RuleBase):
         nd_logger.info(f"[{self.__class__.__name__}] Applying EncounterIDRule for column: {column}")
         if "nd_encounter_id" in df.columns and column in df.columns:
             df = df.with_columns(pl.col("nd_encounter_id").alias(column))
-        else:
+        elif column in df.columns:
             nd_logger.warning(
-                f"[{self.__class__.__name__}] Missing nd_encounter_id or {column}"
+                f"[{self.__class__.__name__}] nd_encounter_id missing — "
+                f"nulling '{column}' to prevent PHI leakage"
             )
+            df = df.with_columns(pl.lit(None).cast(df[column].dtype).alias(column))
         return df
 
 
@@ -123,10 +127,12 @@ class ReferencePIDRule(RuleBase):
         nd_logger.info(f"[{self.__class__.__name__}] Applying ReferencePIDRule for column: {column}")
         if "_resolved_nd_patient_id" in df.columns and column in df.columns:
             df = df.with_columns(pl.col("_resolved_nd_patient_id").alias(column))
-        else:
+        elif column in df.columns:
             nd_logger.warning(
-                f"[{self.__class__.__name__}] Missing _resolved_nd_patient_id or {column}"
+                f"[{self.__class__.__name__}] _resolved_nd_patient_id missing — "
+                f"nulling '{column}' to prevent PHI leakage"
             )
+            df = df.with_columns(pl.lit(None).cast(df[column].dtype).alias(column))
         return df
 
 
@@ -137,10 +143,12 @@ class AppointmentIDRule(RuleBase):
         nd_logger.info(f"[{self.__class__.__name__}] Applying AppointmentIDRule for column: {column}")
         if "nd_appointment_id" in df.columns and column in df.columns:
             df = df.with_columns(pl.col("nd_appointment_id").alias(column))
-        else:
+        elif column in df.columns:
             nd_logger.warning(
-                f"[{self.__class__.__name__}] Missing nd_appointment_id or {column}"
+                f"[{self.__class__.__name__}] nd_appointment_id missing — "
+                f"nulling '{column}' to prevent PHI leakage"
             )
+            df = df.with_columns(pl.lit(None).cast(df[column].dtype).alias(column))
         return df
 
 

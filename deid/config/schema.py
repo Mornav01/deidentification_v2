@@ -97,14 +97,16 @@ class DeidConfig(BaseModel):
     source_db: DbConfig
     destination_db: DbConfig
     state_db_path: str = "./state.db"
+    mappings_db: Optional[DbConfig] = None
     mappings_db_path: str = ""
     failed_rows_db_path: str = "./failed_rows.db"
     redis_url: str = "redis://localhost:6379/0"
     deidentification: DeidentificationSettings = DeidentificationSettings()
     tables: Optional[list[TableConfig]] = None
+    tables_to_run: Optional[list[str]] = None
     rules_csv: Optional[str] = None
     mapping_tables: dict[str, MappingTableConfig] = {}
-    phases: list[str] = Field(default=["setup", "deidentify", "qc"])
+    phases: list[str] = Field(default=["setup", "deidentify"])
     workers: WorkerSettings = WorkerSettings()
     qc: QCSettings = QCSettings()
     logging: LoggingSettings = LoggingSettings()
@@ -117,9 +119,20 @@ class DeidConfig(BaseModel):
 
     @model_validator(mode="after")
     def set_default_mappings_db_path(self) -> "DeidConfig":
-        if not self.mappings_db_path:
+        if not self.mappings_db and not self.mappings_db_path:
             self.mappings_db_path = f"./{self.source_db.database}_mappings.db"
         return self
+
+    @property
+    def mappings_connection_string(self) -> str:
+        """Return the connection string for the mappings database.
+
+        Uses ``mappings_db`` (MySQL/PostgreSQL/etc.) when configured,
+        otherwise falls back to the SQLite file at ``mappings_db_path``.
+        """
+        if self.mappings_db:
+            return self.mappings_db.connection_string()
+        return f"sqlite:///{self.mappings_db_path}"
 
     @model_validator(mode="after")
     def require_tables_or_csv(self) -> "DeidConfig":
@@ -127,6 +140,17 @@ class DeidConfig(BaseModel):
             raise ValueError("Either 'tables' or 'rules_csv' must be provided")
         if not self.tables and self.rules_csv:
             self.tables = _load_tables_from_csv(self.rules_csv, self.source_db)
+        return self
+
+    @model_validator(mode="after")
+    def filter_tables_to_run(self) -> "DeidConfig":
+        if self.tables_to_run and self.tables:
+            allowed = set(self.tables_to_run)
+            self.tables = [t for t in self.tables if t.name in allowed]
+            if not self.tables:
+                raise ValueError(
+                    f"tables_to_run={self.tables_to_run} matched none of the configured tables"
+                )
         return self
 
 

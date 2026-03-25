@@ -44,7 +44,7 @@ def _minimal_config() -> dict:
                 "destination_column": "nd_patient_id",
             }
         },
-        "phases": ["setup", "deidentify", "qc"],
+        "phases": ["setup", "deidentify"],
         "workers": {"fetchers": 2, "processors": 4, "writers": 2, "max_retries": 1, "task_timeout": 3600},
         "qc": {"sample_size": 100, "scan_for_residual_pii": True},
     }
@@ -60,7 +60,7 @@ def test_load_valid_config(tmp_path):
     assert config.deidentification.batch_size == 1000
     assert len(config.tables) == 1
     assert config.tables[0].rules["patient_id"] == "PATIENT_ID"
-    assert config.phases == ["setup", "deidentify", "qc"]
+    assert config.phases == ["setup", "deidentify"]
 
 
 def test_env_var_interpolation(tmp_path, monkeypatch):
@@ -124,7 +124,7 @@ def test_default_phases(tmp_path):
     del cfg["phases"]
     p = _write_yaml(tmp_path, cfg)
     config = load_config(p)
-    assert config.phases == ["setup", "deidentify", "qc"]
+    assert config.phases == ["setup", "deidentify"]
 
 
 def test_clinical_bin_doc_config_optional(tmp_path):

@@ -35,7 +35,7 @@ async def run(config: DeidConfig, config_path: str):
 
     state_engine = create_state_engine(config.state_db_path)
     create_all_state_tables(state_engine)
-    mappings_engine = create_read_only_mappings_engine(config.mappings_db_path)
+    mappings_engine = create_read_only_mappings_engine(config.mappings_connection_string)
     failed_rows_engine = create_failed_rows_engine(config.failed_rows_db_path)
     create_all_failed_rows_tables(failed_rows_engine)
     failed_rows_engine.dispose()
@@ -49,7 +49,7 @@ async def run(config: DeidConfig, config_path: str):
     # ── Validate prerequisites ────────────────────────────────────────────
     from deid.models.mappings import PatientMapping
 
-    if not Path(config.mappings_db_path).exists():
+    if not config.mappings_db and not Path(config.mappings_db_path).exists():
         raise SystemExit(
             f"Mappings DB not found at '{config.mappings_db_path}'. "
             "Run `deid mapping --config <config.yaml>` first."
@@ -110,6 +110,7 @@ async def run(config: DeidConfig, config_path: str):
             await _deidentify_phase(config, state_engine)
 
         if "qc" in config.phases:
+            logger.warning("QC phase is deprecated in 'deid run'. Use 'deid qc --config <config.yaml>' instead.")
             logger.info("Phase: qc")
             await _qc_phase(config, state_engine)
 
@@ -245,7 +246,7 @@ async def _deidentify_phase(config, state_engine):
     staging_root = get_staging_root(config.state_db_path)
     reconcile(state_engine, staging_root)
 
-    mappings_conn_str = f"sqlite:///{config.mappings_db_path}"
+    mappings_conn_str = config.mappings_connection_string
 
     # Count total batches
     with Session(state_engine) as session:

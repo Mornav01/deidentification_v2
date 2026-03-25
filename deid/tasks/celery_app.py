@@ -82,7 +82,7 @@ def _preload_mappings(app: Celery) -> None:
     from deid.models.base import create_read_only_mappings_engine
 
     cfg = load_config(Path(config_path))
-    engine = create_read_only_mappings_engine(cfg.mappings_db_path)
+    engine = create_read_only_mappings_engine(cfg.mappings_connection_string)
 
     try:
         with engine.connect() as conn:

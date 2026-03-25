@@ -690,22 +690,43 @@ class NotesRule(RuleBase):
                     pattern = rf"(?i)\b{re2.escape(val)}\b"
                     entry[pattern] = mask_config[config_key]["masking_value"]
 
+            # ── Compile alternation regexes per patient ────────────────────
+            # Group patterns by masking_value, join with |, compile once.
+            # Reduces N×P individual re2.sub calls to N×distinct_mask_values.
+            pid_to_compiled: dict = {}  # pid → [(compiled_re, masking_value)]
+            for pid, patterns in pid_to_map.items():
+                by_value: dict = {}
+                for pat, val in patterns.items():
+                    by_value.setdefault(val, []).append(pat)
+                compiled_list = []
+                for masking_val, pats in by_value.items():
+                    try:
+                        compiled_list.append((re2.compile("|".join(pats)), masking_val))
+                    except Exception:
+                        for p in pats:
+                            try:
+                                compiled_list.append((re2.compile(p), masking_val))
+                            except Exception:
+                                pass
+                if compiled_list:
+                    pid_to_compiled[pid] = compiled_list
+
             nd_logger.info(
                 f"[{self.__class__.__name__}] [{table_name}] "
-                f"Built maps for {len(pid_to_map)} unique patients."
+                f"Built compiled maps for {len(pid_to_compiled)} unique patients."
             )
 
             # ── Single pass over source rows ─────────────────────────────────
             text_list = masked_col.to_list()
             result: list[str] = []
             for text, pid in zip(text_list, pid_list):
-                rmap = pid_to_map.get(pid)
-                if not rmap:
+                compiled = pid_to_compiled.get(pid)
+                if not compiled:
                     result.append(text)
                     continue
-                for pattern, repl in rmap.items():
+                for compiled_re, repl in compiled:
                     try:
-                        text = re2.sub(pattern, repl, text)
+                        text = compiled_re.sub(repl, text)
                     except Exception:
                         pass
                 result.append(text)

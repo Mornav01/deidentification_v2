@@ -32,6 +32,7 @@ def create_state_engine(db_path: str):
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
 def create_mappings_engine(db_path: str):
+    """Create a read-write SQLite engine for mapping population (``deid mapping`` only)."""
     engine = create_engine(f"sqlite:///{db_path}", echo=False)
     event.listen(engine, "connect", _enable_wal)
     return engine
@@ -44,20 +45,33 @@ _WRITE_PREFIXES = (
 
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
-def create_read_only_mappings_engine(db_path: str):
-    """Create a read-only SQLite engine for mappings.db.
+def create_read_only_mappings_engine(conn_str: str):
+    """Create a read-only engine for the mappings database.
+
+    Accepts a full connection string (``sqlite:///path``, ``mysql+pymysql://...``, etc.).
+    For backwards compatibility, bare file paths are treated as SQLite.
 
     Two layers of protection:
-    1. ``PRAGMA query_only=ON`` — SQLite refuses all writes at the engine level.
+    1. Dialect-specific session-level READ ONLY.
     2. ``before_cursor_execute`` guard that blocks any DML/DDL statement.
     """
-    engine = create_engine(f"sqlite:///{db_path}", echo=False)
+    if "://" not in conn_str:
+        conn_str = f"sqlite:///{conn_str}"
+    engine = create_engine(conn_str, echo=False)
 
     @event.listens_for(engine, "connect")
     def _set_read_only(dbapi_conn, connection_record):
         cursor = dbapi_conn.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA query_only=ON")
+        dialect = engine.dialect.name
+        if dialect == "sqlite":
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA query_only=ON")
+        elif dialect == "mysql":
+            cursor.execute("SET SESSION TRANSACTION READ ONLY")
+        elif dialect == "postgresql":
+            cursor.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
+        elif dialect == "mssql":
+            cursor.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED")
         cursor.close()
 
     @event.listens_for(engine, "before_cursor_execute")
