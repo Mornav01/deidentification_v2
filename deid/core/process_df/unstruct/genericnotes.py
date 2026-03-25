@@ -38,6 +38,12 @@ def _get_compiled(pattern: str) -> tuple[bool, object, re.Pattern | None]:
     return _REGEX_CACHE[pattern]
 
 
+# Concat-and-split joins all cell values, runs ONE regex call, then splits back.
+# This saves N regex-engine startups (~2.5 μs each) but pays ~4 ns/char for the
+# Python join + split.  Below ~2 MB total text the join/split overhead is small
+# and the saved startups dominate; above ~2 MB the giant-string cost dominates.
+_CONCAT_SPLIT_MAX_BYTES = 2_000_000
+
 _DELIMITERS = ["\x00", "\x01", "\x02", "\x03", "\x00\x01\x00"]
 
 
@@ -194,8 +200,17 @@ class GenericNotesRule(RuleBase):
                         )
                     elif compiled_std:
                         repl = masking_value
-                        # Concatenate-and-split: one regex call instead of N
-                        if not _can_match_empty(pattern) and df.height > 1:
+                        # Concatenate-and-split: one regex call instead of N.
+                        # Only worthwhile when total text is small enough that
+                        # the Python join/split overhead is dwarfed by the N
+                        # saved regex-engine startups.
+                        total_bytes = df[col_name].str.len_bytes().sum()
+                        use_concat = (
+                            not _can_match_empty(pattern)
+                            and df.height > 1
+                            and total_bytes < _CONCAT_SPLIT_MAX_BYTES
+                        )
+                        if use_concat:
                             delim = _pick_delimiter(df[col_name])
                             combined = delim.join(df[col_name].fill_null("").to_list())
                             combined = compiled_std.sub(repl, combined)
