@@ -196,8 +196,13 @@ class BaseDateOffsetRule(RuleBase):
 
 
     def _get_offset_list(self, df: pl.DataFrame) -> list:
-        """Return a per-row list of offset days.  Subclasses must override."""
+        """Return a per-row list of offset days.  Used only by the slow path."""
         raise NotImplementedError("Subclasses must implement _get_offset_list()")
+
+
+    def _get_offset_expr(self, df: pl.DataFrame) -> pl.Expr:
+        """Return a Polars Expr for the per-row offset in days.  Used by the fast path."""
+        return pl.lit(0)
 
 
     def _shift_text(self, text, offset_days, formats=None) -> str:
@@ -239,6 +244,33 @@ class BaseDateOffsetRule(RuleBase):
         return self.COMPILED_DATE_PATTERN.sub(replace_fn, str(text))
 
 
+    def _apply_vectorized(self, df: pl.DataFrame, col_name: str, formats: list) -> pl.DataFrame:
+        """Vectorized date-shift using Polars native expressions — no Python per-row loops.
+
+        Parses the column with ``str.to_datetime``, adds the offset via ``pl.duration``,
+        and formats back — all in a single Rust-level pass.  Non-date values are
+        preserved as-is; nulls and empty strings become null.
+        """
+        fmt = formats[0]
+        has_time = any(x in fmt for x in ("%H", "%M", "%S", "%f"))
+        output_fmt = "%Y-%m-%d %H:%M:%S" if (self.format_as_datetime or has_time) else "%Y-%m-%d"
+
+        offset_expr = self._get_offset_expr(df)
+        col_str = pl.col(col_name).cast(pl.Utf8)
+        null_or_empty = col_str.is_null() | (col_str.str.strip_chars().str.len_chars() == 0)
+        parsed = col_str.str.to_datetime(format=fmt, strict=False, use_earliest=True)
+        shifted = (parsed + pl.duration(days=offset_expr)).dt.strftime(output_fmt)
+
+        return df.with_columns(
+            pl.when(null_or_empty)
+            .then(pl.lit(None, dtype=pl.Utf8))
+            .when(parsed.is_not_null())
+            .then(shifted)
+            .otherwise(col_str)
+            .alias(col_name)
+        )
+
+
     def apply(self, df: pl.DataFrame, column_config: dict) -> pl.DataFrame:
         col_name = column_config["column_name"]
         nd_logger.info(
@@ -257,15 +289,23 @@ class BaseDateOffsetRule(RuleBase):
             _DATE_FORMAT_CACHE[cache_key] = _detect_formats(texts_sample)
         formats = _DATE_FORMAT_CACHE[cache_key]
 
-        # Build string representation and find which rows have date patterns.
+        # Fast path: fully vectorized Polars — used for structured date columns.
+        # Notes columns embed dates inside text, so they still need the regex sub path.
+        if not self.is_notes and formats:
+            nd_logger.info(
+                f"[{self.__class__.__name__}] Vectorized fast path (fmt={formats[0]})."
+            )
+            return self._apply_vectorized(df, col_name, formats)
+
+        # Slow path: Python loop for notes/embedded dates or unrecognised formats.
         texts = df[col_name].cast(pl.Utf8)
         contains = texts.str.contains(self.COMPILED_DATE_PATTERN.pattern)
-        matched = contains.sum()  # vectorized count — no Python materialisation
+        matched = contains.sum()
         nd_logger.info(f"[{self.__class__.__name__}] Found {matched} rows with date patterns.")
 
         if matched > 0:
-            mask_list  = contains.to_list()
-            text_list  = texts.to_list()
+            mask_list   = contains.to_list()
+            text_list   = texts.to_list()
             offset_list = self._get_offset_list(df)
             result = [
                 self._shift_text(t, o, formats) if m else t
@@ -273,8 +313,7 @@ class BaseDateOffsetRule(RuleBase):
             ]
             df = df.with_columns(pl.Series(col_name, result, dtype=pl.Utf8))
 
-        # Normalize to MySQL DATETIME using strptime (not dateutil)
-        if self.format_as_datetime:
+        if self.format_as_datetime and not self.is_notes:
             _formats = formats
             def _normalize_batch(s: pl.Series, _f=_formats) -> pl.Series:
                 results = []
@@ -298,20 +337,26 @@ class StaticDateOffsetRule(BaseDateOffsetRule):
         super().__init__(format_as_datetime=format_as_datetime)
         self.static_offset = offset_days
 
-
     def _get_offset_list(self, df: pl.DataFrame) -> list:
         return [self.static_offset] * df.height
+
+    def _get_offset_expr(self, df: pl.DataFrame) -> pl.Expr:
+        return pl.lit(self.static_offset)
 
 
 class DateOffsetRule(BaseDateOffsetRule):
     def __init__(self, format_as_datetime: bool = True):
         super().__init__(format_as_datetime=format_as_datetime)
 
-
     def _get_offset_list(self, df: pl.DataFrame) -> list:
         if "_resolved_offset" in df.columns:
             return df["_resolved_offset"].to_list()
         return [0] * df.height
+
+    def _get_offset_expr(self, df: pl.DataFrame) -> pl.Expr:
+        if "_resolved_offset" in df.columns:
+            return pl.col("_resolved_offset").fill_null(0)
+        return pl.lit(0)
 
 
 # ---------------------------------------------------------------------------

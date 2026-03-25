@@ -416,6 +416,7 @@ def _build_fetch_config(config, batch, staging_root, mappings_conn_str):
         base["pii_db_conn_str"] = config.pii_db
     if config.secondary_pii_configs:
         base["secondary_pii_configs"] = config.secondary_pii_configs
+    base["failed_rows_db_path"] = config.failed_rows_db_path
     return base
 
 

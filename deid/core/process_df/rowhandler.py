@@ -32,7 +32,11 @@ class InvalidRowHandler:
     def _write_to_failed_rows_db(self, rows: list[dict]) -> None:
         """Persist failed rows to the audit SQLite database."""
         if not self.db_path:
-            return
+            raise RuntimeError(
+                f"[InvalidRowHandler] {len(rows)} invalid rows in "
+                f"{self.db_name}.{self.table_name} but failed_rows_db_path is not "
+                f"configured — refusing to silently discard rows."
+            )
         try:
             from deid.models.base import create_failed_rows_engine, create_all_failed_rows_tables
             from deid.models.failed_rows import FailedRow
@@ -62,6 +66,7 @@ class InvalidRowHandler:
             )
         except Exception as e:
             nd_logger.error(f"[InvalidRowHandler] Failed to write to failed_rows DB: {e}")
+            raise
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def handle(self, df: pl.DataFrame) -> pl.DataFrame:
@@ -107,7 +112,7 @@ class InvalidRowHandler:
         nd_logger.warning(
             f"[InvalidRowHandler] Removed {ignored_df.height} rows with unresolved "
             f"de-identified IDs from {self.db_name}.{self.table_name}. "
-            f"Written to failed_rows DB."
+            f"Persisted to '{self.db_path}'."
         )
 
         return df.filter(~invalid_mask)

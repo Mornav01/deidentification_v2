@@ -81,6 +81,8 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
         return {"table": config.table_name, "start_id": config.start_id,
                 "end_id": config.end_id, "status": "done", "rows": 0}
 
+    rows_in = df.height
+
     table_details = config.table_details
     key_phi_columns = get_key_phi_column_list(table_details.get("columns_details", []))
 
@@ -159,12 +161,30 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
     df = resolver.transform(df)
 
     # 5. Invalid row handling
+    rows_before_filter = df.height
+    if rows_before_filter != rows_in:
+        logger.warning(
+            "[%s] Row count changed during mapping joins: fetched=%d, after_joins=%d "
+            "(possible duplicate keys in mapping tables)",
+            config.table_name, rows_in, rows_before_filter,
+        )
     row_handler = InvalidRowHandler(
         db_name=config.source_conn_str.split("/")[-1] if "/" in config.source_conn_str else "",
         table_name=config.table_name,
         db_path=config.failed_rows_db_path,
     )
     df = row_handler.handle(df)
+    rows_failed = rows_before_filter - df.height
+
+    # Row-count integrity check: every row entering InvalidRowHandler must
+    # either survive to the output or be written to failed_rows.db.
+    rows_out = df.height
+    if rows_before_filter != rows_out + rows_failed:
+        raise RuntimeError(
+            f"[{config.table_name}] Row count mismatch: "
+            f"pre_filter={rows_before_filter}, output={rows_out}, failed={rows_failed}. "
+            f"{rows_before_filter - rows_out - rows_failed} rows lost silently."
+        )
 
     # 6. De-identification
     deidentifier = DeIdentifier(
@@ -209,11 +229,12 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
     }
     write_batch.apply_async(args=[write_config], queue=f"deid-write-{config.table_name}")
 
-    logger.info("Processed %s batch %d-%d (%d rows)",
-                config.table_name, config.start_id, config.end_id, df.height)
+    logger.info("Processed %s batch %d-%d (%d rows, %d failed)",
+                config.table_name, config.start_id, config.end_id, df.height, rows_failed)
 
     return {"table": config.table_name, "start_id": config.start_id,
-            "end_id": config.end_id, "status": "processed", "rows": df.height}
+            "end_id": config.end_id, "status": "processed",
+            "rows": df.height, "rows_failed": rows_failed}
 
 
 def _update_batch_status(config: ProcessTaskConfig, status: str):

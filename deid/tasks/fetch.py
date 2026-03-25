@@ -135,7 +135,7 @@ def _fetch_batch_inner(config: FetchTaskConfig, raw_config: dict, batch_tag: str
         **{k: raw_config[k] for k in (
             "mapping_db_config", "table_details", "source_conn_str",
             "offset_days", "pii_config", "pii_db_conn_str",
-            "secondary_pii_configs", "dest_conn_str",
+            "secondary_pii_configs", "dest_conn_str", "failed_rows_db_path",
         ) if k in raw_config},
     }
     process_batch.apply_async(args=[process_config], queue="deid-process")
