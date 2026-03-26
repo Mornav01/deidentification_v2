@@ -232,11 +232,6 @@ class DataGenerator:
             source_sample, dest_engine = self.get_sample(table_name, sample_size)
             return total_rows, source_sample, dest_engine
         
-        initial_sample_size = min(100, sample_size)
-        initial_sample = self.get_random_sample(table_name, initial_sample_size)
-        
-        final_sample = self.get_stratified_sample(table_name, sample_size, initial_sample, important_columns)
-        
-        nd_auto_ids = [row['nd_auto_increment_id'] for row in final_sample]
+        final_sample = self.get_random_sample(table_name, sample_size)
         source_sample = []
         return sample_size, source_sample, final_sample
