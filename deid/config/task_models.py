@@ -96,6 +96,7 @@ class QCTaskConfig(BaseModel):
     qc_settings: dict = {}
     offset_days: int = 34
     sample_size: int = 100
+    qc_results_db_path: str = ""
 
 
 class ProgressEvent(BaseModel):

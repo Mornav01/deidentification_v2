@@ -120,13 +120,15 @@ async def _run_qc(config, table_filter: str | None = None):
             offset_days=config.deidentification.date_offset_days,
             sample_size=config.qc.sample_size,
             table_config=_get_table_details(config, tname),
+            qc_results_db_path=config.qc_results_db_path,
         )
         r = run_qc.apply_async(args=[qc_config.model_dump()], queue="deid-process")
         logger.info("Dispatched QC task for table '%s'", tname)
         results.append((tname, r))
 
+    qc_timeout = config.qc.task_timeout
     for tname, r in results:
-        r.get(timeout=config.workers.task_timeout)
+        r.get(timeout=qc_timeout)
         logger.info("QC completed for table '%s'", tname)
 
     state_engine.dispose()

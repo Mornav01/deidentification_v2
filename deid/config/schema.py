@@ -77,6 +77,7 @@ class WorkerSettings(BaseModel):
 class QCSettings(BaseModel):
     sample_size: int = 100
     scan_for_residual_pii: bool = True
+    task_timeout: int = 7200
 
 
 class ClinicalBinDocConfig(BaseModel):
@@ -100,6 +101,7 @@ class DeidConfig(BaseModel):
     mappings_db: Optional[DbConfig] = None
     mappings_db_path: str = ""
     failed_rows_db_path: str = "./failed_rows.db"
+    qc_results_db_path: str = "./qc_results.db"
     redis_url: str = "redis://localhost:6379/0"
     deidentification: DeidentificationSettings = DeidentificationSettings()
     tables: Optional[list[TableConfig]] = None

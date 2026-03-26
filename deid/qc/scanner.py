@@ -1,3 +1,6 @@
+import logging
+import time
+
 from deid.config.table_schemas import TableDetailsForUI
 from deid.config.task_models import DataCountResult
 from deid.qc.generator import DataGenerator
@@ -6,6 +9,8 @@ from deid.qc.schema import OutputSchemaForTable, FinalQCResult, ColumnQCResult
 from deid.core.dbPkg.mapping_loader import MappingDb
 from deid.core.dbPkg.dbhandler import NDDBHandler
 from pydantic import validate_call
+
+logger = logging.getLogger("deid.qc")
 
 
 class LoadMappingData:
@@ -77,27 +82,83 @@ class DbScanner:
         assert table_name, "table_name must not be empty"
         assert table_config, "table_config must not be empty"
 
+        t0 = time.monotonic()
+        logger.info("[QC] [%s] Starting scan...", table_name)
+
         data_generator = DataGenerator(self.source_handler.engine, self.dest_handler.engine)
-
         important_cols = self.get_important_columns(table_config)
+        logger.info("[QC] [%s] PHI columns to check: %s", table_name, important_cols)
+
+        # ── Structured checks ─────────────────────────────────────────────
+        logger.info("[QC] [%s] Generating structured sample...", table_name)
+        t1 = time.monotonic()
         sample_size, source_data, sample_data = data_generator.generate_sample(table_name, important_cols, is_structured=True)
+        logger.info(
+            "[QC] [%s] Structured sample ready: %d rows (%.1fs)",
+            table_name, len(sample_data), time.monotonic() - t1,
+        )
+
         detectors = self.get_structured_detectors(sample_data, table_config)
+        logger.info("[QC] [%s] Running %d structured detector(s)...", table_name, len(detectors))
         columns_qc_result = {}
-        for col_name, detector in detectors:
-            result = detector.is_deidentified(before_rows=source_data, after_rows=sample_data, ignore_condition=table_config.get("ignore_config",{}))
+        for i, (col_name, detector) in enumerate(detectors, 1):
+            t2 = time.monotonic()
+            result = detector.is_deidentified(before_rows=source_data, after_rows=sample_data, ignore_condition=table_config.get("ignore_config", {}))
             columns_qc_result[col_name] = result
+            status = "PASS" if result["failed_count"] == 0 else f"FAIL({result['failed_count']})"
+            logger.info(
+                "[QC] [%s]   [%d/%d] %s: %s (passed=%d, failed=%d, %.1fs)",
+                table_name, i, len(detectors), col_name, status,
+                result["passed_count"], result["failed_count"],
+                time.monotonic() - t2,
+            )
 
+        # ── Unstructured checks ───────────────────────────────────────────
+        logger.info("[QC] [%s] Generating unstructured sample...", table_name)
+        t1 = time.monotonic()
         sample_size, source_data, sample_data = data_generator.generate_sample(table_name, important_cols, is_structured=False)
+        logger.info(
+            "[QC] [%s] Unstructured sample ready: %d rows (%.1fs)",
+            table_name, len(sample_data), time.monotonic() - t1,
+        )
+
         unstructured_detectors = self.get_unstructured_detectors(sample_data, table_config)
-        pii_info = self.get_pii_info()
-        for col_name, detector in unstructured_detectors:
-            result = detector.is_deidentified(before_rows=source_data, after_rows=sample_data, ignore_condition=table_config.get("ignore_config",{}), pii_info=pii_info)
-            columns_qc_result[col_name] = result
+        if unstructured_detectors:
+            logger.info("[QC] [%s] Running %d unstructured detector(s)...", table_name, len(unstructured_detectors))
+            pii_info = self.get_pii_info()
+            for i, (col_name, detector) in enumerate(unstructured_detectors, 1):
+                t2 = time.monotonic()
+                result = detector.is_deidentified(before_rows=source_data, after_rows=sample_data, ignore_condition=table_config.get("ignore_config", {}), pii_info=pii_info)
+                columns_qc_result[col_name] = result
+                status = "PASS" if result["failed_count"] == 0 else f"FAIL({result['failed_count']})"
+                logger.info(
+                    "[QC] [%s]   [%d/%d] %s: %s (passed=%d, failed=%d, %.1fs)",
+                    table_name, i, len(unstructured_detectors), col_name, status,
+                    result["passed_count"], result["failed_count"],
+                    time.monotonic() - t2,
+                )
 
-
+        # ── Row count check ───────────────────────────────────────────────
+        logger.info("[QC] [%s] Checking row counts...", table_name)
         data_count = is_data_discrepancy_present(self.source_handler, self.dest_handler, table_name, ignore_row_count)
         data_count_dict = data_count.model_dump()
+        logger.info(
+            "[QC] [%s] Row counts: source=%d, dest=%d, ignored=%d",
+            table_name,
+            data_count_dict["source_rows_count"],
+            data_count_dict["dest_rows_count"],
+            data_count_dict["ignore_rows_count"],
+        )
+
         final_qc_result = self.get_final_result(data_count_dict, columns_qc_result)
+        verdict = "PASSED" if final_qc_result["is_qc_passed"] else "FAILED"
+        logger.info(
+            "[QC] [%s] Scan complete: %s — %d column(s) checked in %.1fs. %s",
+            table_name, verdict, len(columns_qc_result),
+            time.monotonic() - t0,
+            final_qc_result["reason"] or "",
+        )
+
         output_result = OutputSchemaForTable(
             unstruct_sample_size=len(sample_data),
             table_name=table_name,
