@@ -108,7 +108,7 @@ class DbScanner:
         return output_result
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
-    def get_final_result(self, data_count_result: dict, columns_qc_result: dict[str: ColumnQCResult]):
+    def get_final_result(self, data_count_result: dict, columns_qc_result: dict[str, ColumnQCResult]):
         final_qc_result = FinalQCResult(
             is_qc_passed=True,
             reason=""
