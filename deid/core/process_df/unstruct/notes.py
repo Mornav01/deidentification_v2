@@ -3,16 +3,10 @@ import re          # stdlib – kept for type hints (re.Pattern, re.Match)
 import datetime
 import decimal
 try:
-    import re2
+    import regex as re  # type: ignore[no-redef]
 except ImportError:
-    try:
-        import regex as re2  # type: ignore[no-redef]
-    except ImportError:
-        import re as re2  # type: ignore[no-redef]
-try:
-    import regex as _regex
-except ImportError:
-    import re as _regex  # type: ignore[no-redef]
+    pass  # stdlib re already available
+
 import itertools
 from typing import List
 from deid.core.process_df.rules import RuleBase
@@ -28,7 +22,7 @@ from deid.core.process_df.unstruct.xml import deidentify_xml_tags
 from deid.core.process_df.unstruct.xml_utils import xml_tag_replacements
 
 from deid.core.dbPkg.dbhandler import create_read_only_engine
-
+from deid.core.process_df.rules import _fast_parse as _fast_parse_date, _KNOWN_DATE_FORMATS
 
 
 def _normalize_pid(val):
@@ -211,7 +205,7 @@ class NotesRule(RuleBase):
         def _compiled(original: str):
             pat = _pattern_cache.get(original)
             if pat is None:
-                pat = _regex.compile(rf"(?<!\d){re2.escape(original)}(?!\d)")
+                pat = re.compile(rf"(?<!\d){re.escape(original)}(?!\d)")
                 _pattern_cache[original] = pat
             return pat
 
@@ -414,7 +408,7 @@ class NotesRule(RuleBase):
                     min_len = mask_config[config_key].get("min_length", 2)
                     if len(val) <= min_len:
                         continue
-                    entry[rf"(?i)\b{re2.escape(val)}\b"] = mask_config[config_key]["masking_value"]
+                    entry[rf"(?i)\b{re.escape(val)}\b"] = mask_config[config_key]["masking_value"]
 
             # --- DOB ---
             if dob_cols:
@@ -436,7 +430,7 @@ class NotesRule(RuleBase):
                 )
 
         # Compile per-patient mask alternation regexes (one regex per masking_value).
-        # Replaces N × P individual re2.sub calls with N × distinct_values calls.
+        # Replaces N × P individual re.sub calls with N × distinct_values calls.
         pid_to_compiled_mask: dict = {}  # pid → [(compiled_re, masking_value)]
         for pid, patterns in pid_to_mask.items():
             by_value: dict = {}
@@ -445,14 +439,14 @@ class NotesRule(RuleBase):
             compiled_list = []
             for masking_val, pats in by_value.items():
                 try:
-                    compiled_list.append((re2.compile("|".join(pats)), masking_val))
+                    compiled_list.append((re.compile("|".join(pats)), masking_val))
                 except Exception as exc:
                     nd_logger.warning(
                         f"[{self.__class__.__name__}] mask compile failed for pid={pid}: {exc}"
                     )
                     for p in pats:
                         try:
-                            compiled_list.append((re2.compile(p), masking_val))
+                            compiled_list.append((re.compile(p), masking_val))
                         except Exception:
                             pass
             if compiled_list:
@@ -482,9 +476,9 @@ class NotesRule(RuleBase):
                     if all_combos:
                         try:
                             sorted_pats = sorted(all_combos, key=len, reverse=True)
-                            compiled = re2.compile(
+                            compiled = re.compile(
                                 "(?i)" + "|".join(
-                                    rf"\b{re2.escape(p)}\b" for p in sorted_pats
+                                    rf"\b{re.escape(p)}\b" for p in sorted_pats
                                 )
                             )
                             rule_list.append((compiled, masking_value))
@@ -548,7 +542,7 @@ class NotesRule(RuleBase):
             )
 
         # ── Phase 2: ONE pass over source rows ────────────────────────────────
-        date_re = re2.compile(DATE_PATTERN_NOTES) if dob_cols else None
+        date_re = re.compile(DATE_PATTERN_NOTES) if dob_cols else None
         text_list = df[text_column].to_list()
         result: list = []
         mask_hit_count = 0
@@ -573,13 +567,12 @@ class NotesRule(RuleBase):
             if date_re:
                 dob_replacements = pid_to_dobs.get(pid)
                 if dob_replacements:
-                    
-                    def _dob_replacer(match, _repl=dob_replacements):
+                    def _dob_replacer(match, _repl=dob_replacements, _fmts=_KNOWN_DATE_FORMATS):
                         ds = match.group(0)
-                        try:
-                            return _repl.get(date_parser.parse(ds, fuzzy=True).date(), ds)
-                        except Exception:
+                        parsed = _fast_parse_date(ds, _fmts)
+                        if parsed is None:
                             return ds
+                        return _repl.get(parsed.date(), ds)
                     text = date_re.sub(_dob_replacer, text)
 
             # combine
@@ -684,12 +677,12 @@ class NotesRule(RuleBase):
                     min_len = mask_config[config_key].get("min_length", 2)
                     if len(val) <= min_len:
                         continue
-                    pattern = rf"(?i)\b{re2.escape(val)}\b"
+                    pattern = rf"(?i)\b{re.escape(val)}\b"
                     entry[pattern] = mask_config[config_key]["masking_value"]
 
             # ── Compile alternation regexes per patient ────────────────────
             # Group patterns by masking_value, join with |, compile once.
-            # Reduces N×P individual re2.sub calls to N×distinct_mask_values.
+            # Reduces N×P individual re.sub calls to N×distinct_mask_values.
             pid_to_compiled: dict = {}  # pid → [(compiled_re, masking_value)]
             for pid, patterns in pid_to_map.items():
                 by_value: dict = {}
@@ -698,11 +691,11 @@ class NotesRule(RuleBase):
                 compiled_list = []
                 for masking_val, pats in by_value.items():
                     try:
-                        compiled_list.append((re2.compile("|".join(pats)), masking_val))
+                        compiled_list.append((re.compile("|".join(pats)), masking_val))
                     except Exception:
                         for p in pats:
                             try:
-                                compiled_list.append((re2.compile(p), masking_val))
+                                compiled_list.append((re.compile(p), masking_val))
                             except Exception:
                                 pass
                 if compiled_list:
@@ -789,7 +782,7 @@ class NotesRule(RuleBase):
                 min_len = mask_config[col].get("min_length", 2)
                 if len(val) <= min_len:
                     continue
-                pattern = rf"(?i)\b{re2.escape(val)}\b"
+                pattern = rf"(?i)\b{re.escape(val)}\b"
                 replacement_map[pattern] = mask_config[col]["masking_value"]
             return replacement_map
 
@@ -824,7 +817,7 @@ class NotesRule(RuleBase):
                 return text
             for pattern, repl in replacements.items():
                 try:
-                    text = re2.sub(pattern, repl, text)
+                    text = re.sub(pattern, repl, text)
                 except Exception:
                     pass
             return text
@@ -848,7 +841,7 @@ class NotesRule(RuleBase):
             )
             return masked_col
 
-        date_pattern = re2.compile(DATE_PATTERN_NOTES)
+        date_pattern = re.compile(DATE_PATTERN_NOTES)
         dob_col_lists = {col: df_batch[col].to_list() for col in dob_columns}
         n_rows = df_batch.height
         dob_replacements_list = []
@@ -945,7 +938,7 @@ class NotesRule(RuleBase):
             masking_value: str = info["masking_value"]
 
             # Pre-compile once per unique pattern set (many rows share the same patient →
-            # same patterns). Avoids N re2.compile() calls when U << N unique patients.
+            # same patterns). Avoids N re.compile() calls when U << N unique patients.
             _cache: dict = {}
             compiled_list = []
             for pats in patterns_list:
@@ -955,9 +948,9 @@ class NotesRule(RuleBase):
                 key = tuple(sorted(pats))
                 if key not in _cache:
                     try:
-                        _cache[key] = re2.compile(
+                        _cache[key] = re.compile(
                             "(?i)" + "|".join(
-                                rf"\b{re2.escape(p)}\b"
+                                rf"\b{re.escape(p)}\b"
                                 for p in sorted(pats, key=len, reverse=True)
                             )
                         )
@@ -1020,7 +1013,7 @@ class NotesRule(RuleBase):
                 # \b is RE2-safe. The original (?<![A-Za-z0-9])…(?![A-Za-z0-9]) used
                 # lookbehind which is unsupported in both google-re2 AND Polars' Rust
                 # regex engine, so it was already silently failing via the except branch.
-                pattern = r"(?i)\b{}\b".format(re2.escape(str(old_value)))
+                pattern = r"(?i)\b{}\b".format(re.escape(str(old_value)))
                 try:
                     masked_col = masked_col.str.replace_all(pattern, new_value)
                 except Exception as e:

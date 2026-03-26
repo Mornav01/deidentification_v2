@@ -9,12 +9,9 @@ import datetime
 import decimal
 import os
 try:
-    import re2 as re
+    import regex as re  # type: ignore[no-redef]
 except ImportError:
-    try:
-        import regex as re  # type: ignore[no-redef]
-    except ImportError:
-        import re  # type: ignore[no-redef]
+    pass  # stdlib re already imported
 import polars as pl
 from typing import Iterator, List, Dict
 from pydantic import validate_call

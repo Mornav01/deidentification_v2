@@ -11,12 +11,9 @@ from pathlib import Path
 from pydantic import validate_call
 
 try:
-    import re2 as re
+    import regex as re  # type: ignore[no-redef]
 except ImportError:
-    try:
-        import regex as re  # type: ignore[no-redef]
-    except ImportError:
-        import re  # type: ignore[no-redef]
+    pass  # stdlib re already available
 
 from sqlalchemy import inspect
 
@@ -26,10 +23,9 @@ from deid.core.dbPkg.dbhandler import create_read_only_engine
 logger = logging.getLogger("deid.config")
 
 # ── camelCase / PascalCase → snake_case normaliser ───────────────────────────
-import regex as _regex
 
-_CAMEL_RE1 = _regex.compile(r"([a-z0-9])([A-Z])")
-_CAMEL_RE2 = _regex.compile(r"([A-Z]+)([A-Z][a-z])")
+_CAMEL_RE1 = re.compile(r"([a-z0-9])([A-Z])")
+_CAMEL_RE2 = re.compile(r"([A-Z]+)([A-Z][a-z])")
 
 
 def normalize_column_name(name: str) -> str:

@@ -1,11 +1,8 @@
 import re          # stdlib – kept for type hints (re.Match, re.Pattern)
 try:
-    import re2
+    import regex as re  # type: ignore[no-redef]
 except ImportError:
-    try:
-        import regex as re2  # type: ignore[no-redef]
-    except ImportError:
-        import re as re2  # type: ignore[no-redef]
+    pass  # stdlib re already available
 
 DATE_PATTERN_NOTES = (
     # 1. ISO style: YYYY-MM-DD with optional time and fractional seconds
@@ -90,12 +87,10 @@ DATE_PATTERN_GENERAL = (
 )
 
 
-
-
 ZIP_CODE_PATTERNS = {
-    "US": re2.compile(r'^(\d{3})(\d{2})(?:-\d{4})?$'),  # Matches 12345 and 12345-6789,
+    "US": re.compile(r'^(\d{3})(\d{2})(?:-\d{4})?$'),  # Matches 12345 and 12345-6789,
     # add more countries here, e.g.
-    "CA": re2.compile(r'^([A-Z]\d[A-Z]) ?\d[A-Z]\d$')
+    "CA": re.compile(r'^([A-Z]\d[A-Z]) ?\d[A-Z]\d$')
 }
 
 

@@ -6,12 +6,9 @@ from datetime import datetime
 from collections import defaultdict
 import json
 try:
-    import re2
+    import regex as re  # type: ignore[no-redef]
 except ImportError:
-    try:
-        import regex as re2  # type: ignore[no-redef]
-    except ImportError:
-        import re as re2  # type: ignore[no-redef]
+    pass  # stdlib re already available
 import argparse
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -28,7 +25,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Compiled once — avoids redundant recompilation for every CDC row
-_RE_VALUES = re2.compile(r"(?i)\)\s*VALUES\s*\(")
+_RE_VALUES = re.compile(r"(?i)\)\s*VALUES\s*\(")
 
 # All audit columns added/ensured on every CDC-touched staging table
 _ALTER_COLS = [

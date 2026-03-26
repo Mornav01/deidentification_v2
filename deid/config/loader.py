@@ -4,19 +4,16 @@ from __future__ import annotations
 import os
 from pathlib import Path
 try:
-    import re2
+    import regex as re  # type: ignore[no-redef]
 except ImportError:
-    try:
-        import regex as re2  # type: ignore[no-redef]
-    except ImportError:
-        import re as re2  # type: ignore[no-redef]
+    pass  # stdlib re already available
 
 import yaml
 
 from deid.config.schema import DeidConfig
 from pydantic import validate_call
 
-_ENV_VAR_PATTERN = re2.compile(r"\$\{(\w+)\}")
+_ENV_VAR_PATTERN = re.compile(r"\$\{(\w+)\}")
 
 
 @validate_call(config=dict(arbitrary_types_allowed=True))

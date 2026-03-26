@@ -5,12 +5,9 @@ import json
 import logging
 from pathlib import Path
 try:
-    import re2
+    import regex as re  # type: ignore[no-redef]
 except ImportError:
-    try:
-        import regex as re2  # type: ignore[no-redef]
-    except ImportError:
-        import re as re2  # type: ignore[no-redef]
+    pass  # stdlib re already available
 
 import polars as pl
 import pyarrow.ipc as ipc
@@ -204,9 +201,9 @@ def _clean_type_str(raw: str) -> str:
     if s.endswith("()"):
         s = s[:-2]
     # Strip COLLATE clauses — dest DB may not support the same collation
-    s = re2.sub(r"(?i)\s+COLLATE\s+\S+", "", s)
+    s = re.sub(r"(?i)\s+COLLATE\s+\S+", "", s)
     # Strip CHARACTER SET clauses
-    s = re2.sub(r"(?i)\s+CHARACTER\s+SET\s+\S+", "", s)
+    s = re.sub(r"(?i)\s+CHARACTER\s+SET\s+\S+", "", s)
     s = s.strip()
     # NullType() stringifies to "NULL" — not a valid column type
     if not s or s.upper() == "NULL" or s.upper() == "NULLTYPE":

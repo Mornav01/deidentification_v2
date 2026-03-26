@@ -13,12 +13,9 @@ import logging
 from pydantic import validate_call
 
 try:
-    import re2 as re
+    import regex as re  # type: ignore[no-redef]
 except ImportError:
-    try:
-        import regex as re  # type: ignore[no-redef]
-    except ImportError:
-        import re  # type: ignore[no-redef]
+    pass  # stdlib re already imported
 
 from deid.config.rules_generator import normalize_column_name
 

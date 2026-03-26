@@ -4,12 +4,9 @@ from typing import Dict
 from enum import Enum
 import re          # stdlib – kept for type hints (re.Match, re.Pattern)
 try:
-    import re2
+    import regex as re  # type: ignore[no-redef]
 except ImportError:
-    try:
-        import regex as re2  # type: ignore[no-redef]
-    except ImportError:
-        import re as re2  # type: ignore[no-redef]
+    pass  # stdlib re already available
 from dateutil import parser as date_parser
 from deid.core.process_df.constants import DATE_PATTERN_GENERAL, ZIP_CODE_PATTERNS
 from deid.core.logger import nd_logger
@@ -188,7 +185,7 @@ def _normalize_to_mysql_datetime(val) -> str | None:
 
 
 class BaseDateOffsetRule(RuleBase):
-    COMPILED_DATE_PATTERN = re2.compile(DATE_PATTERN_GENERAL)
+    COMPILED_DATE_PATTERN = re.compile(DATE_PATTERN_GENERAL)
 
     def __init__(self, format_as_datetime: bool = True, is_notes: bool = False):
         self.format_as_datetime = format_as_datetime
@@ -235,7 +232,7 @@ class BaseDateOffsetRule(RuleBase):
                 return date_str
 
             shifted = parsed + timedelta(days=offset_days)
-            if re2.search(r"\d{2}:\d{2}:\d{2}", date_str):
+            if re.search(r"\d{2}:\d{2}:\d{2}", date_str):
                 shifted_str = shifted.strftime("%Y-%m-%d %H:%M:%S")
             else:
                 shifted_str = shifted.strftime("%Y-%m-%d")

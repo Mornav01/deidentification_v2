@@ -2,12 +2,9 @@
 from __future__ import annotations
 
 try:
-    import re2
+    import regex as re  # type: ignore[no-redef]
 except ImportError:
-    try:
-        import regex as re2  # type: ignore[no-redef]
-    except ImportError:
-        import re as re2  # type: ignore[no-redef]
+    pass  # stdlib re already available
 import zlib
 from typing import Iterator
 
@@ -34,7 +31,7 @@ BINTYPEID_TO_EXT: dict[int, str] = {
 XML_BIN_TYPE_IDS: set[int] = {k for k, v in BINTYPEID_TO_EXT.items() if v == "xml"}
 BINARY_BIN_TYPE_IDS: set[int] = {1001, 1007}
 
-_CONTROL_CHAR_RE = re2.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
 _ZLIB_PREFIXES = (b"\x78\x9c", b"\x78\x01", b"\x78\xda")
 
 

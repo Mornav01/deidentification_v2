@@ -46,8 +46,13 @@ class UnstructuredDetector(Detector):
         column_qc_result = ColumnQCResult(passed_count=0, failed_count=0, remarks={})
         all_failed_remarks = {"exact_match_remarks": [], "presidio_remarks": []}
         for row in after_rows:
-            exact_entities_found = self._exact_match(row[self.column_name], pii_info)
-            presidio_entities_found = self._presidio_analyzer(row[self.column_name])
+            cell_value = row.get(self.column_name)
+            if cell_value is None:
+                column_qc_result["passed_count"] += 1
+                continue
+            cell_value = str(cell_value)
+            exact_entities_found = self._exact_match(cell_value, pii_info)
+            presidio_entities_found = self._presidio_analyzer(cell_value)
             if len(exact_entities_found)>0 or len(presidio_entities_found)>0:
                 column_qc_result["failed_count"] += 1
             else:

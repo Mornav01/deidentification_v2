@@ -1,14 +1,7 @@
 try:
-    import re2
+    import regex as re  # type: ignore[no-redef]
 except ImportError:
-    try:
-        import regex as re2  # type: ignore[no-redef]
-    except ImportError:
-        import re as re2  # type: ignore[no-redef]
-try:
-    import regex
-except ImportError:
-    import re as regex  # type: ignore[no-redef]
+    pass  # stdlib re already available
 import xml.etree.ElementTree as ET
 from dateutil import parser as date_parser
 from deid.core.logger import nd_logger
@@ -21,14 +14,14 @@ except Exception:
     HAS_LXML = False
 
 # ---------------- regex helpers ----------------
-XML_DECLARATION_RE = re2.compile(r"(?i)<\?xml[^>]*\?>")
-XML_STYLESHEET_RE = re2.compile(r"(?i)<\?xml-stylesheet[^>]*\?>")
-PI_RE = re2.compile(r"(?s)<\?.*?\?>")  # (?s) = DOTALL; RE2 supports inline flag
-CONTROL_CHARS_RE = re2.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
+XML_DECLARATION_RE = re.compile(r"(?i)<\?xml[^>]*\?>")
+XML_STYLESHEET_RE = re.compile(r"(?i)<\?xml-stylesheet[^>]*\?>")
+PI_RE = re.compile(r"(?s)<\?.*?\?>")  # (?s) = DOTALL; RE2 supports inline flag
+CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
 # Lookahead required — RE2 doesn't support it; use `regex` (middle tier).
-BARE_AMP_RE = regex.compile(r'&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9A-Fa-f]+;)')
-_ZIP_5_RE = re2.compile(r"\d{5}")
-_BR_RE = re2.compile(r"(?i)<br\s*>")
+BARE_AMP_RE = re.compile(r'&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9A-Fa-f]+;)')
+_ZIP_5_RE = re.compile(r"\d{5}")
+_BR_RE = re.compile(r"(?i)<br\s*>")
 
 # ---------------- cleaning helpers (no @validate_call — called in hot loop) ----------------
 def remove_control_chars(text: str) -> str:
@@ -47,7 +40,7 @@ def wrap_with_root_if_needed(text: str) -> str:
     s = text.strip()
     if not s:
         return s
-    m = re2.match(r"\s*<([A-Za-z0-9_:.-]+)(\s|>)", s)
+    m = re.match(r"\s*<([A-Za-z0-9_:.-]+)(\s|>)", s)
     if not m:
         return f"<root>{s}</root>"
     root_tag = m.group(1)
