@@ -43,8 +43,8 @@ def test_setup_phase_creates_batch_states(tmp_path):
     )
 
     mock_handler = MagicMock()
-    mock_handler.get_rows_count.return_value = 5000
-    mock_handler.get_min_max_id.return_value = (1, 5000)
+    mock_handler.get_rows_count.return_value = 50000
+    mock_handler.get_min_max_id.return_value = (1, 50000)
 
     from deid.models.base import create_state_engine, create_all_state_tables
     state_engine = create_state_engine(str(tmp_path / "state.db"))
@@ -58,13 +58,13 @@ def test_setup_phase_creates_batch_states(tmp_path):
     from sqlalchemy.orm import Session
     with Session(state_engine) as s:
         batches = s.query(BatchState).filter_by(table_name="patients").order_by(BatchState.start_id).all()
-        # 5000 rows / 1000 batch_size = 5 batches (offset-based: 0-999, 1000-1999, ...)
+        # 50000 rows / 10000 batch_size = 5 batches
         assert len(batches) == 5
         assert all(b.status == "pending" for b in batches)
         assert batches[0].start_id == 0
-        assert batches[0].end_id == 999
-        assert batches[-1].start_id == 4000
-        assert batches[-1].end_id == 4999
+        assert batches[0].end_id == 9999
+        assert batches[-1].start_id == 40000
+        assert batches[-1].end_id == 49999
 
 
 def test_setup_phase_small_table(tmp_path):
@@ -80,7 +80,7 @@ def test_setup_phase_small_table(tmp_path):
     )
 
     mock_handler = MagicMock()
-    mock_handler.get_rows_count.return_value = 100  # less than batch_size=1000
+    mock_handler.get_rows_count.return_value = 100  # less than batch_size=10000
 
     from deid.models.base import create_state_engine, create_all_state_tables
     state_engine = create_state_engine(str(tmp_path / "state.db"))
@@ -94,7 +94,7 @@ def test_setup_phase_small_table(tmp_path):
     from sqlalchemy.orm import Session
     with Session(state_engine) as s:
         batches = s.query(BatchState).filter_by(table_name="small_table").all()
-        # 100 rows < batch_size=1000 → one batch covering offset 0..999
+        # 100 rows < batch_size=10000 → one batch covering offset 0..9999
         assert len(batches) == 1
         assert batches[0].start_id == 0
-        assert batches[0].end_id == 999
+        assert batches[0].end_id == 9999

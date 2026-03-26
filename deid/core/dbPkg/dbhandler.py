@@ -1,10 +1,11 @@
-from sqlalchemy import create_engine, event, inspect, MetaData, Table, text, func, Column
+from sqlalchemy import create_engine, event, inspect, MetaData, Table, text, func, Column, String
 from sqlalchemy.engine import reflection
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import ProgrammingError
 from deid.core.logger import nd_logger
-from sqlalchemy import String
 from sqlalchemy.types import Enum as SAEnum
+
+from deid.core.dbPkg.type_mapping import mssql_type_to_mysql
 import datetime
 import decimal
 import os
@@ -365,6 +366,163 @@ def stream_table_keyset(
         )
 
 
+def _sqlalchemy_type_to_mysql_ddl(col_type) -> str:
+    """Convert SQLAlchemy column type to MySQL DDL type string."""
+    if col_type is None:
+        return "VARCHAR(255)"
+    if isinstance(col_type, SAEnum):
+        return "VARCHAR(255)"
+    type_cls = type(col_type)
+    mod = getattr(type_cls, "__module__", "") or ""
+    if "sqlalchemy.dialects.mysql" in mod:
+        name = type_cls.__name__.upper()
+        if "VARCHAR" in name or "CHAR" in name:
+            length = getattr(col_type, "length", None)
+            if length and isinstance(length, int) and length <= 255:
+                return f"{'VARCHAR' if 'VARCHAR' in name else 'CHAR'}({length})"
+            if length and isinstance(length, int) and length > 255:
+                return "LONGTEXT"
+            return "VARCHAR(255)"
+        if "INT" in name or "INTEGER" in name:
+            if "BIG" in name:
+                return "BIGINT"
+            if "SMALL" in name:
+                return "SMALLINT"
+            if "TINY" in name:
+                return "TINYINT"
+            return "INT"
+        if "DECIMAL" in name or "NUMERIC" in name:
+            p = getattr(col_type, "precision", 18) or 18
+            s = getattr(col_type, "scale", 2) or 2
+            if s >= 2 and p <= 18:
+                p = max(p, 20)
+            return f"DECIMAL({p},{s})"
+        if "DATETIME" in name:
+            fsp = getattr(col_type, "fsp", None)
+            return f"DATETIME({fsp})" if fsp else "DATETIME"
+        if "TEXT" in name:
+            return "LONGTEXT" if "LONG" in name else "TEXT"
+        if "BLOB" in name or "BINARY" in name:
+            return "LONGBLOB" if "LONG" in name else "VARBINARY(255)"
+        if "FLOAT" in name or "DOUBLE" in name:
+            return "DOUBLE"
+        if "DATE" in name and "TIME" not in name:
+            return "DATE"
+        if "TIME" in name:
+            return "TIME"
+        return name
+    if "sqlalchemy.dialects.mssql" in mod:
+        mapped = mssql_type_to_mysql(col_type)
+        return _sqlalchemy_type_to_mysql_ddl(mapped)
+    if isinstance(col_type, (String,)):
+        length = getattr(col_type, "length", None)
+        if length is None:
+            return "VARCHAR(255)"
+        if isinstance(length, int) and length > 255:
+            return "LONGTEXT"
+        return f"VARCHAR({length})"
+    if hasattr(col_type, "length") and col_type.length:
+        length = col_type.length
+        if isinstance(length, int) and length > 255:
+            return "LONGTEXT"
+        return f"VARCHAR({length})"
+    type_name = type_cls.__name__.upper()
+    if "INT" in type_name:
+        return "BIGINT" if "BIG" in type_name else "INT"
+    if "FLOAT" in type_name or "NUMERIC" in type_name:
+        return "DOUBLE"
+    if "DATETIME" in type_name:
+        return "DATETIME"
+    if "DATE" in type_name:
+        return "DATE"
+    if "TIME" in type_name:
+        return "TIME"
+    if "BOOL" in type_name:
+        return "TINYINT(1)"
+    if "TEXT" in type_name or "STRING" in type_name:
+        return "VARCHAR(255)"
+    return "VARCHAR(255)"
+
+
+_MYSQL_ROW_SIZE_LIMIT = 65535
+
+
+def _estimate_mysql_inline_size(ddl_type: str) -> int:
+    """Estimate bytes this column contributes to MySQL row size (utf8mb4)."""
+    ddl_upper = ddl_type.upper()
+    if "VARCHAR" in ddl_upper:
+        m = re.search(r"VARCHAR\s*\(\s*(\d+)\s*\)", ddl_type, re.I)
+        if m:
+            return int(m.group(1)) * 4 + 2
+        return 255 * 4 + 2
+    if "CHAR" in ddl_upper and "VAR" not in ddl_upper:
+        m = re.search(r"CHAR\s*\(\s*(\d+)\s*\)", ddl_type, re.I)
+        if m:
+            return int(m.group(1)) * 4
+        return 255 * 4
+    if "TINYINT" in ddl_upper:
+        return 1
+    if "INT" in ddl_upper:
+        return 8 if "BIG" in ddl_upper else 4
+    if "DATETIME" in ddl_upper or "TIMESTAMP" in ddl_upper:
+        return 8
+    if "DATE" in ddl_upper:
+        return 4
+    if "TIME" in ddl_upper:
+        return 3
+    if "DOUBLE" in ddl_upper or "FLOAT" in ddl_upper:
+        return 8
+    if "DECIMAL" in ddl_upper:
+        m = re.search(r"DECIMAL\s*\(\s*(\d+)\s*", ddl_type, re.I)
+        return max(8, (int(m.group(1)) + 2) // 2) if m else 8
+    if "TEXT" in ddl_upper or "BLOB" in ddl_upper or "BINARY" in ddl_upper:
+        return 20
+    return 255 * 4 + 2
+
+
+def _adjust_ddl_for_mysql_row_limit(col_specs: list[tuple[str, str, str]]) -> list[str]:
+    """Convert some VARCHAR columns to TEXT if row size would exceed MySQL limit.
+
+    col_specs: list of (col_name, ddl_type, nullable_str) e.g. ("x", "VARCHAR(255)", "")
+    """
+    total = 0
+    var_cols: list[tuple[int, str, int]] = []
+    for i, (col_name, ddl_type, _) in enumerate(col_specs):
+        size = _estimate_mysql_inline_size(ddl_type)
+        total += size
+        if "VARCHAR" in ddl_type.upper() or ("CHAR" in ddl_type.upper() and "VAR" not in ddl_type.upper()):
+            if "TEXT" not in ddl_type.upper() and "BLOB" not in ddl_type.upper():
+                var_cols.append((i, ddl_type, size))
+
+    if total <= _MYSQL_ROW_SIZE_LIMIT:
+        return [f"`{n}` {t}{null}" for n, t, null in col_specs]
+
+    var_cols.sort(key=lambda x: x[2], reverse=True)
+    to_convert = set()
+    current_total = total
+    for i, _, size in var_cols:
+        if current_total <= _MYSQL_ROW_SIZE_LIMIT:
+            break
+        to_convert.add(i)
+        current_total -= size
+        current_total += 20
+
+    result = []
+    converted = []
+    for i, (col_name, ddl_type, nullable_str) in enumerate(col_specs):
+        if i in to_convert and ("VARCHAR" in ddl_type.upper() or "CHAR" in ddl_type.upper()):
+            result.append(f"`{col_name}` LONGTEXT{nullable_str}")
+            converted.append(col_name)
+        else:
+            result.append(f"`{col_name}` {ddl_type}{nullable_str}")
+    if converted:
+        nd_logger.info(
+            f"[create_table] Row size would exceed MySQL limit; converted {len(converted)} "
+            f"VARCHAR/CHAR columns to LONGTEXT: {converted[:5]}{'...' if len(converted) > 5 else ''}"
+        )
+    return result
+
+
 class NDDBHandler:
     def __init__(self, connection_string: str, read_only: bool = False):
         self.read_only = read_only
@@ -541,56 +699,89 @@ class NDDBHandler:
     ):
         dest_handler._assert_writable(f"CREATE TABLE {dest_table_name or source_table_name}")
         dest_table_name = dest_table_name or source_table_name
-
-        # When copying from MSSQL (dbo.users) to MySQL, strip the schema prefix —
-        # MySQL doesn't use schema-qualified table names in the same way.
+        # MySQL dest: use plain table name (no schema prefix like dbo.users)
         if dest_handler.engine.dialect.name == "mysql" and "." in str(dest_table_name):
             dest_table_name = dest_table_name.split(".", 1)[-1]
 
-        source_table = self._reflect_table(source_table_name)
-        cross_dialect = self.engine.dialect.name != dest_handler.engine.dialect.name
-        mapped_columns = []
-        for column in source_table.columns:
-            col_name = column.name
-            if col_name in column_type_mapping:
-                mapping = column_type_mapping[col_name]
-                new_type, col_nullable = self.get_column_type(mapping)
-                col_nullable = col_nullable if (col_nullable is not None) else column.nullable
-                mapped_columns.append(
-                    Column(col_name, new_type, nullable=col_nullable)
-                )
-            else:
-                col_type = self._portable_type(column.type) if cross_dialect else column.type
-                # ENUM columns become VARCHAR(255) in the destination.
-                # De-identification writes placeholder values (e.g. "((PATIENT_NAME))")
-                # that are not in the original enum set — MySQL would reject them.
-                if isinstance(col_type, SAEnum):
-                    from sqlalchemy.dialects.mysql import VARCHAR
-                    col_type = VARCHAR(255)
-                mapped_columns.append(
-                    Column(col_name, col_type, nullable=column.nullable)
-                )
+        # Use get_columns (no FK reflection) to avoid MySQL dialect KeyError('TABLENAME')
+        # in _correct_for_mysql_bugs_88718_96365 when Table autoload reflects FKs.
+        col_defs = self.get_columns(source_table_name)
+        source_is_mssql = self.engine.dialect.name == "mssql"
+        dest_is_mysql = dest_handler.engine.dialect.name == "mysql"
 
-        dest_table = Table(dest_table_name, dest_handler.metadata, *mapped_columns)
+        # Use raw CREATE TABLE for MySQL dest to avoid Table.create() which can
+        # trigger MySQL dialect FK reflection and KeyError('TABLENAME').
+        if dest_is_mysql:
+            from sqlalchemy.dialects.mysql import VARCHAR
+            col_specs = []
+            for col_def in col_defs:
+                col_name = col_def["name"]
+                if col_name in column_type_mapping:
+                    mapping = column_type_mapping[col_name]
+                    new_type, col_nullable = self.get_column_type(mapping)
+                    col_nullable = col_nullable if (col_nullable is not None) else col_def.get("nullable", True)
+                    ddl_type = _sqlalchemy_type_to_mysql_ddl(new_type)
+                else:
+                    col_type = col_def.get("type")
+                    col_nullable = col_def.get("nullable", True)
+                    if isinstance(col_type, SAEnum):
+                        ddl_type = "VARCHAR(255)"
+                    elif source_is_mssql and dest_is_mysql:
+                        mapped = mssql_type_to_mysql(col_type)
+                        ddl_type = _sqlalchemy_type_to_mysql_ddl(mapped)
+                    else:
+                        ddl_type = _sqlalchemy_type_to_mysql_ddl(col_type or VARCHAR(255))
+                nullable_str = "" if col_nullable else " NOT NULL"
+                col_specs.append((col_name, ddl_type, nullable_str))
 
-        if dest_handler.engine.dialect.name == "mysql":
-            from sqlalchemy.schema import CreateTable
-            with dest_handler.engine.begin() as conn:
+            col_ddl_parts = _adjust_ddl_for_mysql_row_limit(col_specs)
+            create_sql = f"CREATE TABLE `{dest_table_name}` (\n  " + ",\n  ".join(col_ddl_parts) + "\n)"
+            with dest_handler.engine.connect() as conn:
                 conn.execute(text("SET sql_mode = ''"))
                 conn.execute(text("SET innodb_strict_mode = 0"))
-                conn.execute(text(str(CreateTable(dest_table).compile(dest_handler.engine))))
+                conn.execute(text(create_sql))
+                conn.commit()
         else:
+            # Non-MySQL dest: use Table.create() (no MySQL FK reflection bug)
+            mapped_columns = []
+            for col_def in col_defs:
+                col_name = col_def["name"]
+                if col_name in column_type_mapping:
+                    mapping = column_type_mapping[col_name]
+                    new_type, col_nullable = self.get_column_type(mapping)
+                    col_nullable = col_nullable if (col_nullable is not None) else col_def.get("nullable", True)
+                    mapped_columns.append(Column(col_name, new_type, nullable=col_nullable))
+                else:
+                    col_type = col_def.get("type")
+                    col_nullable = col_def.get("nullable", True)
+                    if isinstance(col_type, SAEnum):
+                        from sqlalchemy.dialects.mysql import VARCHAR as _VARCHAR
+                        col_type = _VARCHAR(255)
+                    elif source_is_mssql:
+                        col_type = mssql_type_to_mysql(col_type)
+                    else:
+                        col_type = col_type or String(255)
+                    mapped_columns.append(Column(col_name, col_type, nullable=col_nullable))
+
+            dest_table = Table(dest_table_name, dest_handler.metadata, *mapped_columns)
             dest_table.create(dest_handler.engine)
+
         nd_logger.info(
             f"Table {dest_table_name} created in destination database with modified schema."
         )
-
 
     def get_column_type(self, col_info):
         col_nullable = col_info.get("null", None)
         col_type = col_info["type"]
         if col_type == String:
             return col_type(col_info.get("length")), col_nullable
+        # Schema mapping passes type classes (e.g. LONGTEXT); _sqlalchemy_type_to_mysql_ddl
+        # needs instances. Instantiate so LONGTEXT → "LONGTEXT" not "VARCHAR(255)".
+        if isinstance(col_type, type):
+            try:
+                col_type = col_type()
+            except TypeError:
+                pass
         return col_type, col_nullable
 
     def create_table_in_dest_if_not_exists(
@@ -611,8 +802,16 @@ class NDDBHandler:
         )
 
     def _table_exists(self, dest_handler: "NDDBHandler", table_name: str) -> bool:
-        inspector = reflection.Inspector.from_engine(dest_handler.engine)
-        return inspector.has_table(table_name)
+        try:
+            # MySQL dest: use plain name and backticks
+            if dest_handler.engine.dialect.name == "mysql" and "." in table_name:
+                table_name = table_name.split(".", 1)[-1]
+            quoted = f"`{table_name}`" if dest_handler.engine.dialect.name == "mysql" else table_name
+            with dest_handler.engine.connect() as conn:
+                conn.execute(text(f"SELECT 1 FROM {quoted} LIMIT 1"))
+            return True
+        except Exception:
+            return False
 
 
     def get_all_tables(self) -> list[str]:

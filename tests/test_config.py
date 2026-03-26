@@ -226,7 +226,7 @@ def test_worker_settings_defaults(tmp_path):
     p = _write_yaml(tmp_path, cfg)
     config = load_config(p)
     assert config.workers.fetchers == 2
-    assert config.workers.processors == 4
+    assert config.workers.processors == 16
 
 
 def test_default_batch_size(tmp_path):
@@ -236,7 +236,7 @@ def test_default_batch_size(tmp_path):
     del cfg["deidentification"]["batch_size"]
     p = _write_yaml(tmp_path, cfg)
     config = load_config(p)
-    assert config.deidentification.batch_size == 1000
+    assert config.deidentification.batch_size == 10000
 
 
 def test_deidentification_settings_ignores_unknown_fields(tmp_path):
