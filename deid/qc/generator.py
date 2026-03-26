@@ -38,15 +38,44 @@ class DataGenerator:
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_random_sample(self, table_name: str, size: int) -> List[Dict[str, Any]]:
-        query = text(f"""
-            SELECT * 
-            FROM {table_name}
-            ORDER BY RAND()
-            LIMIT :sample_size
-        """)
-        
+        """Sample rows efficiently using ID-based random selection.
+
+        Avoids ``ORDER BY RAND()`` which forces a full-table filesort on MySQL
+        (O(N log N) regardless of LIMIT), causing the worker to block on I/O
+        with zero CPU usage for minutes on large tables.
+
+        Instead: fetch the ID range, pick random IDs in Python, then fetch
+        those specific rows via a keyset lookup — O(size) index seeks.
+        """
+        dialect = self.dest_engine.dialect.name
         with self.dest_engine.connect() as conn:
-            result = conn.execute(query, {"sample_size": size})
+            id_col = "nd_auto_increment_id"
+            bounds = conn.execute(
+                text(f"SELECT MIN({id_col}), MAX({id_col}) FROM {table_name}")
+            ).fetchone()
+            min_id, max_id = bounds[0], bounds[1]
+
+            if min_id is None or max_id is None:
+                return []
+
+            # Over-sample to account for gaps in the ID space.
+            candidate_ids = random.sample(
+                range(int(min_id), int(max_id) + 1),
+                min(size * 3, int(max_id) - int(min_id) + 1),
+            )
+            # Fetch rows matching the random IDs.
+            placeholders = ",".join(str(int(i)) for i in candidate_ids)
+            if dialect == "mssql":
+                query = text(
+                    f"SELECT TOP :lim * FROM {table_name} "
+                    f"WHERE {id_col} IN ({placeholders})"
+                )
+            else:
+                query = text(
+                    f"SELECT * FROM {table_name} "
+                    f"WHERE {id_col} IN ({placeholders}) LIMIT :lim"
+                )
+            result = conn.execute(query, {"lim": size})
             columns = result.keys()
             return [dict(zip(columns, row)) for row in result]
         
@@ -131,13 +160,12 @@ class DataGenerator:
                         params.update({"upper": float(upper)})
                         
                     query = text(f"""
-                        SELECT * 
+                        SELECT *
                         FROM {table_name}
                         {where_clause}
-                        ORDER BY RAND()
                         LIMIT :limit
                     """)
-                    
+
                     with self.dest_engine.connect() as conn:
                         result = conn.execute(query, params)
                         columns = result.keys()
@@ -159,7 +187,6 @@ class DataGenerator:
                         SELECT *
                         FROM {table_name}
                         WHERE {col} = :category
-                        ORDER BY RAND()
                         LIMIT :limit
                     """)
                     
