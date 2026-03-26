@@ -105,12 +105,15 @@ async def run(config: DeidConfig, config_path: str):
                 config, state_engine
             )
 
+        if "qc" in config.phases:
+            raise SystemExit(
+                "'qc' phase has been removed from 'deid run'. "
+                "Use 'deid qc --config <config.yaml>' instead."
+            )
+
         if "deidentify" in config.phases:
             logger.info("Phase: deidentify")
             await _deidentify_phase(config, state_engine)
-
-        if "qc" in config.phases:
-            logger.info("QC is now a standalone command. Run: deid qc --config <config.yaml>")
 
     except Exception as exc:
         _run_exc = exc
