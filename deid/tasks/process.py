@@ -225,7 +225,7 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
         "state_db_path": config.state_db_path,
         "redis_url": config.redis_url,
         "run_config": config.run_config,
-        **{k: raw_config[k] for k in ("dest_conn_str", "id_column") if k in raw_config},
+        **{k: raw_config[k] for k in ("dest_conn_str", "id_column", "table_details") if k in raw_config},
     }
     write_batch.apply_async(args=[write_config], queue=f"deid-write-{config.table_name}")
 

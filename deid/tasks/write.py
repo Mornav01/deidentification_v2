@@ -108,9 +108,10 @@ def _write_batch_inner(config: WriteTaskConfig, batch_tag: str):
     # 2. Open dest DB
     dest = _get_cached_handler(config.dest_conn_str)
 
-    # 3. Create dest table if needed (using embedded schema)
+    # 3. Create dest table if needed (using embedded schema + PHI type overrides)
     col_schema_raw = file_metadata.get(b"deid_column_schema", b"{}")
     col_schema = json.loads(col_schema_raw)
+    _apply_phi_type_overrides(col_schema, config.table_details)
     _create_dest_table(dest, config.table_name, col_schema)
 
     # 4. Strip extra columns added during processing (mapping joins etc.)
@@ -284,8 +285,13 @@ def _adjust_ddl_for_mysql_row_limit(col_parts: list[str], col_types: list[str]) 
         # Replace the type portion in the DDL fragment
         old_part = result[idx]
         # Extract column name (everything up to first space after the quoted identifier)
-        col_name_end = old_part.index(" ", old_part.index("`", 1) + 1)
-        col_name_part = old_part[:col_name_end]
+        try:
+            m = re.match(r'^(`[^`]+`)\s', old_part)
+            if not m:
+                continue
+            col_name_part = m.group(1)
+        except Exception:
+            continue
         result[idx] = f"{col_name_part} LONGTEXT"
         total = total - size + 20
         converted.append(col_name_part)
@@ -296,6 +302,47 @@ def _adjust_ddl_for_mysql_row_limit(col_parts: list[str], col_types: list[str]) 
             len(converted),
         )
     return result
+
+
+# PHI rule → destination DDL type (must match ColumnsTypeDetector)
+_PHI_RULE_TO_DDL = {
+    "PATIENT_ID": "BIGINT",
+    "ENCOUNTER_ID": "BIGINT",
+    "REFERENCE_PID": "BIGINT",
+    "APPOINTMENT_ID": "BIGINT",
+    "PATIENT_DOB": "INTEGER",
+    "DATE_OFFSET": "DATETIME",
+    "STATIC_OFFSET": "DATETIME",
+    "ZIP_CODE": "VARCHAR(50)",
+    "NOTES": "LONGTEXT",
+    "GENERIC_NOTES": "LONGTEXT",
+}
+
+
+def _apply_phi_type_overrides(col_schema: dict, table_details: dict | None) -> None:
+    """Override source column types for PHI columns based on de-identification rules.
+
+    After de-identification, ID columns hold nd_* BIGINT values, dates are shifted
+    DATETIMEs, etc.  The source schema (INTEGER, VARCHAR) no longer matches what is
+    actually written.  This mutates col_schema in-place.
+    """
+    if not table_details:
+        return
+    for col_conf in table_details.get("columns_details", []):
+        if not col_conf.get("is_phi"):
+            continue
+        col_name = col_conf.get("column_name")
+        rule = col_conf.get("de_identification_rule")
+        if col_name and rule and col_name in col_schema:
+            ddl = _PHI_RULE_TO_DDL.get(rule)
+            if ddl:
+                col_schema[col_name]["type"] = ddl
+            elif rule == "MASK":
+                mask_val = col_conf.get("mask_value", "")
+                placeholder_len = len(f"<<{mask_val}>>")
+                source_len = col_schema[col_name].get("length") or 0
+                dest_len = max(source_len, placeholder_len, 50) + 10
+                col_schema[col_name]["type"] = f"VARCHAR({dest_len})"
 
 
 def _create_dest_table(handler: NDDBHandler, table_name: str, col_schema: dict):

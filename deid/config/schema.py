@@ -106,6 +106,7 @@ class DeidConfig(BaseModel):
     deidentification: DeidentificationSettings = DeidentificationSettings()
     tables: Optional[list[TableConfig]] = None
     tables_to_run: Optional[list[str]] = None
+    tables_to_run_csv: Optional[str] = None
     rules_csv: Optional[str] = None
     mapping_tables: dict[str, MappingTableConfig] = {}
     phases: list[str] = Field(default=["setup", "deidentify"])
@@ -146,6 +147,16 @@ class DeidConfig(BaseModel):
 
     @model_validator(mode="after")
     def filter_tables_to_run(self) -> "DeidConfig":
+        if not self.tables_to_run and self.tables_to_run_csv:
+            csv_path = Path(self.tables_to_run_csv)
+            if csv_path.exists():
+                import csv
+                with open(csv_path) as f:
+                    reader = csv.reader(f)
+                    self.tables_to_run = [
+                        row[0].strip() for row in reader
+                        if row and row[0].strip() and not row[0].strip().startswith("#")
+                    ]
         if self.tables_to_run and self.tables:
             allowed = set(self.tables_to_run)
             self.tables = [t for t in self.tables if t.name in allowed]

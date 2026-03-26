@@ -37,7 +37,7 @@ class InvalidRowHandler:
         )
 
     def _write_to_failed_rows_db(self, rows: list[dict], check_col: str) -> None:
-        """Persist failed rows to the audit SQLite database."""
+        """Persist failed rows to a per-schema table in the audit SQLite database."""
         if not self.db_path:
             raise RuntimeError(
                 f"[InvalidRowHandler] {len(rows)} invalid rows in "
@@ -45,26 +45,27 @@ class InvalidRowHandler:
                 f"configured — refusing to silently discard rows."
             )
         try:
-            from deid.models.base import create_failed_rows_engine, create_all_failed_rows_tables
-            from deid.models.failed_rows import FailedRow
-            from sqlalchemy.orm import Session
+            from datetime import datetime, timezone
+            from deid.models.base import create_failed_rows_engine
+            from deid.models.failed_rows import ensure_schema_table
 
             engine = create_failed_rows_engine(self.db_path)
-            create_all_failed_rows_tables(engine)
-            with Session(engine) as session:
+            table = ensure_schema_table(engine, self.db_name)
+            with engine.begin() as conn:
                 for row_dict in rows:
                     reason = f"unresolved_id:{check_col}"
                     row_str = {k: "None" if v is None else str(v) for k, v in row_dict.items()}
-                    session.add(FailedRow(
+                    conn.execute(table.insert().values(
                         source_db=self.db_name,
                         table_name=self.table_name,
                         reason=reason,
                         row_data=json.dumps(row_str, default=str),
+                        failed_at=datetime.now(timezone.utc),
                     ))
-                session.commit()
             engine.dispose()
             nd_logger.info(
-                f"[InvalidRowHandler] Wrote {len(rows)} failed rows to '{self.db_path}'."
+                f"[InvalidRowHandler] Wrote {len(rows)} failed rows to '{self.db_path}' "
+                f"(table: failed_rows_{self.db_name})."
             )
         except Exception as e:
             nd_logger.error(f"[InvalidRowHandler] Failed to write to failed_rows DB: {e}")

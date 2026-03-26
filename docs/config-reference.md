@@ -204,6 +204,74 @@ Populated by `deid mapping`. Must exist before running `deid run`.
 
 ---
 
+## `mappings_db` (optional)
+
+Remote database connection for mappings (alternative to SQLite `mappings_db_path`). When set, the pipeline uses this MySQL/PostgreSQL database instead of a local SQLite file.
+
+```yaml
+mappings_db:
+  type: mysql
+  host: mappings-db.internal
+  port: 3306
+  database: mappings
+  username: ${MAPPINGS_DB_USER}
+  password: ${MAPPINGS_DB_PASS}
+```
+
+Same structure as `source_db`. When both `mappings_db` and `mappings_db_path` are set, `mappings_db` takes precedence.
+
+---
+
+## `failed_rows_db_path` (optional)
+
+Path to the SQLite database for audit-logging rows that could not be de-identified (e.g. missing patient ID mapping).
+
+```yaml
+failed_rows_db_path: ./failed_rows.db
+```
+
+**Default:** `./failed_rows.db`
+
+Failed rows are stored in per-source-schema tables: `failed_rows_{schema_name}`. Each table has the same structure (source_db, table_name, reason, row_data, failed_at). When using `--rerun`, only the rows for the tables being rerun are deleted — other schemas' data is preserved.
+
+---
+
+## `qc_results_db_path` (optional)
+
+Path to the SQLite database for persisting QC scan results.
+
+```yaml
+qc_results_db_path: ./qc_results.db
+```
+
+**Default:** `./qc_results.db`
+
+Results are written incrementally as each table's QC scan completes. Each row contains: table name, pass/fail status, reason, source/dest row counts, sample size, and per-column results (JSON).
+
+---
+
+## `tables_to_run` (optional)
+
+Explicit list of table names to process. When set, only these tables are run (must be a subset of tables defined in `tables` or `rules_csv`).
+
+```yaml
+tables_to_run:
+  - patients
+  - encounters
+```
+
+---
+
+## `tables_to_run_csv` (optional)
+
+Path to a CSV file listing table names to process (one per line, `#` comments supported). Alternative to `tables_to_run` for longer lists. Can also be passed via CLI: `--tables-csv`.
+
+```yaml
+tables_to_run_csv: ./tables_to_run.csv
+```
+
+---
+
 ## `redis_url` (optional)
 
 URL for the Redis server used as the Celery message broker and for pub/sub progress events.
@@ -231,13 +299,13 @@ phases:
   - qc
 ```
 
-**Default:** `["setup", "deidentify", "qc"]`
+**Default:** `["setup", "deidentify"]`
 
 | Phase | Description |
 |-------|-------------|
-| `setup` | Connect to source DB, discover tables, count rows, compute ID ranges, create `BatchState` entries in the state DB. |
-| `deidentify` | Build Celery task graph, dispatch batches to workers (fetch → apply rules → write to destination). Streams progress via Redis. |
-| `qc` | Sample rows from source and destination, verify that each rule was applied correctly, report pass/fail per column. |
+| `setup` | Connect to source DB, discover tables, count rows, create `BatchState` entries in the state DB. |
+| `deidentify` | Dispatch 3-stage task chain per batch (fetch → process → write) to Celery workers. Streams progress via Redis. |
+| `qc` | (Deprecated in `deid run`; use `deid qc` standalone.) Sample rows from source and destination, verify rules, report pass/fail per column. Results saved to `qc_results.db`. |
 
 You can run phases individually:
 
@@ -259,20 +327,24 @@ Celery worker pool configuration.
 workers:
   fetchers: 2
   processors: 4
-  writers: 2
   max_retries: 1
   task_timeout: 3600
-  max_tasks_per_child: 1
+  max_tasks_per_child: 50
+  max_tasks_per_child_fetch: 100
+  max_tasks_per_child_process: 20
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `fetchers` | integer | `2` | Number of concurrent fetch tasks (reading from source DB). |
-| `processors` | integer | `4` | Number of concurrent processing tasks (applying de-identification rules). |
-| `writers` | integer | `2` | Number of concurrent write tasks (inserting into destination DB). |
+| `fetchers` | integer | `2` | Number of concurrent fetch worker processes (reading from source DB). |
+| `processors` | integer | `16` | Number of concurrent process worker processes (applying de-identification rules). |
 | `max_retries` | integer | `1` | Maximum number of automatic retries for a failed task before marking it as failed. |
-| `task_timeout` | integer | `3600` | Hard time limit (seconds) for a single Celery task. Tasks exceeding this are terminated. |
-| `max_tasks_per_child` | integer | `1` | Number of tasks a worker child process handles before being replaced. Low values prevent memory leaks; `1` means each task gets a fresh process. |
+| `task_timeout` | integer | `3600` | Hard time limit (seconds) for a single deidentification Celery task. Tasks exceeding this are terminated. |
+| `max_tasks_per_child` | integer | `50` | Number of tasks a worker child process handles before being replaced. Prevents memory leaks. |
+| `max_tasks_per_child_fetch` | integer | (inherits `max_tasks_per_child`) | Override for fetch workers specifically. |
+| `max_tasks_per_child_process` | integer | (inherits `max_tasks_per_child`) | Override for process workers specifically. |
+
+Write workers are spawned automatically — one per table with concurrency=1 to prevent MySQL lock-wait timeouts from concurrent INSERTs on the same table.
 
 ---
 
@@ -284,12 +356,16 @@ Quality control settings for the post-deidentification verification phase.
 qc:
   sample_size: 100
   scan_for_residual_pii: true
+  task_timeout: 7200
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `sample_size` | integer | `100` | Number of rows to sample from each table for QC verification. |
 | `scan_for_residual_pii` | boolean | `true` | Whether to scan de-identified data for residual PII patterns that may have been missed. |
+| `task_timeout` | integer | `7200` | Hard time limit (seconds) for a single QC Celery task. Separate from the deidentification `workers.task_timeout`. |
+
+QC only runs for tables present in the current config. Results are persisted to `qc_results.db`. Run standalone with `deid qc --config config.yaml`.
 
 ---
 
@@ -332,7 +408,7 @@ logging:
 
 ## `pii_db` (optional)
 
-Connection details for the PII lookup database, used by the `NOTES` rule for NLP-based de-identification of clinical free-text.
+Connection details for the PII lookup database, used by the `NOTES` rule for patient-specific PII masking in clinical free-text.
 
 ```yaml
 pii_db:
@@ -347,7 +423,7 @@ When `pii_db` is configured, `deid run` requires:
 1. PII tables to exist in the destination (created by `deid pii-table`).
 2. `pii_config_path` to point to a valid YAML file (generated by `deid pii-table`).
 
-**Skip this section entirely** if you only use `MASK`, `DATE_OFFSET`, `GENERIC_NOTES`, and other rules that don't require NLP-based PII lookup.
+**Skip this section entirely** if you only use `MASK`, `DATE_OFFSET`, `GENERIC_NOTES`, and other rules that don't require patient-specific PII lookup.
 
 ---
 
@@ -517,6 +593,8 @@ rules_csv: ./rules.csv
 # ── Paths ─────────────────────────────────────────────────────────────
 state_db_path: ./state.db
 mappings_db_path: ./hospital_db_mappings.db
+failed_rows_db_path: ./failed_rows.db
+qc_results_db_path: ./qc_results.db
 
 # ── De-identification settings ────────────────────────────────────────
 deidentification:
@@ -532,16 +610,14 @@ redis_url: redis://localhost:6379/0
 phases:
   - setup
   - deidentify
-  - qc
 
 # ── Worker pool ───────────────────────────────────────────────────────
 workers:
   fetchers: 2
   processors: 4
-  writers: 2
   max_retries: 1
   task_timeout: 3600
-  max_tasks_per_child: 1
+  max_tasks_per_child: 50
 
 # ── Quality control ──────────────────────────────────────────────────
 qc:
@@ -553,7 +629,7 @@ logging:
   log_dir: ./logs
   log_verbosity: standard
 
-# ── PII database (for NOTES rule — NLP-based masking) ─────────────────
+# ── PII database (for NOTES rule — patient-specific masking) ──────────
 pii_db:
   master_connection_str: mysql+pymysql://${PII_DB_USER}:${PII_DB_PASSWORD}@localhost:3306/pii_db
 

@@ -85,6 +85,7 @@ class WriteTaskConfig(BaseModel):
     id_column: str = "nd_auto_increment_id"
     redis_url: str = ""
     run_config: dict | None = None
+    table_details: dict | None = None
 
 
 class QCTaskConfig(BaseModel):

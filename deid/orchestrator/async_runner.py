@@ -110,9 +110,7 @@ async def run(config: DeidConfig, config_path: str):
             await _deidentify_phase(config, state_engine)
 
         if "qc" in config.phases:
-            logger.warning("QC phase is deprecated in 'deid run'. Use 'deid qc --config <config.yaml>' instead.")
-            logger.info("Phase: qc")
-            await _qc_phase(config, state_engine)
+            logger.info("QC is now a standalone command. Run: deid qc --config <config.yaml>")
 
     except Exception as exc:
         _run_exc = exc
@@ -453,6 +451,7 @@ def _build_write_config(config, batch, staging_root):
         state_db_path=config.state_db_path,
         dest_conn_str=config.destination_db.connection_string(),
         redis_url=config.redis_url,
+        table_details=_get_table_details(config, batch.table_name),
     ).model_dump()
 
 

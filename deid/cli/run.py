@@ -23,6 +23,8 @@ def run_command(
     config: str = typer.Option(..., "--config", "-c", help="Path to config.yaml"),
     phase: Optional[str] = typer.Option(None, "--phase", "-p", help="Override: run only this phase"),
     log_level: str = typer.Option("INFO", "--log-level", "-l", help="Logging level"),
+    rerun: bool = typer.Option(False, "--rerun", help="Clean slate: drop dest tables, remove state/staging, start fresh"),
+    tables_csv: Optional[str] = typer.Option(None, "--tables-csv", help="CSV file listing table names to run (one per line)"),
 ):
     """Run the de-identification pipeline (setup -> deidentify -> QC)."""
     logging.basicConfig(level=getattr(logging, log_level.upper(), logging.INFO))
@@ -37,8 +39,16 @@ def run_command(
     cfg = load_config(config_path)
     Path(cfg.logging.log_dir).mkdir(parents=True, exist_ok=True)
 
+    if tables_csv:
+        cfg.tables_to_run_csv = tables_csv
+        # Re-run the filter validator manually since the model is already constructed.
+        cfg.filter_tables_to_run()
+
     if phase:
         cfg.phases = [phase]
+
+    if rerun:
+        _rerun_cleanup(cfg)
 
     from deid.tasks.celery_app import create_celery_app, get_celery_app
     create_celery_app(broker_url=cfg.redis_url, result_backend=cfg.redis_url)
@@ -55,6 +65,86 @@ def run_command(
         typer.echo("\nInterrupted — shutting down...")
     finally:
         _stop_workers(worker_procs)
+
+
+def _rerun_cleanup(cfg):
+    """Remove state DB, staging files, and destination tables for configured tables."""
+    import shutil
+    from deid.staging import get_staging_root
+
+    table_names = [t.name for t in cfg.tables] if cfg.tables else []
+    logger.info("Rerun cleanup for %d tables: %s", len(table_names), table_names)
+
+    # 1. Drop destination tables
+    if table_names:
+        from sqlalchemy import text
+        from deid.core.dbPkg.dbhandler import NDDBHandler
+        dest = NDDBHandler(cfg.destination_db.connection_string())
+        qi = dest._qi
+        for tname in table_names:
+            try:
+                with dest.engine.begin() as conn:
+                    conn.execute(text(f"DROP TABLE IF EXISTS {qi(tname)}"))
+                logger.info("Dropped destination table: %s", tname)
+            except Exception as e:
+                logger.warning("Could not drop table %s: %s", tname, e)
+        dest.close()
+
+    # 2. Remove state.db
+    state_path = Path(cfg.state_db_path)
+    if state_path.exists():
+        state_path.unlink()
+        logger.info("Removed state DB: %s", state_path)
+
+    # 3. Delete failed rows only for the tables being rerun
+    failed_path = Path(cfg.failed_rows_db_path)
+    if failed_path.exists() and table_names:
+        from sqlalchemy import text as sa_text, inspect as sa_inspect
+        from deid.models.base import create_failed_rows_engine
+        from deid.models.failed_rows import get_schema_table_name
+        schema_name = cfg.source_db.database
+        fr_table = get_schema_table_name(schema_name)
+        fr_engine = create_failed_rows_engine(cfg.failed_rows_db_path)
+        try:
+            existing = set(sa_inspect(fr_engine).get_table_names())
+            if fr_table in existing:
+                placeholders = ",".join(f"'{t}'" for t in table_names)
+                with fr_engine.begin() as conn:
+                    conn.execute(sa_text(
+                        f"DELETE FROM {fr_table} WHERE table_name IN ({placeholders})"
+                    ))
+                logger.info(
+                    "Deleted failed rows for %d table(s) from '%s'",
+                    len(table_names), fr_table,
+                )
+        except Exception as e:
+            logger.warning("Could not clean failed_rows: %s", e)
+        finally:
+            fr_engine.dispose()
+
+    # 4. Remove staging directory
+    staging_root = get_staging_root(cfg.state_db_path)
+    if staging_root.exists():
+        shutil.rmtree(staging_root)
+        logger.info("Removed staging directory: %s", staging_root)
+
+    # 5. Purge Celery task queues in Redis
+    try:
+        import redis
+        r = redis.Redis.from_url(cfg.redis_url)
+        queues = ["deid-fetch", "deid-process"]
+        queues += [f"deid-write-{t}" for t in table_names]
+        purged = 0
+        for q in queues:
+            n = r.delete(q)
+            purged += n
+        # Also clear celery metadata keys (task results)
+        for key in r.scan_iter("celery-task-meta-*"):
+            r.delete(key)
+        r.close()
+        logger.info("Purged %d Redis queues: %s", purged, queues)
+    except Exception as e:
+        logger.warning("Could not purge Redis queues: %s", e)
 
 
 def _start_workers(cfg, config_path: str = "") -> list[subprocess.Popen]:

@@ -16,9 +16,6 @@ This guide walks through every step to go from a fresh install to a fully de-ide
 pip install -r requirements.txt
 pip install -e .
 
-# Download spacy model (required for clinical notes NLP)
-python -m spacy download en_core_web_lg
-
 # Start Redis (if not already running)
 redis-server
 ```
@@ -153,7 +150,7 @@ deid mapping --config config.yaml --mappings-db ./custom_mappings.db
 
 ## Step 4: Create PII Tables (Optional)
 
-If your config has a `pii_db` section (needed for `NOTES` rule — NLP-based PII masking in clinical notes), create the PII lookup tables:
+If your config has a `pii_db` section (needed for `NOTES` rule — patient-specific PII masking in clinical notes), create the PII lookup tables:
 
 First, add the PII database config to your `config.yaml`:
 
@@ -199,30 +196,70 @@ The pipeline validates prerequisites before starting:
 - Mappings DB must exist with populated patient mappings
 - If `pii_db` is configured, PII tables and `pii_config` must be available
 
-Then it executes three phases:
+Then it executes two phases by default:
 
 ### Phase 1: Setup
 - Connects to source DB and counts rows per table
-- Queries min/max IDs for batch splitting
 - Creates `state.db` with table states and batch ranges
 
-### Phase 2: Deidentify
-- Spawns Celery worker processes (fetch, process, write queues)
-- Dispatches batches: fetch from source → apply rules → write to destination
+### Phase 2: Deidentify (3-stage pipeline)
+- Spawns Celery worker processes (fetch, process, per-table write queues)
+- Dispatches 3-stage task chain per batch:
+  - **Fetch**: keyset-paginated read from source → Arrow IPC file
+  - **Process**: join mappings → apply de-identification rules → Arrow IPC file
+  - **Write**: idempotent INSERT to destination DB
 - Streams progress via Redis pub/sub
-
-### Phase 3: QC
-- Samples rows from source and destination
-- Verifies each rule was applied correctly
-- Reports pass/fail per column
 
 ### Run Individual Phases
 
 ```bash
 deid run --config config.yaml --phase setup
 deid run --config config.yaml --phase deidentify
-deid run --config config.yaml --phase qc
 ```
+
+### Run QC (standalone)
+
+QC is recommended as a separate step after deidentification:
+
+```bash
+deid qc --config config.yaml
+deid qc --config config.yaml --table specific_table
+```
+
+QC results are persisted to `qc_results.db`.
+
+### Clean-Slate Rerun
+
+To start over completely (drops destination tables, state DB, staging files, failed rows, and Redis queues):
+
+```bash
+deid run --config config.yaml --rerun
+```
+
+### Run Only Specific Tables
+
+Filter to specific tables using a CSV file (one table name per line):
+
+```bash
+deid run --config config.yaml --tables-csv tables_to_run.csv
+```
+
+Or combine with rerun:
+
+```bash
+deid run --config config.yaml --rerun --tables-csv tables_to_run.csv
+```
+
+The CSV format is simple — one table name per line, `#` comments supported:
+
+```csv
+patients
+encounters
+# labs  — skip this one for now
+appointments
+```
+
+You can also set `tables_to_run` or `tables_to_run_csv` in config.yaml.
 
 ---
 
@@ -257,9 +294,10 @@ These call the same core logic as their CLI counterparts.
 | `deid generate-config` | Generate rules CSV by introspecting source database |
 | `deid mapping` | Create and populate mapping tables |
 | `deid pii-table` | Create PII tables and generate pii_config YAML |
-| `deid run` | Run the de-identification pipeline |
+| `deid run` | Run the de-identification pipeline (`--rerun`, `--tables-csv`, `--phase`) |
+| `deid qc` | Run QC scanning standalone (`--table` for single table) |
 | `deid status` | Check run progress |
-| `deid retry` | Re-run failed batches |
+| `deid retry` | Re-dispatch failed batches |
 | `deid cdc` | Process Change Data Capture feeds |
 | `deid decrypt-notes` | Decrypt encrypted clinical notes |
 
@@ -284,3 +322,15 @@ Run `deid pii-table --config config.yaml` to create the PII tables.
 ### Rules CSV has many unassigned columns
 
 This is expected — only columns matching known PII patterns get auto-assigned rules. Review the CSV and manually assign rules for columns that need de-identification, or leave them empty to copy as-is.
+
+### Pipeline seems stuck with no CPU usage
+
+If this happens during QC, the sampling queries may be slow. QC uses efficient ID-range sampling instead of `ORDER BY RAND()`. Check your Redis connection and worker logs.
+
+### Encounter/patient IDs appear as decimals (e.g. 12345.0)
+
+This was a known issue with Float64 promotion after Polars left joins. All ID rules now cast to Int64 before writing. If you see this, ensure you're running the latest code and use `--rerun` to recreate destination tables with correct BIGINT types.
+
+### MySQL "Row size too large" error
+
+The pipeline automatically converts large VARCHAR columns to LONGTEXT when the row would exceed MySQL's 65535-byte limit. It also disables `sql_mode` and `innodb_strict_mode` during table creation. If you still encounter this, check that your MySQL user has permission to SET session variables.
