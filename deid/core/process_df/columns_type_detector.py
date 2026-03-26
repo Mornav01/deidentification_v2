@@ -21,7 +21,7 @@ class ColumnsTypeDetector:
             Rules.PATIENT_DOB: ColumnsTypeDetector._get_column_type_for_dob_id(),
             Rules.DATE_OFFSET: ColumnsTypeDetector._get_column_type_for_dateoffset_id(),
             Rules.ZIP_CODE: ColumnsTypeDetector._get_column_type_for_zipcode_id(),
-            Rules.MASK: {"type": String, "length": 200},
+            Rules.MASK: {"type": String, "length": 100},
             Rules.NOTES: {"type": LONGTEXT},
             Rules.GENERIC_NOTES: {"type": LONGTEXT},
             Rules.STATIC_OFFSET: ColumnsTypeDetector._get_column_type_for_dateoffset_id(),

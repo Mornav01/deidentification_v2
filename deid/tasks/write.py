@@ -227,18 +227,98 @@ def _quote_identifier(engine, name: str) -> str:
     return engine.dialect.identifier_preparer.quote_identifier(name)
 
 
+_MYSQL_ROW_SIZE_LIMIT = 65535
+
+
+def _estimate_mysql_inline_size(ddl_type: str) -> int:
+    """Estimate bytes this column contributes to MySQL row size (utf8mb4)."""
+    upper = ddl_type.upper()
+    m = re.search(r"VARCHAR\s*\(\s*(\d+)\s*\)", ddl_type, re.I)
+    if m:
+        return int(m.group(1)) * 4 + 2
+    m = re.search(r"CHAR\s*\(\s*(\d+)\s*\)", ddl_type, re.I)
+    if m and "VAR" not in upper:
+        return int(m.group(1)) * 4
+    if "BIGINT" in upper:
+        return 8
+    if "TINYINT" in upper:
+        return 1
+    if "INT" in upper:
+        return 4
+    if "DATETIME" in upper or "TIMESTAMP" in upper:
+        return 8
+    if "DATE" in upper:
+        return 4
+    if "TIME" in upper:
+        return 3
+    if "DOUBLE" in upper or "FLOAT" in upper:
+        return 8
+    m = re.search(r"DECIMAL\s*\(\s*(\d+)", ddl_type, re.I)
+    if m:
+        return max(8, (int(m.group(1)) + 2) // 2)
+    if "TEXT" in upper or "BLOB" in upper or "BINARY" in upper:
+        return 20  # off-row pointer
+    return 255 * 4 + 2  # assume VARCHAR-like
+
+
+def _adjust_ddl_for_mysql_row_limit(col_parts: list[str], col_types: list[str]) -> list[str]:
+    """Convert VARCHAR columns to LONGTEXT if row size would exceed MySQL limit."""
+    total = sum(_estimate_mysql_inline_size(t) for t in col_types)
+    if total <= _MYSQL_ROW_SIZE_LIMIT:
+        return col_parts
+
+    # Sort VARCHAR columns by inline size descending, convert largest first
+    var_indices = [
+        (i, _estimate_mysql_inline_size(col_types[i]))
+        for i in range(len(col_types))
+        if "VARCHAR" in col_types[i].upper() or
+           ("CHAR" in col_types[i].upper() and "VAR" not in col_types[i].upper())
+    ]
+    var_indices.sort(key=lambda x: x[1], reverse=True)
+
+    result = list(col_parts)
+    converted = []
+    for idx, size in var_indices:
+        if total <= _MYSQL_ROW_SIZE_LIMIT:
+            break
+        # Replace the type portion in the DDL fragment
+        old_part = result[idx]
+        # Extract column name (everything up to first space after the quoted identifier)
+        col_name_end = old_part.index(" ", old_part.index("`", 1) + 1)
+        col_name_part = old_part[:col_name_end]
+        result[idx] = f"{col_name_part} LONGTEXT"
+        total = total - size + 20
+        converted.append(col_name_part)
+
+    if converted:
+        logger.info(
+            "[create_table] Row size exceeds MySQL limit; converted %d columns to LONGTEXT",
+            len(converted),
+        )
+    return result
+
+
 def _create_dest_table(handler: NDDBHandler, table_name: str, col_schema: dict):
     """Create destination table if it doesn't exist using exact source types."""
     if not col_schema:
         return
 
     qi = lambda name: _quote_identifier(handler.engine, name)
+    is_mysql = handler.engine.dialect.name == "mysql"
     col_defs = []
+    col_types = []
     for col_name, info in col_schema.items():
         type_str = _clean_type_str(info.get("type", "VARCHAR(255)"))
         col_defs.append(f"{qi(col_name)} {type_str}")
+        col_types.append(type_str)
+
+    if is_mysql:
+        col_defs = _adjust_ddl_for_mysql_row_limit(col_defs, col_types)
 
     ddl_str = f"CREATE TABLE IF NOT EXISTS {qi(table_name)} ({', '.join(col_defs)})"
     logger.debug("DDL: %s", ddl_str)
     with handler.engine.begin() as conn:
+        if is_mysql:
+            conn.exec_driver_sql("SET sql_mode = ''")
+            conn.exec_driver_sql("SET innodb_strict_mode = 0")
         conn.exec_driver_sql(ddl_str)

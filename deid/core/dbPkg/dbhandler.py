@@ -573,6 +573,10 @@ class NDDBHandler:
 
         dest_table = Table(dest_table_name, dest_handler.metadata, *mapped_columns)
 
+        if dest_handler.engine.dialect.name == "mysql":
+            with dest_handler.engine.begin() as conn:
+                conn.execute(text("SET sql_mode = ''"))
+                conn.execute(text("SET innodb_strict_mode = 0"))
         dest_table.create(dest_handler.engine)
         nd_logger.info(
             f"Table {dest_table_name} created in destination database with modified schema."

@@ -27,31 +27,6 @@ def _get_compiled(pattern: str) -> re.Pattern | None:
     return compiled
 
 
-# Concat-and-split joins all cell values, runs ONE regex call, then splits back.
-# This saves N regex-engine startups (~2.5 μs each) but pays ~4 ns/char for the
-# Python join + split.  Below ~2 MB total text the join/split overhead is small
-# and the saved startups dominate; above ~2 MB the giant-string cost dominates.
-_CONCAT_SPLIT_MAX_BYTES = 2_000_000
-
-_DELIMITERS = ["\x00", "\x01", "\x02", "\x03", "\x00\x01\x00"]
-
-
-def _pick_delimiter(series: pl.Series) -> str:
-    """Return a delimiter string not present anywhere in the series data."""
-    for delim in _DELIMITERS:
-        if not series.str.contains(re.escape(delim)).any():
-            return delim
-    return _DELIMITERS[-1]
-
-
-def _can_match_empty(pattern: str) -> bool:
-    """Return True if the pattern can match the empty string."""
-    try:
-        return re.match(pattern, "") is not None
-    except Exception:
-        return True
-
-
 def mask_address(match: re.Match) -> str:
     """Replacement function to mask address parts using named groups."""
     nd_logger.debug(f"Matched address: {match.group(0)}")
@@ -173,6 +148,9 @@ class GenericNotesRule(RuleBase):
 
             else:
                 # Simple regex replacement.
+                # Fast path: Polars str.replace_all (vectorized Rust regex).
+                # Fallback: Python re.sub via map_batches for patterns the
+                # Rust engine rejects (e.g. lookbehind).
                 for pattern in patterns:
                     compiled = _get_compiled(pattern)
                     if compiled is None:
@@ -181,43 +159,15 @@ class GenericNotesRule(RuleBase):
                         )
                         continue
                     repl = masking_value
-                    # Concatenate-and-split: one regex call instead of N.
-                    # Only worthwhile when total text is small enough that
-                    # the Python join/split overhead is dwarfed by the N
-                    # saved regex-engine startups.
-                    total_bytes = df[col_name].str.len_bytes().sum()
-                    use_concat = (
-                        not _can_match_empty(pattern)
-                        and df.height > 1
-                        and total_bytes < _CONCAT_SPLIT_MAX_BYTES
-                    )
-                    if use_concat:
-                        delim = _pick_delimiter(df[col_name])
-                        combined = delim.join(df[col_name].fill_null("").to_list())
-                        combined = compiled.sub(repl, combined)
-                        parts = combined.split(delim)
-                        if len(parts) != df.height:
-                            nd_logger.warning(
-                                f"[{self.__class__.__name__}] Delimiter collision in concat-and-split "
-                                f"for key '{key}'; falling back to row-by-row replacement"
-                            )
-                            df = df.with_columns(
-                                pl.col(col_name)
-                                .map_batches(
-                                    lambda s, _c=compiled, _r=repl: pl.Series(
-                                        [_c.sub(_r, t) if isinstance(t, str) else t
-                                         for t in s.to_list()],
-                                        dtype=pl.Utf8,
-                                    ),
-                                    return_dtype=pl.Utf8,
-                                )
-                                .alias(col_name)
-                            )
-                        else:
-                            df = df.with_columns(
-                                pl.Series(col_name, parts, dtype=pl.Utf8)
-                            )
-                    else:
+                    try:
+                        df = df.with_columns(
+                            pl.col(col_name)
+                            .str.replace_all(pattern, masking_value)
+                            .alias(col_name)
+                        )
+                    except Exception:
+                        # Pattern uses features Polars' Rust regex doesn't
+                        # support — fall back to Python regex.
                         df = df.with_columns(
                             pl.col(col_name)
                             .map_batches(
