@@ -190,6 +190,9 @@ deid pii-table --config config.yaml --pii-config-output ./my_pii_config.yaml
 
 ```bash
 deid run --config config.yaml
+
+# Or with a base config + task-specific overlay:
+deid run --config base.yaml --overlay task.yaml
 ```
 
 The pipeline validates prerequisites before starting:
@@ -230,10 +233,13 @@ QC results are persisted to `qc_results.db`.
 
 ### Clean-Slate Rerun
 
-To start over completely (drops destination tables, state DB, staging files, failed rows, and Redis queues):
+To start over for the configured tables (drops their destination tables, clears their state/batch rows, deletes their failed rows, removes their staging files, purges their write queues — other tables are untouched):
 
 ```bash
 deid run --config config.yaml --rerun
+
+# With overlay:
+deid run --config base.yaml --overlay task.yaml --rerun
 ```
 
 ### Run Only Specific Tables

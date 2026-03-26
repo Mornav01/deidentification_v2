@@ -1,12 +1,69 @@
 # Configuration Reference
 
-This document describes every field in `config.yaml` — the single configuration file that drives the entire de-identification platform.
+This document describes every field in `config.yaml`. Configuration can be split into a **base config** (shared machine-level settings) and a **task-specific overlay** that overrides or extends the base.
+
+---
+
+## Config Overlay
+
+Use `--overlay` / `-o` to layer a task-specific config on top of a base config:
+
+```bash
+deid run --config base.yaml --overlay task.yaml
+```
+
+The two YAML files are **deep-merged**:
+- Overlay keys override base keys
+- Nested dicts are merged recursively (e.g. `source_db.database` can be overridden without repeating `source_db.host`)
+- Lists are replaced entirely (e.g. `tables` in the overlay replaces the base `tables`)
+- New keys in the overlay are appended
+
+**Example — base.yaml** (shared across all tasks on this machine):
+
+```yaml
+source_db:
+  type: mysql
+  host: db-source.internal
+  port: 3306
+  database: hospital_db
+  username: ${SOURCE_DB_USER}
+  password: ${SOURCE_DB_PASSWORD}
+
+destination_db:
+  type: mysql
+  host: db-dest.internal
+  port: 3306
+  database: hospital_db_deid
+  username: ${DEST_DB_USER}
+  password: ${DEST_DB_PASSWORD}
+
+redis_url: redis://localhost:6379/0
+mappings_db_path: ./mappings.db
+workers:
+  fetchers: 2
+  processors: 16
+```
+
+**Example — task.yaml** (specific to this run):
+
+```yaml
+source_db:
+  database: clinic_db          # overrides just the database name
+
+state_db_path: ./clinic_state.db
+failed_rows_db_path: ./clinic_failed.db
+tables_to_run_csv: ./clinic_tables.csv
+deidentification:
+  batch_size: 5000             # overrides batch_size; date_offset_days kept from base
+```
+
+The effective config is the deep merge of both: `clinic_db` as source database, `db-source.internal` as host (from base), `5000` as batch_size (from overlay), etc.
 
 ---
 
 ## Environment Variable Interpolation
 
-Any string value can reference environment variables using `${VAR_NAME}` syntax. The loader resolves these at parse time before validation.
+Any string value can reference environment variables using `${VAR_NAME}` syntax. The loader resolves these at parse time (after merging, if an overlay is used) before validation.
 
 ```yaml
 source_db:
@@ -640,11 +697,12 @@ pii_config_path: ./pii_config.yaml
 
 ## Workflow
 
-The config file is used across multiple commands:
+The config file (or base + overlay pair) is used across multiple commands:
 
 1. **`deid generate-config`** — Reads `source_db` to introspect tables, writes `rules_csv`.
 2. **`deid mapping`** — Reads `source_db` + `tables`/`rules_csv` to find ID columns, writes `mappings_db_path`.
 3. **`deid pii-table`** — Reads `source_db` + `pii_db` + rules, creates PII tables, writes `pii_config_path`.
-4. **`deid run`** — Reads everything, validates prerequisites, executes the pipeline.
+4. **`deid run`** — Reads everything, validates prerequisites, executes the pipeline. Supports `--overlay` for task-specific config, `--rerun` for table-scoped cleanup, `--tables-csv` for table filtering.
+5. **`deid qc`** — Standalone QC scanning after deidentification completes.
 
-Only `deid run` writes to the destination database. All other commands are setup steps.
+Only `deid run` writes to the destination database. All other commands (except `deid qc` which reads dest) are setup steps.

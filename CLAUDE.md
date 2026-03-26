@@ -12,10 +12,13 @@ A CLI-based platform for de-identifying healthcare databases (removing PII/PHI).
 # Run the full pipeline (setup → deidentify)
 deid run --config config.yaml
 
+# Base config + task-specific overlay (overlay overrides/appends)
+deid run --config base.yaml --overlay task.yaml
+
 # Run a single phase
 deid run --config config.yaml --phase deidentify
 
-# Clean-slate rerun (drops dest tables, state, staging, failed rows for configured tables)
+# Clean-slate rerun (drops dest tables, state, staging, failed rows for configured tables only)
 deid run --config config.yaml --rerun
 
 # Rerun only specific tables listed in a CSV
@@ -46,7 +49,7 @@ Package installer: `uv pip install --python /Users/shubham/miniconda3/envs/deid/
 
 ## Configuration
 
-All settings are in a single YAML file (`config.yaml`). Environment variables can be interpolated with `${VAR_NAME}` syntax.
+Settings are in YAML files. A base config can be overlaid with a task-specific config using `--overlay` / `-o` (deep-merged: overlay keys win, nested dicts merged recursively, lists replaced). Environment variables can be interpolated with `${VAR_NAME}` syntax.
 
 Key config sections: `source_db`, `destination_db`, `state_db_path`, `mappings_db_path` (or `mappings_db` for remote MySQL), `failed_rows_db_path`, `qc_results_db_path`, `redis_url`, `deidentification` (batch_size, date_offset_days), `tables` (name + rules per column), `tables_to_run` / `tables_to_run_csv`, `phases`, `workers`, `qc` (sample_size, task_timeout), `pii_db`, `pii_config` / `pii_config_path`, `secondary_pii_configs`.
 
@@ -56,10 +59,11 @@ See `deid/config/schema.py` for the full Pydantic schema.
 
 ### Data Flow (3-stage pipeline)
 ```
-deid run --config config.yaml [--rerun] [--tables-csv tables.csv]
+deid run --config base.yaml [--overlay task.yaml] [--rerun] [--tables-csv tables.csv]
   → Typer CLI (deid/cli/run.py)
-    → [--rerun] cleanup: drop dest tables, delete state.db, purge Redis queues,
-      delete per-schema failed rows, remove .deid_staging/
+    → load_config(base.yaml, overlay_path=task.yaml)  — deep-merge overlay onto base
+    → [--rerun] cleanup (table-scoped): drop dest tables, clear state/batch rows,
+      delete per-schema failed rows, remove per-table staging, purge write queues
     → create_celery_app() + spawn worker subprocesses (fetch, process, per-table write)
     → asyncio orchestrator (deid/orchestrator/async_runner.py)
       → Phase: setup — discover tables, persist TableState + BatchState to SQLite
@@ -179,9 +183,11 @@ Rules are configured per-column in `config.yaml` tables section. The `DeIdentifi
 - Source databases: MySQL, MSSQL, PostgreSQL, Snowflake via SQLAlchemy
 
 ### Important Implementation Notes
+- **Config overlay**: `load_config(base, overlay_path=task)` deep-merges two YAML files. Overlay keys win on conflict; nested dicts are merged recursively; lists are replaced entirely.
 - **Regex imports**: All files use `import regex as re` with fallback to stdlib `re`. Do NOT use `google-re2` — its Python bindings have 50x overhead due to string marshalling.
 - **ID column types**: All ID replacement rules (`PatientIDRule`, `EncounterIDRule`, etc.) cast to `Int64` before aliasing to prevent Float64 decimals from Polars left-join null promotion.
 - **PII data caching**: `NotesRule` tracks `_known_patient_ids` and re-fetches PII data when new patient IDs appear in subsequent batches.
-- **MySQL dest table creation**: `SET sql_mode = ''` and `SET innodb_strict_mode = 0` are issued on the same connection as CREATE TABLE. Large row sizes are handled by auto-converting VARCHAR to LONGTEXT.
+- **MySQL dest table creation**: Uses raw DDL (not `Table.create()`) with `_sqlalchemy_type_to_mysql_ddl` for type mapping + `_adjust_ddl_for_mysql_row_limit` for auto VARCHAR→LONGTEXT conversion. `SET sql_mode = ''` and `SET innodb_strict_mode = 0` are issued on the same connection as CREATE TABLE. MSSQL→MySQL type mapping is in `deid/core/dbPkg/type_mapping.py`.
+- **--rerun is table-scoped**: Only affects the tables in the current config — drops their dest tables, clears their state/batch rows, deletes their failed rows, removes their staging dirs, purges their write queues. Other tables' data is untouched.
 - **Failed rows**: Written to per-source-schema tables (`failed_rows_{schema_name}`) in failed_rows.db. `--rerun` only deletes rows for the tables being rerun.
-- **QC results**: Written incrementally to qc_results.db as each table scan completes.
+- **QC results**: Written incrementally to qc_results.db as each table scan completes. QC is standalone (`deid qc`), not part of `deid run`.

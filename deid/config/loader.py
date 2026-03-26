@@ -35,11 +35,38 @@ def _interpolate_env_vars(obj):
     return obj
 
 
+def _deep_merge(base: dict, overlay: dict) -> dict:
+    """Recursively merge overlay into base. Overlay values win on conflict.
+
+    Lists are replaced entirely (not appended) — this matches the semantics
+    of "the task config overrides the base config".
+    """
+    merged = dict(base)
+    for key, value in overlay.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 @validate_call(config=dict(arbitrary_types_allowed=True))
-def load_config(path: str | Path) -> DeidConfig:
-    """Load config from YAML file, interpolate env vars, validate with Pydantic."""
+def load_config(path: str | Path, overlay_path: str | Path | None = None) -> DeidConfig:
+    """Load config from YAML file, interpolate env vars, validate with Pydantic.
+
+    If *overlay_path* is provided, it is loaded as a second YAML file and
+    deep-merged on top of the base config — overlay keys override base keys,
+    new keys are appended, and nested dicts are merged recursively.
+    """
     path = Path(path)
     with open(path) as f:
         raw = yaml.safe_load(f)
+
+    if overlay_path is not None:
+        overlay_path = Path(overlay_path)
+        with open(overlay_path) as f:
+            overlay_raw = yaml.safe_load(f) or {}
+        raw = _deep_merge(raw, overlay_raw)
+
     interpolated = _interpolate_env_vars(raw)
     return DeidConfig(**interpolated)
