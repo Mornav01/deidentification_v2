@@ -461,12 +461,13 @@ async def _qc_phase(config, state_engine):
     """Dispatch QC tasks for completed tables."""
     from deid.tasks.qc import run_qc
 
+    configured_tables = {t.name for t in config.tables}
     with Session(state_engine) as session:
         completed = session.query(TableState).filter_by(status="completed").all()
-        table_names = [t.table_name for t in completed]
+        table_names = [t.table_name for t in completed if t.table_name in configured_tables]
 
     if not table_names:
-        logger.info("No completed tables for QC")
+        logger.info("No completed tables for QC (configured: %s)", configured_tables)
         return
 
     # Dispatch all QC tasks to deid-process workers, then wait for all results.

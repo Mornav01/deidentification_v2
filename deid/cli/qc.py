@@ -97,15 +97,17 @@ async def _run_qc(config, table_filter: str | None = None):
 
     state_engine = create_state_engine(config.state_db_path)
 
+    configured_tables = {t.name for t in config.tables}
     with Session(state_engine) as session:
         query = session.query(TableState).filter_by(status="completed")
         if table_filter:
             query = query.filter_by(table_name=table_filter)
         completed = query.all()
-        table_names = [t.table_name for t in completed]
+        table_names = [t.table_name for t in completed if t.table_name in configured_tables]
 
     if not table_names:
         msg = f"No completed tables found" + (f" matching '{table_filter}'" if table_filter else "")
+        msg += f" (configured: {configured_tables})"
         logger.warning(msg)
         return
 
