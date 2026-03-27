@@ -987,13 +987,23 @@ class NotesRule(RuleBase):
             for pat in patterns:
                 if not pat:
                     continue
+                normalized_pat = pat.lstrip() if isinstance(pat, str) else pat
                 try:
-                    normalized_pat = pat.lstrip() if isinstance(pat, str) else pat
                     masked_col = masked_col.str.replace_all(normalized_pat, masking_value)
-                except Exception as e:
-                    nd_logger.warning(
-                        f"[{self.__class__.__name__}] Regex failed for key='{key}', "
-                        f"pattern='{pat[:80]}…': {e}"
+                except Exception:
+                    try:
+                        compiled = re.compile(normalized_pat)
+                    except Exception as e:
+                        nd_logger.warning(
+                            f"[{self.__class__.__name__}] Regex failed for key='{key}', "
+                            f"pattern='{pat[:80]}…': {e}"
+                        )
+                        continue
+                    repl = masking_value
+                    masked_col = pl.Series(
+                        [compiled.sub(repl, t) if isinstance(t, str) else t
+                         for t in masked_col.to_list()],
+                        dtype=pl.Utf8,
                     )
         return masked_col
 
