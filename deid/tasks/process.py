@@ -89,11 +89,14 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
     # 2. Reference mapping resolution (needs source DB only if reference_mapping is configured)
     if table_details.get("reference_mapping"):
         source = NDDBHandler(config.source_conn_str, read_only=True)
+        join_db = NDDBHandler(config.join_db_conn_str, read_only=True) if config.join_db_conn_str else None
         try:
-            ref_joiner = ReferenceMappingDataFrameJoiner(source, df, table_details, key_phi_columns)
+            ref_joiner = ReferenceMappingDataFrameJoiner(source, df, table_details, key_phi_columns, join_db=join_db)
             df, key_phi_columns = ref_joiner.join_dataframe()
         finally:
             source.close()
+            if join_db is not None:
+                join_db.close()
 
     # 3. Mapping joins
     preloaded = get_preloaded_data()

@@ -66,6 +66,7 @@ class ProcessTaskConfig(BaseModel):
     mapping_db_config: dict
     table_details: dict
     source_conn_str: str
+    join_db_conn_str: str | None = None
     offset_days: int = 34
     pii_config: dict | None = None
     pii_db_conn_str: dict | None = None

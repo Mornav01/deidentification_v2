@@ -51,7 +51,7 @@ Package installer: `uv pip install --python /Users/shubham/miniconda3/envs/deid/
 
 Settings are in YAML files. A base config can be overlaid with a task-specific config using `--overlay` / `-o` (deep-merged: overlay keys win, nested dicts merged recursively, lists replaced). Environment variables can be interpolated with `${VAR_NAME}` syntax.
 
-Key config sections: `source_db`, `destination_db`, `state_db_path`, `mappings_db_path` (or `mappings_db` for remote MySQL), `failed_rows_db_path`, `qc_results_db_path`, `redis_url`, `deidentification` (batch_size, date_offset_days), `tables` (name + rules per column), `tables_to_run` / `tables_to_run_csv`, `phases`, `workers`, `qc` (sample_size, task_timeout), `pii_db`, `pii_config` / `pii_config_path`, `secondary_pii_configs`.
+Key config sections: `source_db`, `destination_db`, `join_db` (optional, defaults to `source_db`), `state_db_path`, `mappings_db_path` (or `mappings_db` for remote MySQL), `failed_rows_db_path`, `qc_results_db_path`, `redis_url`, `deidentification` (batch_size, date_offset_days), `tables` (name + rules per column), `tables_to_run` / `tables_to_run_csv`, `phases`, `workers`, `qc` (sample_size, task_timeout), `pii_db`, `pii_config` / `pii_config_path`, `secondary_pii_configs`.
 
 See `deid/config/schema.py` for the full Pydantic schema.
 
@@ -62,6 +62,9 @@ See `deid/config/schema.py` for the full Pydantic schema.
 deid run --config base.yaml [--overlay task.yaml] [--rerun] [--tables-csv tables.csv]
   → Typer CLI (deid/cli/run.py)
     → load_config(base.yaml, overlay_path=task.yaml)  — deep-merge overlay onto base
+    → [--tables-csv] filter: tables in CSV without config rules are logged as errors
+      and recorded in state.db as failed (status="failed", failure_remarks set);
+      remaining matched tables proceed normally
     → [--rerun] cleanup (table-scoped): drop dest tables, clear state/batch rows,
       delete per-schema failed rows, remove per-table staging, purge write queues
     → create_celery_app() + spawn worker subprocesses (fetch, process, per-table write)
@@ -74,7 +77,9 @@ deid run --config base.yaml [--overlay task.yaml] [--rerun] [--tables-csv tables
             → Self-chain: dispatch next fetch for this table
             → Dispatch process_batch for this batch
           Stage 2: process_batch (deid/tasks/process.py)
-            → Read Arrow IPC, join mappings (preloaded or per-batch SQL)
+            → Read Arrow IPC
+            → Reference mapping joins via join_db (or source DB if join_db not configured)
+            → Join mappings (preloaded or per-batch SQL)
             → PatientIdentifierResolver coalesces mapping columns
             → InvalidRowHandler filters unresolved rows → per-schema failed_rows table
             → DeIdentifier.apply_rules() (rules.py + unstruct/)
@@ -109,6 +114,10 @@ deid run --config base.yaml [--overlay task.yaml] [--rerun] [--tables-csv tables
   - `notes.py` — `NotesRule`: key-PHI replacement, PII table masking (patient names, DOB, insurance), secondary PII
   - `genericnotes.py` — `GenericNotesRule`: phone, URL, IP, date shifting, driver's license patterns
   - `xml.py` / `xml_utils.py` — XML tag-based PHI masking
+
+**`deid/core/ops_df/`** — DataFrame operations
+- `jointables.py` — `ReferenceMappingDataFrameJoiner`: multi-hop reference table joins via Polars; uses `join_db` (separate DB for reference lookups) when configured, falls back to source DB; chunks IN clauses (1000-value limit) for SQL Server compatibility; auto-casts mismatched join-key types (Int64 → Utf8 fallback)
+- `utility.py` — `join_dataframes`, `DistinctValueFetcher`
 
 **`deid/core/dbPkg/`** — Database layer (SQLAlchemy)
 - `dbhandler.py` — `NDDBHandler`; streaming reads, batch inserts, schema mapping, dest table creation with MySQL strict mode disabled
@@ -189,5 +198,7 @@ Rules are configured per-column in `config.yaml` tables section. The `DeIdentifi
 - **PII data caching**: `NotesRule` tracks `_known_patient_ids` and re-fetches PII data when new patient IDs appear in subsequent batches.
 - **MySQL dest table creation**: Uses raw DDL (not `Table.create()`) with `_sqlalchemy_type_to_mysql_ddl` for type mapping + `_adjust_ddl_for_mysql_row_limit` for auto VARCHAR→LONGTEXT conversion. `SET sql_mode = ''` and `SET innodb_strict_mode = 0` are issued on the same connection as CREATE TABLE. MSSQL→MySQL type mapping is in `deid/core/dbPkg/type_mapping.py`.
 - **--rerun is table-scoped**: Only affects the tables in the current config — drops their dest tables, clears their state/batch rows, deletes their failed rows, removes their staging dirs, purges their write queues. Other tables' data is untouched.
+- **--tables-csv unmatched tables**: Tables listed in the CSV that have no de-identification rules in the config are logged as errors and recorded in state.db as `TableState` rows with `status="failed"` and `failure_remarks` explaining the issue. The pipeline continues with the matched tables.
+- **join_db**: Optional `DbConfig` in the YAML config (`join_db` section, same shape as `source_db`). When set, `ReferenceMappingDataFrameJoiner` uses it for reference-table lookups instead of the source DB. Defaults to source DB when omitted.
 - **Failed rows**: Written to per-source-schema tables (`failed_rows_{schema_name}`) in failed_rows.db. `--rerun` only deletes rows for the tables being rerun.
 - **QC results**: Written incrementally to qc_results.db as each table scan completes. QC is standalone (`deid qc`), not part of `deid run`.

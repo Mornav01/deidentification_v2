@@ -432,6 +432,7 @@ def _build_process_config(config, batch, staging_root, mappings_conn_str):
         mapping_db_config={"connection_str": mappings_conn_str},
         table_details=_get_table_details(config, batch.table_name),
         source_conn_str=config.source_db.connection_string(),
+        join_db_conn_str=config.join_db.connection_string() if config.join_db else None,
         offset_days=config.deidentification.date_offset_days,
         pii_config=config.pii_config,
         pii_db_conn_str=config.pii_db,

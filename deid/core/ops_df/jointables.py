@@ -1,8 +1,7 @@
 import polars as pl
-from sqlalchemy import Table, select, MetaData
+from sqlalchemy import select
 from deid.core.dbPkg import NDDBHandler
 from deid.core.logger import nd_logger
-from pydantic import validate_call
 
 
 class ReferenceMappingDataFrameJoiner:
@@ -13,24 +12,33 @@ class ReferenceMappingDataFrameJoiner:
     ``table_config["reference_mapping"]`` and appends the resolved destination column
     to the DataFrame.
 
-    All joins are performed against the *source* database using Polars, which
-    executes joins in parallel on multiple CPU cores — significantly faster than
-    the previous pd.merge() path.
+    All joins are performed against the source database (or a dedicated ``join_db``
+    when configured) using Polars, which executes joins in parallel on multiple CPU
+    cores — significantly faster than the previous pd.merge() path.
     """
 
-    def __init__(self, sourcedb: NDDBHandler, df: pl.DataFrame, table_config, key_phi_columns):
+    def __init__(self, sourcedb: NDDBHandler, df: pl.DataFrame, table_config, key_phi_columns,
+                 join_db: NDDBHandler | None = None):
         self.sourcedb = sourcedb
         self.df = df
         self.table_config = table_config
-        self.engine = sourcedb.engine
-        self.metadata = MetaData()
         self.key_phi_columns = key_phi_columns
+        # Use join_db for reference-table lookups when configured; fall back to sourcedb.
+        self._ref_db = join_db if join_db is not None else sourcedb
+        self.engine = self._ref_db.engine
+        _db_url = str(self._ref_db.engine.url)
+        if join_db is not None:
+            nd_logger.info(f"[ReferenceJoiner] Using join_db for reference table lookups: {_db_url}")
+        else:
+            nd_logger.info(f"[ReferenceJoiner] No join_db configured — using source DB for reference table lookups: {_db_url}")
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
+    # SQL Server raises error 8632 when the IN (...) clause is too large.
+    _IN_CLAUSE_CHUNK_SIZE = 1000
+
     def _load_reference_table(
         self,
         table_name: str,
@@ -38,18 +46,30 @@ class ReferenceMappingDataFrameJoiner:
         filter_column: str,
         filter_values: list,
     ) -> pl.DataFrame:
-        """Load *columns* from *table_name*, filtered by *filter_values*."""
-        table = Table(table_name, self.metadata, autoload_with=self.engine)
+        """Load *columns* from *table_name*, filtered by *filter_values*.
+
+        Splits large filter_values lists into chunks to avoid SQL Server
+        error 8632 (expression services limit reached on large IN clauses).
+        """
+        nd_logger.debug(f"[ReferenceJoiner] Loading '{table_name}' (cols={columns}) from {self._ref_db.engine.url}")
+        table = self._ref_db._reflect_table(table_name)
         columns_expr = [table.c[col] for col in columns]
-        stmt = select(*columns_expr).where(table.c[filter_column].in_(filter_values))
 
+        chunk_size = self._IN_CLAUSE_CHUNK_SIZE
+        chunks = [filter_values[i:i + chunk_size] for i in range(0, len(filter_values), chunk_size)]
+
+        rows = []
+        col_names = None
         with self.engine.connect() as conn:
-            result = conn.execute(stmt)
-            rows = result.fetchall()
-            col_names = list(result.keys())
+            for chunk in chunks:
+                stmt = select(*columns_expr).where(table.c[filter_column].in_(chunk))
+                result = conn.execute(stmt)
+                if col_names is None:
+                    col_names = list(result.keys())
+                rows.extend(result.fetchall())
 
-        if not rows:
-            return pl.DataFrame(schema={c: pl.Utf8 for c in col_names})
+        if not rows or col_names is None:
+            return pl.DataFrame(schema={c: pl.Utf8 for c in (col_names or columns)})
 
         ref_df = pl.DataFrame(
             [list(r) for r in rows],
@@ -62,7 +82,6 @@ class ReferenceMappingDataFrameJoiner:
     # Public API
     # ------------------------------------------------------------------
 
-    @validate_call(config=dict(arbitrary_types_allowed=True))
     def join_dataframe(self) -> tuple[pl.DataFrame, tuple]:
         """Walk the reference-mapping chain and append the destination column.
 
@@ -120,6 +139,23 @@ class ReferenceMappingDataFrameJoiner:
 
             right_col = f"{join_col}_ref"
             nd_logger.debug(f"[ReferenceJoiner] Joining on {left_col} = {right_col}")
+
+            # Cast both join keys to a common type to avoid mismatches (e.g. f64 vs decimal[38,0]).
+            left_dtype = join_result_df[left_col].dtype
+            right_dtype = reference_df[right_col].dtype
+            if left_dtype != right_dtype:
+                nd_logger.debug(
+                    f"[ReferenceJoiner] Type mismatch on join key: "
+                    f"{left_col}={left_dtype} vs {right_col}={right_dtype}. Attempting cast."
+                )
+                try:
+                    join_result_df = join_result_df.with_columns(pl.col(left_col).cast(pl.Int64))
+                    reference_df = reference_df.with_columns(pl.col(right_col).cast(pl.Int64))
+                    nd_logger.debug("[ReferenceJoiner] Cast both keys to Int64.")
+                except Exception:
+                    join_result_df = join_result_df.with_columns(pl.col(left_col).cast(pl.Utf8))
+                    reference_df = reference_df.with_columns(pl.col(right_col).cast(pl.Utf8))
+                    nd_logger.debug("[ReferenceJoiner] Int64 cast failed; fell back to Utf8.")
 
             # Polars left-join: right key column is excluded from output automatically.
             join_result_df = join_result_df.join(

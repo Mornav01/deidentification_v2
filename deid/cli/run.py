@@ -52,6 +52,9 @@ def run_command(
         # Re-run the filter validator manually since the model is already constructed.
         cfg.filter_tables_to_run()
 
+    if cfg.unmatched_tables:
+        _record_unmatched_tables(cfg)
+
     if phase:
         cfg.phases = [phase]
 
@@ -162,6 +165,54 @@ def _rerun_cleanup(cfg):
         logger.info("Purged Redis write queues for rerun tables: %s", queues)
     except Exception as e:
         logger.warning("Could not purge Redis queues: %s", e)
+
+
+def _record_unmatched_tables(cfg):
+    """Write a failed TableState row for each table in tables_to_run that has no config rules."""
+    from sqlalchemy.orm import Session
+    from deid.models.base import create_state_engine, create_all_state_tables
+    from deid.models.state import DbConfig as StateDbConfig, TableState
+
+    engine = create_state_engine(cfg.state_db_path)
+    create_all_state_tables(engine)
+    try:
+        with Session(engine) as session:
+            db_cfg = session.query(StateDbConfig).first()
+            if not db_cfg:
+                src = cfg.source_db
+                dst = cfg.destination_db
+                db_cfg = StateDbConfig(
+                    name="default",
+                    source_conn_str=f"{src.type}://{src.host}:{src.port}/{src.database}",
+                    dest_conn_str=f"{dst.type}://{dst.host}:{dst.port}/{dst.database}",
+                )
+                session.add(db_cfg)
+                session.commit()
+
+            for tname in cfg.unmatched_tables:
+                existing = session.query(TableState).filter_by(table_name=tname).first()
+                if existing:
+                    existing.status = "failed"
+                    existing.failure_remarks = (
+                        "Table listed in tables_to_run but has no de-identification rules in config"
+                    )
+                else:
+                    session.add(TableState(
+                        db_config_id=db_cfg.id,
+                        table_name=tname,
+                        status="failed",
+                        failure_remarks=(
+                            "Table listed in tables_to_run but has no de-identification rules in config"
+                        ),
+                        rules_config={},
+                    ))
+            session.commit()
+            logger.warning(
+                "Recorded %d table(s) as failed (no config rules): %s",
+                len(cfg.unmatched_tables), cfg.unmatched_tables,
+            )
+    finally:
+        engine.dispose()
 
 
 def _start_workers(cfg, config_path: str = "") -> list[subprocess.Popen]:

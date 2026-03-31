@@ -97,6 +97,7 @@ class LoggingSettings(BaseModel):
 class DeidConfig(BaseModel):
     source_db: DbConfig
     destination_db: DbConfig
+    join_db: Optional[DbConfig] = None
     state_db_path: str = "./state.db"
     mappings_db: Optional[DbConfig] = None
     mappings_db_path: str = ""
@@ -107,6 +108,7 @@ class DeidConfig(BaseModel):
     tables: Optional[list[TableConfig]] = None
     tables_to_run: Optional[list[str]] = None
     tables_to_run_csv: Optional[str] = None
+    unmatched_tables: list[str] = Field(default_factory=list, exclude=True)
     rules_csv: Optional[str] = None
     mapping_tables: dict[str, MappingTableConfig] = {}
     phases: list[str] = Field(default=["setup", "deidentify"])
@@ -159,6 +161,17 @@ class DeidConfig(BaseModel):
                     ]
         if self.tables_to_run and self.tables:
             allowed = set(self.tables_to_run)
+            configured = {t.name for t in self.tables}
+            self.unmatched_tables = sorted(allowed - configured)
+            if self.unmatched_tables:
+                import logging
+                logger = logging.getLogger("deid.config")
+                for tname in self.unmatched_tables:
+                    logger.error(
+                        "Table '%s' is in tables_to_run but has no config rules — "
+                        "it will be recorded as failed and skipped.",
+                        tname,
+                    )
             self.tables = [t for t in self.tables if t.name in allowed]
             if not self.tables:
                 raise ValueError(
