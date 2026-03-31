@@ -50,6 +50,7 @@ class FetchTaskConfig(BaseModel):
     source_conn_str: str
     state_db_path: str
     staging_root: str
+    config_key: str = "default"
     batch_size: int = 1000
     id_column: str = "nd_auto_increment_id"
     last_fetched_id: int | None = None
@@ -66,6 +67,7 @@ class ProcessTaskConfig(BaseModel):
     mapping_db_config: dict
     table_details: dict
     source_conn_str: str
+    config_key: str = "default"
     join_db_conn_str: str | None = None
     offset_days: int = 34
     pii_config: dict | None = None
@@ -83,6 +85,7 @@ class WriteTaskConfig(BaseModel):
     staging_root: str
     state_db_path: str
     dest_conn_str: str
+    config_key: str = "default"
     id_column: str = "nd_auto_increment_id"
     redis_url: str = ""
     run_config: dict | None = None

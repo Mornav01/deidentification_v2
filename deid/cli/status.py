@@ -10,6 +10,7 @@ from pydantic import validate_call
 @validate_call(config=dict(arbitrary_types_allowed=True))
 def status_command(
     state_db: str = typer.Option("./state.db", "--state-db", help="Path to state.db"),
+    config_key: str = typer.Option(None, "--config-key", "-k", help="Filter by config_key (e.g. historical, incremental)"),
 ):
     """Show de-identification run status."""
     if not Path(state_db).exists():
@@ -33,15 +34,33 @@ def status_command(
         if run_log.completed_at:
             typer.echo(f"  Completed: {run_log.completed_at}")
 
-        tables = session.query(TableState).all()
-        by_status = {}
-        for t in tables:
-            by_status.setdefault(t.status, []).append(t.table_name)
+        if config_key:
+            # Show only tables for the specified config_key
+            tables = session.query(TableState).filter_by(config_key=config_key).all()
+            typer.echo(f"\nconfig_key: {config_key} — Tables ({len(tables)} total):")
+            by_status = {}
+            for t in tables:
+                by_status.setdefault(t.status, []).append(t)
+            for status, ts_list in sorted(by_status.items()):
+                typer.echo(f"  {status}: {len(ts_list)}")
+                if status == "failed":
+                    for ts in ts_list:
+                        typer.echo(f"    - {ts.table_name}: {ts.failure_remarks or 'no details'}")
+        else:
+            # Group all tables by config_key
+            all_tables = session.query(TableState).all()
+            by_key: dict = {}
+            for t in all_tables:
+                by_key.setdefault(t.config_key, []).append(t)
 
-        typer.echo(f"\nTables ({len(tables)} total):")
-        for status, names in sorted(by_status.items()):
-            typer.echo(f"  {status}: {len(names)}")
-            if status == "failed":
-                for name in names:
-                    ts = session.query(TableState).filter_by(table_name=name).first()
-                    typer.echo(f"    - {name}: {ts.failure_remarks or 'no details'}")
+            typer.echo(f"\nTotal tables across all config_keys: {len(all_tables)}")
+            for ck, ts_list in sorted(by_key.items()):
+                typer.echo(f"\n  config_key: {ck} ({len(ts_list)} tables)")
+                by_status: dict = {}
+                for t in ts_list:
+                    by_status.setdefault(t.status, []).append(t)
+                for status, group in sorted(by_status.items()):
+                    typer.echo(f"    {status}: {len(group)}")
+                    if status == "failed":
+                        for ts in group:
+                            typer.echo(f"      - {ts.table_name}: {ts.failure_remarks or 'no details'}")

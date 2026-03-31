@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator, validate_call
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, validate_call
 
 
 class DbType(str, Enum):
@@ -98,6 +98,7 @@ class DeidConfig(BaseModel):
     source_db: DbConfig
     destination_db: DbConfig
     join_db: Optional[DbConfig] = None
+    config_key: str = "default"
     state_db_path: str = "./state.db"
     mappings_db: Optional[DbConfig] = None
     mappings_db_path: str = ""
@@ -121,6 +122,16 @@ class DeidConfig(BaseModel):
     pii_config: Optional[dict] = None
     secondary_pii_configs: Optional[list] = None
     pii_config_path: Optional[str] = None
+
+    @field_validator("config_key")
+    @classmethod
+    def validate_config_key(cls, v: str) -> str:
+        import re as _re
+        if not _re.match(r'^[a-zA-Z0-9_-]+$', v):
+            raise ValueError(
+                f"config_key '{v}' is invalid — use only letters, digits, underscores, or hyphens"
+            )
+        return v
 
     @model_validator(mode="after")
     def set_default_mappings_db_path(self) -> "DeidConfig":

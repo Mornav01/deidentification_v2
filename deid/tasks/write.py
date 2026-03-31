@@ -85,7 +85,7 @@ def write_batch(self, raw_config: dict):
 def _write_batch_inner(config: WriteTaskConfig, batch_tag: str):
     root = Path(config.staging_root)
 
-    proc_path = batch_processed_path(root, config.table_name, config.start_id, config.end_id)
+    proc_path = batch_processed_path(root, config.table_name, config.start_id, config.end_id, config.config_key)
 
     # 1. Read processed Arrow file + metadata
     reader = ipc.open_file(str(proc_path))
@@ -176,6 +176,7 @@ def _update_batch_status_and_check_table(config: WriteTaskConfig):
             table_name=config.table_name,
             start_id=config.start_id,
             end_id=config.end_id,
+            config_key=config.config_key,
         ).first()
         if batch:
             batch.status = "done"
@@ -183,11 +184,13 @@ def _update_batch_status_and_check_table(config: WriteTaskConfig):
 
         remaining = session.query(BatchState).filter(
             BatchState.table_name == config.table_name,
+            BatchState.config_key == config.config_key,
             BatchState.status != "done",
         ).count()
         if remaining == 0:
             table_state = session.query(TableState).filter_by(
-                table_name=config.table_name
+                table_name=config.table_name,
+                config_key=config.config_key,
             ).first()
             if table_state:
                 table_state.status = "completed"

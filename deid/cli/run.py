@@ -110,9 +110,10 @@ def _rerun_cleanup(cfg):
         create_all_state_tables(st_engine)
         try:
             placeholders = ",".join(f"'{t}'" for t in table_names)
+            ck = cfg.config_key
             with st_engine.begin() as conn:
-                conn.execute(sa_text(f"DELETE FROM batch_states WHERE table_name IN ({placeholders})"))
-                conn.execute(sa_text(f"DELETE FROM table_states WHERE table_name IN ({placeholders})"))
+                conn.execute(sa_text(f"DELETE FROM batch_states WHERE table_name IN ({placeholders}) AND config_key = '{ck}'"))
+                conn.execute(sa_text(f"DELETE FROM table_states WHERE table_name IN ({placeholders}) AND config_key = '{ck}'"))
             logger.info("Cleared state for %d table(s) from state.db", len(table_names))
         except Exception as e:
             logger.warning("Could not clear state entries: %s", e)
@@ -158,7 +159,7 @@ def _rerun_cleanup(cfg):
     try:
         import redis
         r = redis.Redis.from_url(cfg.redis_url)
-        queues = [f"deid-write-{t}" for t in table_names]
+        queues = [f"deid-write-{cfg.config_key}-{t}" for t in table_names]
         for q in queues:
             r.delete(q)
         r.close()
@@ -190,7 +191,9 @@ def _record_unmatched_tables(cfg):
                 session.commit()
 
             for tname in cfg.unmatched_tables:
-                existing = session.query(TableState).filter_by(table_name=tname).first()
+                existing = session.query(TableState).filter_by(
+                    table_name=tname, config_key=cfg.config_key
+                ).first()
                 if existing:
                     existing.status = "failed"
                     existing.failure_remarks = (
@@ -200,6 +203,7 @@ def _record_unmatched_tables(cfg):
                     session.add(TableState(
                         db_config_id=db_cfg.id,
                         table_name=tname,
+                        config_key=cfg.config_key,
                         status="failed",
                         failure_remarks=(
                             "Table listed in tables_to_run but has no de-identification rules in config"
@@ -237,8 +241,8 @@ def _start_workers(cfg, config_path: str = "") -> list[subprocess.Popen]:
     # One dedicated write worker per table (concurrency=1 serialises writes,
     # preventing MySQL lock-wait timeouts from concurrent INSERTs on the same table).
     for table in cfg.tables:
-        queue = f"deid-write-{table.name}"
-        name = f"write-{table.name}"
+        queue = f"deid-write-{cfg.config_key}-{table.name}"
+        name = f"write-{cfg.config_key}-{table.name}"
         cmd = _worker_cmd(queue, 1, name, global_mtpc)
         env = {**os.environ, "DEID_WORKER_QUEUE": queue, "DEID_CONFIG_PATH": config_path}
         proc = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr, env=env)

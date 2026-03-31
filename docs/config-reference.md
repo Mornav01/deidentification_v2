@@ -120,6 +120,40 @@ destination_db:
 
 ---
 
+## `config_key` (optional)
+
+A namespace identifier that isolates all pipeline state for this config — state DB rows, batch records, staging file paths, Redis write queues, and failed-row audit entries are all scoped to this key.
+
+```yaml
+config_key: historical
+```
+
+**Default:** `default`
+
+**Allowed characters:** letters, digits, underscores, and hyphens (`[a-zA-Z0-9_-]`).
+
+Use `config_key` when multiple configs run tables with the **same name** against the same `state.db`. Without it, two configs running a `patients` table would share state entries and collide. Common values:
+
+| Value | Typical use |
+|-------|-------------|
+| `historical` | Full historical backfill |
+| `incremental` | Periodic incremental loads |
+| `adhoc` | One-off table reruns |
+
+The key affects:
+- **`state.db`** — `TableState` and `BatchState` rows have a `config_key` column; uniqueness constraints include it.
+- **Staging paths** — Arrow IPC files are stored under `staging_root/<config_key>/<table>/…` instead of `staging_root/<table>/…`.
+- **Redis write queues** — named `deid-write-<config_key>-<table>` instead of `deid-write-<table>`.
+- **`failed_rows.db`** — each per-schema table has a `config_key` column; `--rerun` only deletes rows matching the current key.
+
+Check status for a specific key:
+
+```bash
+deid status --state-db ./state.db --config-key historical
+```
+
+---
+
 ## `rules_csv` (optional)
 
 Path to a CSV file that defines de-identification rules per table and column.
@@ -289,7 +323,7 @@ failed_rows_db_path: ./failed_rows.db
 
 **Default:** `./failed_rows.db`
 
-Failed rows are stored in per-source-schema tables: `failed_rows_{schema_name}`. Each table has the same structure (source_db, table_name, reason, row_data, failed_at). When using `--rerun`, only the rows for the tables being rerun are deleted — other schemas' data is preserved.
+Failed rows are stored in per-source-schema tables: `failed_rows_{schema_name}`. Each table has the same structure (source_db, table_name, config_key, reason, row_data, failed_at). When using `--rerun`, only the rows for the tables being rerun **and** the current `config_key` are deleted — other schemas' and other keys' data is preserved.
 
 ---
 
@@ -644,6 +678,9 @@ destination_db:
   username: ${DEST_DB_USER}
   password: ${DEST_DB_PASSWORD}
 
+# ── Namespace key (isolates state/batches/queues per config) ──────────
+config_key: historical
+
 # ── Rules ─────────────────────────────────────────────────────────────
 rules_csv: ./rules.csv
 
@@ -704,5 +741,6 @@ The config file (or base + overlay pair) is used across multiple commands:
 3. **`deid pii-table`** — Reads `source_db` + `pii_db` + rules, creates PII tables, writes `pii_config_path`.
 4. **`deid run`** — Reads everything, validates prerequisites, executes the pipeline. Supports `--overlay` for task-specific config, `--rerun` for table-scoped cleanup, `--tables-csv` for table filtering.
 5. **`deid qc`** — Standalone QC scanning after deidentification completes.
+6. **`deid status`** — Check progress. Use `--config-key <key>` to filter to a specific namespace; omit to see all `config_key` groups at once.
 
 Only `deid run` writes to the destination database. All other commands (except `deid qc` which reads dest) are setup steps.

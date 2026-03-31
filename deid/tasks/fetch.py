@@ -101,7 +101,7 @@ def _fetch_batch_inner(config: FetchTaskConfig, raw_config: dict, batch_tag: str
         actual_end_id = config.end_id
 
     # 2. Write Arrow IPC with embedded column schema metadata
-    target = batch_fetched_path(root, config.table_name, config.start_id, config.end_id)
+    target = batch_fetched_path(root, config.table_name, config.start_id, config.end_id, config.config_key)
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = target.with_suffix(target.suffix + ".tmp")
 
@@ -130,6 +130,7 @@ def _fetch_batch_inner(config: FetchTaskConfig, raw_config: dict, batch_tag: str
         "end_id": config.end_id,
         "staging_root": str(root),
         "state_db_path": config.state_db_path,
+        "config_key": config.config_key,
         "redis_url": config.redis_url,
         "run_config": config.run_config,
         **{k: raw_config[k] for k in (
@@ -145,7 +146,7 @@ def _fetch_batch_inner(config: FetchTaskConfig, raw_config: dict, batch_tag: str
             "end_id": config.end_id, "status": "fetched", "rows": df.height}
 
 
-def _claim_next_pending_batch(session: Session, table_name: str) -> "BatchState | None":
+def _claim_next_pending_batch(session: Session, table_name: str, config_key: str = "default") -> "BatchState | None":
     """Atomically claim the next pending batch by setting status='dispatched'.
 
     Uses a guarded UPDATE (WHERE status='pending') so two concurrent workers
@@ -155,7 +156,7 @@ def _claim_next_pending_batch(session: Session, table_name: str) -> "BatchState 
     from sqlalchemy import text
     candidate = (
         session.query(BatchState)
-        .filter_by(table_name=table_name, status="pending")
+        .filter_by(table_name=table_name, status="pending", config_key=config_key)
         .order_by(BatchState.start_id)
         .first()
     )
@@ -179,7 +180,7 @@ def _dispatch_next_fetch(config: FetchTaskConfig, raw_config: dict, last_fetched
     create_all_state_tables(engine)
     try:
         with Session(engine) as session:
-            next_batch = _claim_next_pending_batch(session, config.table_name)
+            next_batch = _claim_next_pending_batch(session, config.table_name, config.config_key)
             if next_batch:
                 next_cfg = {**raw_config}
                 next_cfg["start_id"] = next_batch.start_id
@@ -204,6 +205,7 @@ def _update_batch_status(config: FetchTaskConfig, status: str, actual_end_id: in
             table_name=config.table_name,
             start_id=config.start_id,
             end_id=config.end_id,
+            config_key=config.config_key,
         ).first()
         if batch:
             batch.status = status
