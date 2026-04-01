@@ -133,9 +133,10 @@ def _rerun_cleanup(cfg):
             existing = set(sa_inspect(fr_engine).get_table_names())
             if fr_table in existing:
                 placeholders = ",".join(f"'{t}'" for t in table_names)
+                ck = cfg.config_key
                 with fr_engine.begin() as conn:
                     conn.execute(sa_text(
-                        f"DELETE FROM {fr_table} WHERE table_name IN ({placeholders})"
+                        f"DELETE FROM {fr_table} WHERE table_name IN ({placeholders}) AND config_key = '{ck}'"
                     ))
                 logger.info(
                     "Deleted failed rows for %d table(s) from '%s'",
@@ -146,11 +147,11 @@ def _rerun_cleanup(cfg):
         finally:
             fr_engine.dispose()
 
-    # 4. Remove staging files only for the tables being rerun
+    # 4. Remove staging files only for the tables being rerun (scoped by config_key)
     staging_root = get_staging_root(cfg.state_db_path)
     if staging_root.exists():
         for tname in table_names:
-            table_dir = staging_root / tname
+            table_dir = staging_root / cfg.config_key / tname
             if table_dir.exists():
                 shutil.rmtree(table_dir)
                 logger.info("Removed staging for table: %s", tname)
@@ -178,12 +179,12 @@ def _record_unmatched_tables(cfg):
     create_all_state_tables(engine)
     try:
         with Session(engine) as session:
-            db_cfg = session.query(StateDbConfig).first()
+            db_cfg = session.query(StateDbConfig).filter_by(name=cfg.config_key).first()
             if not db_cfg:
                 src = cfg.source_db
                 dst = cfg.destination_db
                 db_cfg = StateDbConfig(
-                    name="default",
+                    name=cfg.config_key,
                     source_conn_str=f"{src.type}://{src.host}:{src.port}/{src.database}",
                     dest_conn_str=f"{dst.type}://{dst.host}:{dst.port}/{dst.database}",
                 )

@@ -171,14 +171,14 @@ async def _setup_phase(config: DeidConfig, state_engine):
 
     # ── 2. Persist state (sequential — SQLite writes) ────────────────────
     with Session(state_engine) as session:
-        db_cfg = session.query(DbConfig).first()
+        db_cfg = session.query(DbConfig).filter_by(name=config.config_key).first()
         if not db_cfg:
             # Store only non-secret connection info (host:port/database) in
             # state.db — never persist passwords to the SQLite file.
             src = config.source_db
             dst = config.destination_db
             db_cfg = DbConfig(
-                name="default",
+                name=config.config_key,
                 source_conn_str=f"{src.type}://{src.host}:{src.port}/{src.database}",
                 dest_conn_str=f"{dst.type}://{dst.host}:{dst.port}/{dst.database}",
             )

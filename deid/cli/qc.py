@@ -99,7 +99,7 @@ async def _run_qc(config, table_filter: str | None = None):
 
     configured_tables = {t.name for t in config.tables}
     with Session(state_engine) as session:
-        query = session.query(TableState).filter_by(status="completed")
+        query = session.query(TableState).filter_by(status="completed", config_key=config.config_key)
         if table_filter:
             query = query.filter_by(table_name=table_filter)
         completed = query.all()
