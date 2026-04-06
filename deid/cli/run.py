@@ -120,11 +120,17 @@ def _rerun_cleanup(cfg):
         st_engine = create_state_engine(cfg.state_db_path)
         create_all_state_tables(st_engine)
         try:
-            placeholders = ",".join(f"'{t}'" for t in all_names_to_clear)
-            ck = cfg.config_key
+            from sqlalchemy import bindparam
+            delete_batch = sa_text(
+                "DELETE FROM batch_states WHERE table_name IN :names AND config_key = :ck"
+            ).bindparams(bindparam("names", expanding=True))
+            delete_table = sa_text(
+                "DELETE FROM table_states WHERE table_name IN :names AND config_key = :ck"
+            ).bindparams(bindparam("names", expanding=True))
+            params = {"names": all_names_to_clear, "ck": cfg.config_key}
             with st_engine.begin() as conn:
-                conn.execute(sa_text(f"DELETE FROM batch_states WHERE table_name IN ({placeholders}) AND config_key = '{ck}'"))
-                conn.execute(sa_text(f"DELETE FROM table_states WHERE table_name IN ({placeholders}) AND config_key = '{ck}'"))
+                conn.execute(delete_batch, params)
+                conn.execute(delete_table, params)
             logger.info("Cleared state for %d table(s) from state.db", len(all_names_to_clear))
         except Exception as e:
             logger.warning("Could not clear state entries: %s", e)
@@ -143,12 +149,12 @@ def _rerun_cleanup(cfg):
         try:
             existing = set(sa_inspect(fr_engine).get_table_names())
             if fr_table in existing:
-                placeholders = ",".join(f"'{t}'" for t in table_names)
-                ck = cfg.config_key
+                from sqlalchemy import bindparam
+                delete_fr = sa_text(
+                    f"DELETE FROM {fr_table} WHERE table_name IN :names AND config_key = :ck"
+                ).bindparams(bindparam("names", expanding=True))
                 with fr_engine.begin() as conn:
-                    conn.execute(sa_text(
-                        f"DELETE FROM {fr_table} WHERE table_name IN ({placeholders}) AND config_key = '{ck}'"
-                    ))
+                    conn.execute(delete_fr, {"names": table_names, "ck": cfg.config_key})
                 logger.info(
                     "Deleted failed rows for %d table(s) from '%s'",
                     len(table_names), fr_table,

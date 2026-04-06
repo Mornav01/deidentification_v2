@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 import typer
 from pydantic import validate_call
@@ -11,7 +10,7 @@ from pydantic import validate_call
 @validate_call(config=dict(arbitrary_types_allowed=True))
 def status_command(
     state_db: str = typer.Option("./state.db", "--state-db", help="Path to state.db"),
-    config_key: Optional[str] = typer.Option(None, "--config-key", "-k", help="Filter by config_key (e.g. historical, incremental)"),
+    config_key: str | None = typer.Option(None, "--config-key", "-k", help="Filter by config_key (e.g. historical, incremental)"),
 ):
     """Show de-identification run status."""
     if not Path(state_db).exists():

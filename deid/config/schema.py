@@ -124,14 +124,23 @@ class DeidConfig(BaseModel):
     secondary_pii_config_path: Optional[str] = None
     pii_config_path: Optional[str] = None
     reference_mappings_path: Optional[str] = None
-    reference_mappings: dict = Field(default_factory=dict, exclude=True)
+    reference_mappings: dict[str, str] = Field(default_factory=dict, exclude=True)
 
     @model_validator(mode="after")
     def load_reference_mappings(self) -> "DeidConfig":
         if self.reference_mappings_path:
+            p = Path(self.reference_mappings_path)
+            if not p.exists():
+                raise ValueError(f"reference_mappings_path '{p}' does not exist")
             import yaml as _yaml
-            with open(self.reference_mappings_path) as f:
-                self.reference_mappings = _yaml.safe_load(f) or {}
+            with open(p) as f:
+                data = _yaml.safe_load(f) or {}
+            if not isinstance(data, dict):
+                raise ValueError(
+                    f"reference_mappings_path must contain a YAML mapping, "
+                    f"got {type(data).__name__}"
+                )
+            self.reference_mappings = data
         return self
 
     @field_validator("config_key")

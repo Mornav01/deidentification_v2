@@ -46,7 +46,7 @@ async def run(config: DeidConfig, config_path: str):
         with open(config.pii_config_path) as f:
             config.pii_config = _yaml.safe_load(f)
 
-    if config.pii_db and not config.secondary_pii_configs and config.secondary_pii_config_path:
+    if not config.secondary_pii_configs and config.secondary_pii_config_path:
         import yaml as _yaml
         with open(config.secondary_pii_config_path) as f:
             config.secondary_pii_configs = _yaml.safe_load(f)

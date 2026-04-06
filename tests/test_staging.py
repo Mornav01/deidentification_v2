@@ -30,13 +30,13 @@ def test_staging_root_path():
 def test_batch_fetched_path(staging_root):
     from deid.staging import batch_fetched_path
     p = batch_fetched_path(staging_root, "patients", 1, 1000)
-    assert p == staging_root / "patients" / "batch_1_1000.arrow"
+    assert p == staging_root / "default" / "patients" / "batch_1_1000.arrow"
 
 
 def test_batch_processed_path(staging_root):
     from deid.staging import batch_processed_path
     p = batch_processed_path(staging_root, "patients", 1, 1000)
-    assert p == staging_root / "patients" / "batch_1_1000.proc.arrow"
+    assert p == staging_root / "default" / "patients" / "batch_1_1000.proc.arrow"
 
 
 def test_atomic_write_arrow(staging_root):

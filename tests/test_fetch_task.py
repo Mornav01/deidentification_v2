@@ -71,7 +71,7 @@ def test_fetch_batch_writes_arrow_and_updates_state(tmp_path, state_engine):
     assert result["status"] == "fetched"
 
     # Verify arrow file was written
-    arrow_path = Path(staging_root) / "patients" / "batch_1_5.arrow"
+    arrow_path = Path(staging_root) / "default" / "patients" / "batch_1_5.arrow"
     assert arrow_path.exists()
     df = pl.read_ipc(arrow_path)
     assert df.height == 5

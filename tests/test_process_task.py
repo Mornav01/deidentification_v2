@@ -97,8 +97,8 @@ def test_process_batch_deidentifies_and_writes_proc_arrow(tmp_path, state_engine
     assert result["status"] == "processed"
 
     # Verify .proc.arrow exists and .arrow is deleted
-    proc_path = Path(staging_root) / "t1" / "batch_1_5.proc.arrow"
-    arrow_path = Path(staging_root) / "t1" / "batch_1_5.arrow"
+    proc_path = Path(staging_root) / "default" / "t1" / "batch_1_5.proc.arrow"
+    arrow_path = Path(staging_root) / "default" / "t1" / "batch_1_5.arrow"
     assert proc_path.exists()
     assert not arrow_path.exists()
 
