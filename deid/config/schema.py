@@ -121,7 +121,18 @@ class DeidConfig(BaseModel):
     pii_tables_config: Optional[dict] = None
     pii_config: Optional[dict] = None
     secondary_pii_configs: Optional[list] = None
+    secondary_pii_config_path: Optional[str] = None
     pii_config_path: Optional[str] = None
+    reference_mappings_path: Optional[str] = None
+    reference_mappings: dict = Field(default_factory=dict, exclude=True)
+
+    @model_validator(mode="after")
+    def load_reference_mappings(self) -> "DeidConfig":
+        if self.reference_mappings_path:
+            import yaml as _yaml
+            with open(self.reference_mappings_path) as f:
+                self.reference_mappings = _yaml.safe_load(f) or {}
+        return self
 
     @field_validator("config_key")
     @classmethod
@@ -185,8 +196,11 @@ class DeidConfig(BaseModel):
                     )
             self.tables = [t for t in self.tables if t.name in allowed]
             if not self.tables:
-                raise ValueError(
-                    f"tables_to_run={self.tables_to_run} matched none of the configured tables"
+                import logging as _logging
+                _logging.getLogger("deid.config").warning(
+                    "tables_to_run=%s matched none of the configured tables — "
+                    "all will be recorded as failed in state.db.",
+                    self.tables_to_run,
                 )
         return self
 
