@@ -28,10 +28,11 @@ class InvalidRowHandler:
         ("nd_appointment_id", "no_resolved_appointment_id"),
     ]
 
-    def __init__(self, db_name: str, table_name: str, db_path: str | None = None):
+    def __init__(self, db_name: str, table_name: str, db_path: str | None = None, config_key: str = "default"):
         self.db_name = db_name
         self.table_name = table_name
         self.db_path = db_path
+        self.config_key = config_key
         nd_logger.info(
             f"[InvalidRowHandler] Initialized for db: '{db_name}', table: '{table_name}'"
         )
@@ -58,6 +59,7 @@ class InvalidRowHandler:
                     conn.execute(table.insert().values(
                         source_db=self.db_name,
                         table_name=self.table_name,
+                        config_key=self.config_key,
                         reason=reason,
                         row_data=json.dumps(row_str, default=str),
                         failed_at=datetime.now(timezone.utc),

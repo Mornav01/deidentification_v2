@@ -104,6 +104,7 @@ async def _retry_run(config, batch_failures: list[BatchFailure]):
                 table_name=failure.table,
                 start_id=failure.start_id,
                 end_id=failure.end_id,
+                config_key=config.config_key,
             ).first()
             if batch:
                 batch.status = "pending"
@@ -139,6 +140,7 @@ async def _retry_run(config, batch_failures: list[BatchFailure]):
                     table_name=failure.table,
                     start_id=failure.start_id,
                     end_id=failure.end_id,
+                    config_key=config.config_key,
                 ).first()
                 if batch and batch.status != "done":
                     remaining += 1

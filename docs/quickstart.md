@@ -43,6 +43,10 @@ destination_db:
   username: ${DEST_DB_USER}
   password: ${DEST_DB_PASSWORD}
 
+# Namespace key — isolates state/batches/queues when running
+# multiple configs against the same state.db (e.g. historical, incremental, adhoc)
+config_key: historical
+
 # Where to store the rules CSV (used by generate-config)
 rules_csv: ./rules.csv
 
@@ -272,10 +276,14 @@ You can also set `tables_to_run` or `tables_to_run_csv` in config.yaml.
 ## Step 6: Check Status
 
 ```bash
+# Show all config_keys and their tables
 deid status --state-db ./state.db
+
+# Filter to a specific config_key
+deid status --state-db ./state.db --config-key historical
 ```
 
-Shows run progress, per-table status (pending/completed/failed), and batch counts.
+Shows run progress, per-table status (pending/completed/failed), and batch counts. When `--config-key` is omitted, tables are grouped by `config_key` so you can see all runs at a glance.
 
 ---
 
@@ -302,7 +310,7 @@ These call the same core logic as their CLI counterparts.
 | `deid pii-table` | Create PII tables and generate pii_config YAML |
 | `deid run` | Run the de-identification pipeline (`--rerun`, `--tables-csv`, `--phase`) |
 | `deid qc` | Run QC scanning standalone (`--table` for single table) |
-| `deid status` | Check run progress |
+| `deid status` | Check run progress (`--config-key` to filter by namespace) |
 | `deid retry` | Re-dispatch failed batches |
 | `deid cdc` | Process Change Data Capture feeds |
 | `deid decrypt-notes` | Decrypt encrypted clinical notes |

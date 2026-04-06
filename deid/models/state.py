@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from deid.models.base import StateBase
@@ -29,11 +29,12 @@ class DbConfig(StateBase):
 
 class TableState(StateBase):
     __tablename__ = "table_states"
-    __table_args__ = (UniqueConstraint("table_name", "db_config_id"),)
+    __table_args__ = (UniqueConstraint("table_name", "db_config_id", "config_key"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     db_config_id: Mapped[int] = mapped_column(ForeignKey("db_configs.id"))
     table_name: Mapped[str] = mapped_column(String)
+    config_key: Mapped[str] = mapped_column(String, default="default", index=True)
     status: Mapped[str] = mapped_column(String, default="pending")
     row_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     rules_config: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -62,10 +63,14 @@ class RunLog(StateBase):
 
 class BatchState(StateBase):
     __tablename__ = "batch_states"
-    __table_args__ = (UniqueConstraint("table_name", "start_id", "end_id"),)
+    __table_args__ = (
+        UniqueConstraint("table_name", "start_id", "end_id", "config_key"),
+        Index("ix_batchstate_table_config", "table_name", "config_key"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    table_name: Mapped[str] = mapped_column(String, index=True)
+    table_name: Mapped[str] = mapped_column(String)
+    config_key: Mapped[str] = mapped_column(String, default="default")
     start_id: Mapped[int] = mapped_column(Integer)
     end_id: Mapped[int] = mapped_column(Integer)
     actual_end_id: Mapped[int | None] = mapped_column(Integer, nullable=True)

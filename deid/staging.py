@@ -18,12 +18,12 @@ def get_staging_root(state_db_path: str) -> Path:
     return Path(state_db_path).resolve().parent / ".deid_staging"
 
 
-def batch_fetched_path(root: Path, table: str, start_id: int, end_id: int) -> Path:
-    return root / table / f"batch_{start_id}_{end_id}.arrow"
+def batch_fetched_path(root: Path, table: str, start_id: int, end_id: int, config_key: str = "default") -> Path:
+    return root / config_key / table / f"batch_{start_id}_{end_id}.arrow"
 
 
-def batch_processed_path(root: Path, table: str, start_id: int, end_id: int) -> Path:
-    return root / table / f"batch_{start_id}_{end_id}.proc.arrow"
+def batch_processed_path(root: Path, table: str, start_id: int, end_id: int, config_key: str = "default") -> Path:
+    return root / config_key / table / f"batch_{start_id}_{end_id}.proc.arrow"
 
 
 def atomic_write_arrow(df: pl.DataFrame, target_path: Path) -> None:
@@ -42,7 +42,7 @@ def cleanup_tmp_files(root: Path) -> None:
         tmp.unlink(missing_ok=True)
 
 
-def reconcile(state_engine, root: Path) -> None:
+def reconcile(state_engine, root: Path, config_key: str = "default") -> None:
     """Fix BatchState vs. files on disk after a crash.
 
     Rules:
@@ -57,16 +57,19 @@ def reconcile(state_engine, root: Path) -> None:
     with Session(state_engine) as session:
         # "dispatched" means a task was queued but not yet running — safe to reset
         # on startup since the Celery queue is gone after a restart.
-        session.query(BatchState).filter_by(status="dispatched").update({"status": "pending"})
+        session.query(BatchState).filter_by(
+            status="dispatched", config_key=config_key
+        ).update({"status": "pending"})
         session.commit()
 
         batches = session.query(BatchState).filter(
-            BatchState.status.in_(["fetched", "processed"])
+            BatchState.config_key == config_key,
+            BatchState.status.in_(["fetched", "processed"]),
         ).all()
 
         for batch in batches:
-            fetched = batch_fetched_path(root, batch.table_name, batch.start_id, batch.end_id)
-            processed = batch_processed_path(root, batch.table_name, batch.start_id, batch.end_id)
+            fetched = batch_fetched_path(root, batch.table_name, batch.start_id, batch.end_id, config_key)
+            processed = batch_processed_path(root, batch.table_name, batch.start_id, batch.end_id, config_key)
 
             if batch.status == "fetched":
                 if fetched.exists() and processed.exists():

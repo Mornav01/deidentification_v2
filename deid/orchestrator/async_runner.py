@@ -46,6 +46,11 @@ async def run(config: DeidConfig, config_path: str):
         with open(config.pii_config_path) as f:
             config.pii_config = _yaml.safe_load(f)
 
+    if config.pii_db and not config.secondary_pii_configs and config.secondary_pii_config_path:
+        import yaml as _yaml
+        with open(config.secondary_pii_config_path) as f:
+            config.secondary_pii_configs = _yaml.safe_load(f)
+
     # ── Validate prerequisites ────────────────────────────────────────────
     from deid.models.mappings import PatientMapping
 
@@ -171,14 +176,14 @@ async def _setup_phase(config: DeidConfig, state_engine):
 
     # ── 2. Persist state (sequential — SQLite writes) ────────────────────
     with Session(state_engine) as session:
-        db_cfg = session.query(DbConfig).first()
+        db_cfg = session.query(DbConfig).filter_by(name=config.config_key).first()
         if not db_cfg:
             # Store only non-secret connection info (host:port/database) in
             # state.db — never persist passwords to the SQLite file.
             src = config.source_db
             dst = config.destination_db
             db_cfg = DbConfig(
-                name="default",
+                name=config.config_key,
                 source_conn_str=f"{src.type}://{src.host}:{src.port}/{src.database}",
                 dest_conn_str=f"{dst.type}://{dst.host}:{dst.port}/{dst.database}",
             )
@@ -186,11 +191,14 @@ async def _setup_phase(config: DeidConfig, state_engine):
             session.commit()
 
         for table_cfg in config.tables:
-            existing = session.query(TableState).filter_by(table_name=table_cfg.name).first()
+            existing = session.query(TableState).filter_by(
+                table_name=table_cfg.name, config_key=config.config_key
+            ).first()
             if not existing:
                 ts = TableState(
                     db_config_id=db_cfg.id,
                     table_name=table_cfg.name,
+                    config_key=config.config_key,
                     status="pending",
                     row_count=table_row_counts.get(table_cfg.name, 0),
                     rules_config=table_cfg.rules,
@@ -218,11 +226,12 @@ async def _setup_phase(config: DeidConfig, state_engine):
             while offset < row_count:
                 end = offset + batch_size - 1
                 existing = session.query(BatchState).filter_by(
-                    table_name=tname, start_id=offset, end_id=end
+                    table_name=tname, start_id=offset, end_id=end, config_key=config.config_key
                 ).first()
                 if not existing:
                     session.add(BatchState(
-                        table_name=tname, start_id=offset, end_id=end, status="pending"
+                        table_name=tname, start_id=offset, end_id=end,
+                        config_key=config.config_key, status="pending"
                     ))
                 offset += batch_size
         session.commit()
@@ -245,13 +254,13 @@ async def _deidentify_phase(config, state_engine):
     from deid.tasks.write import write_batch
 
     staging_root = get_staging_root(config.state_db_path)
-    reconcile(state_engine, staging_root)
+    reconcile(state_engine, staging_root, config_key=config.config_key)
 
     mappings_conn_str = config.mappings_connection_string
 
     # Count total batches
     with Session(state_engine) as session:
-        total = session.query(BatchState).count()
+        total = session.query(BatchState).filter_by(config_key=config.config_key).count()
         if total == 0:
             raise RuntimeError(
                 "No BatchState rows found. Run the 'setup' phase first."
@@ -262,13 +271,13 @@ async def _deidentify_phase(config, state_engine):
     with Session(state_engine) as session:
         table_names_pending = [
             r[0] for r in session.query(BatchState.table_name)
-            .filter_by(status="pending").distinct().all()
+            .filter_by(status="pending", config_key=config.config_key).distinct().all()
         ]
     for tname in table_names_pending:
         with Session(state_engine) as session:
             last_done = (
                 session.query(BatchState)
-                .filter_by(table_name=tname, status="done")
+                .filter_by(table_name=tname, status="done", config_key=config.config_key)
                 .order_by(BatchState.end_id.desc())
                 .first()
             )
@@ -277,7 +286,7 @@ async def _deidentify_phase(config, state_engine):
                 if last_done and last_done.actual_end_id is not None
                 else None
             )
-            batch = _claim_next_pending_batch(session, tname)
+            batch = _claim_next_pending_batch(session, tname, config.config_key)
             if batch:
                 cfg = _build_fetch_config(config, batch, staging_root, mappings_conn_str)
                 if last_fetched_id is not None:
@@ -286,12 +295,12 @@ async def _deidentify_phase(config, state_engine):
 
     # Resume in-progress batches (fetched -> process, processed -> write)
     with Session(state_engine) as session:
-        for batch in session.query(BatchState).filter_by(status="fetched").all():
+        for batch in session.query(BatchState).filter_by(status="fetched", config_key=config.config_key).all():
             cfg = _build_process_config(config, batch, staging_root, mappings_conn_str)
             process_batch.apply_async(args=[cfg], queue="deid-process")
-        for batch in session.query(BatchState).filter_by(status="processed").all():
+        for batch in session.query(BatchState).filter_by(status="processed", config_key=config.config_key).all():
             cfg = _build_write_config(config, batch, staging_root)
-            write_batch.apply_async(args=[cfg], queue=f"deid-write-{batch.table_name}")
+            write_batch.apply_async(args=[cfg], queue=f"deid-write-{config.config_key}-{batch.table_name}")
 
     # Poll for completion
     last_done_count = 0
@@ -302,7 +311,7 @@ async def _deidentify_phase(config, state_engine):
         await asyncio.sleep(2)
 
         with Session(state_engine) as session:
-            done_count = session.query(BatchState).filter_by(status="done").count()
+            done_count = session.query(BatchState).filter_by(status="done", config_key=config.config_key).count()
 
         if done_count == total:
             logger.info("All %d batches complete.", total)
@@ -326,7 +335,7 @@ async def _deidentify_phase(config, state_engine):
             with Session(state_engine) as session:
                 table_names_with_pending = [
                     r[0] for r in session.query(BatchState.table_name)
-                    .filter_by(status="pending")
+                    .filter_by(status="pending", config_key=config.config_key)
                     .distinct()
                     .all()
                 ]
@@ -334,6 +343,7 @@ async def _deidentify_phase(config, state_engine):
                     tname for tname in table_names_with_pending
                     if session.query(BatchState).filter(
                         BatchState.table_name == tname,
+                        BatchState.config_key == config.config_key,
                         BatchState.status.in_(["dispatched", "fetched", "processed"]),
                     ).count() == 0
                 ]
@@ -342,7 +352,7 @@ async def _deidentify_phase(config, state_engine):
                 with Session(state_engine) as session:
                     last_done = (
                         session.query(BatchState)
-                        .filter_by(table_name=tname, status="done")
+                        .filter_by(table_name=tname, status="done", config_key=config.config_key)
                         .order_by(BatchState.end_id.desc())
                         .first()
                     )
@@ -351,7 +361,7 @@ async def _deidentify_phase(config, state_engine):
                         if last_done and last_done.actual_end_id is not None
                         else None
                     )
-                    batch = _claim_next_pending_batch(session, tname)
+                    batch = _claim_next_pending_batch(session, tname, config.config_key)
                     if batch:
                         cfg = _build_fetch_config(
                             config, batch, staging_root, mappings_conn_str
@@ -390,7 +400,10 @@ def _get_table_details(config, table_name: str) -> dict:
     """Build table_details dict for a table from config."""
     for table_cfg in config.tables:
         if table_cfg.name == table_name:
-            return _rules_to_table_details(table_cfg.rules, table_name=table_name)
+            details = _rules_to_table_details(table_cfg.rules, table_name=table_name)
+            if config.reference_mappings:
+                details["reference_mapping"] = config.reference_mappings.get(table_name, "")
+            return details
     return {"columns_details": []}
 
 
@@ -403,6 +416,7 @@ def _build_fetch_config(config, batch, staging_root, mappings_conn_str):
         source_conn_str=config.source_db.connection_string(),
         state_db_path=config.state_db_path,
         staging_root=str(staging_root),
+        config_key=config.config_key,
         batch_size=config.deidentification.batch_size,
         redis_url=config.redis_url,
     ).model_dump()
@@ -432,6 +446,7 @@ def _build_process_config(config, batch, staging_root, mappings_conn_str):
         mapping_db_config={"connection_str": mappings_conn_str},
         table_details=_get_table_details(config, batch.table_name),
         source_conn_str=config.source_db.connection_string(),
+        config_key=config.config_key,
         join_db_conn_str=config.join_db.connection_string() if config.join_db else None,
         offset_days=config.deidentification.date_offset_days,
         pii_config=config.pii_config,
@@ -454,6 +469,7 @@ def _build_write_config(config, batch, staging_root):
         staging_root=str(staging_root),
         state_db_path=config.state_db_path,
         dest_conn_str=config.destination_db.connection_string(),
+        config_key=config.config_key,
         redis_url=config.redis_url,
         table_details=_get_table_details(config, batch.table_name),
     ).model_dump()
@@ -466,7 +482,9 @@ async def _qc_phase(config, state_engine):
 
     configured_tables = {t.name for t in config.tables}
     with Session(state_engine) as session:
-        completed = session.query(TableState).filter_by(status="completed").all()
+        completed = session.query(TableState).filter_by(
+            status="completed", config_key=config.config_key
+        ).all()
         table_names = [t.table_name for t in completed if t.table_name in configured_tables]
 
     if not table_names:

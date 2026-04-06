@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator, validate_call
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, validate_call
 
 
 class DbType(str, Enum):
@@ -98,6 +98,7 @@ class DeidConfig(BaseModel):
     source_db: DbConfig
     destination_db: DbConfig
     join_db: Optional[DbConfig] = None
+    config_key: str = "default"
     state_db_path: str = "./state.db"
     mappings_db: Optional[DbConfig] = None
     mappings_db_path: str = ""
@@ -120,7 +121,28 @@ class DeidConfig(BaseModel):
     pii_tables_config: Optional[dict] = None
     pii_config: Optional[dict] = None
     secondary_pii_configs: Optional[list] = None
+    secondary_pii_config_path: Optional[str] = None
     pii_config_path: Optional[str] = None
+    reference_mappings_path: Optional[str] = None
+    reference_mappings: dict = Field(default_factory=dict, exclude=True)
+
+    @model_validator(mode="after")
+    def load_reference_mappings(self) -> "DeidConfig":
+        if self.reference_mappings_path:
+            import yaml as _yaml
+            with open(self.reference_mappings_path) as f:
+                self.reference_mappings = _yaml.safe_load(f) or {}
+        return self
+
+    @field_validator("config_key")
+    @classmethod
+    def validate_config_key(cls, v: str) -> str:
+        import re as _re
+        if not _re.match(r'^[a-zA-Z0-9_-]+$', v):
+            raise ValueError(
+                f"config_key '{v}' is invalid — use only letters, digits, underscores, or hyphens"
+            )
+        return v
 
     @model_validator(mode="after")
     def set_default_mappings_db_path(self) -> "DeidConfig":
@@ -174,8 +196,11 @@ class DeidConfig(BaseModel):
                     )
             self.tables = [t for t in self.tables if t.name in allowed]
             if not self.tables:
-                raise ValueError(
-                    f"tables_to_run={self.tables_to_run} matched none of the configured tables"
+                import logging as _logging
+                _logging.getLogger("deid.config").warning(
+                    "tables_to_run=%s matched none of the configured tables — "
+                    "all will be recorded as failed in state.db.",
+                    self.tables_to_run,
                 )
         return self
 

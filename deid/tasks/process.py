@@ -66,8 +66,8 @@ def process_batch(self, raw_config: dict):
 def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
     root = Path(config.staging_root)
 
-    fetched = batch_fetched_path(root, config.table_name, config.start_id, config.end_id)
-    processed = batch_processed_path(root, config.table_name, config.start_id, config.end_id)
+    fetched = batch_fetched_path(root, config.table_name, config.start_id, config.end_id, config.config_key)
+    processed = batch_processed_path(root, config.table_name, config.start_id, config.end_id, config.config_key)
 
     # 1. Read fetched Arrow file, preserving metadata
     reader = ipc.open_file(str(fetched))
@@ -175,6 +175,7 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
         db_name=config.source_conn_str.split("/")[-1] if "/" in config.source_conn_str else "",
         table_name=config.table_name,
         db_path=config.failed_rows_db_path,
+        config_key=config.config_key,
     )
     df = row_handler.handle(df)
     rows_failed = rows_before_filter - df.height
@@ -226,11 +227,12 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
         "end_id": config.end_id,
         "staging_root": config.staging_root,
         "state_db_path": config.state_db_path,
+        "config_key": config.config_key,
         "redis_url": config.redis_url,
         "run_config": config.run_config,
         **{k: raw_config[k] for k in ("dest_conn_str", "id_column", "table_details") if k in raw_config},
     }
-    write_batch.apply_async(args=[write_config], queue=f"deid-write-{config.table_name}")
+    write_batch.apply_async(args=[write_config], queue=f"deid-write-{config.config_key}-{config.table_name}")
 
     logger.info("Processed %s batch %d-%d (%d rows, %d failed)",
                 config.table_name, config.start_id, config.end_id, df.height, rows_failed)
@@ -249,6 +251,7 @@ def _update_batch_status(config: ProcessTaskConfig, status: str):
             table_name=config.table_name,
             start_id=config.start_id,
             end_id=config.end_id,
+            config_key=config.config_key,
         ).first()
         if batch:
             batch.status = status

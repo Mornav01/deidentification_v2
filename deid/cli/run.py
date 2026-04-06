@@ -52,14 +52,22 @@ def run_command(
         # Re-run the filter validator manually since the model is already constructed.
         cfg.filter_tables_to_run()
 
-    if cfg.unmatched_tables:
-        _record_unmatched_tables(cfg)
-
     if phase:
         cfg.phases = [phase]
 
     if rerun:
         _rerun_cleanup(cfg)
+
+    if cfg.unmatched_tables:
+        _record_unmatched_tables(cfg)
+
+    if not cfg.tables:
+        typer.echo(
+            f"No tables to process — all tables_to_run were unmatched "
+            f"({cfg.unmatched_tables}). Recorded as failed in state.db.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
 
     from deid.tasks.celery_app import create_celery_app, get_celery_app
     create_celery_app(broker_url=cfg.redis_url, result_backend=cfg.redis_url)
@@ -102,18 +110,22 @@ def _rerun_cleanup(cfg):
         dest.close()
 
     # 2. Remove state entries only for the tables being rerun
+    #    Also delete any prior state for unmatched tables so _record_unmatched_tables
+    #    writes a clean fresh row rather than updating a stale one.
+    all_names_to_clear = table_names + list(cfg.unmatched_tables or [])
     state_path = Path(cfg.state_db_path)
-    if state_path.exists() and table_names:
+    if state_path.exists() and all_names_to_clear:
         from sqlalchemy import text as sa_text
         from deid.models.base import create_state_engine, create_all_state_tables
         st_engine = create_state_engine(cfg.state_db_path)
         create_all_state_tables(st_engine)
         try:
-            placeholders = ",".join(f"'{t}'" for t in table_names)
+            placeholders = ",".join(f"'{t}'" for t in all_names_to_clear)
+            ck = cfg.config_key
             with st_engine.begin() as conn:
-                conn.execute(sa_text(f"DELETE FROM batch_states WHERE table_name IN ({placeholders})"))
-                conn.execute(sa_text(f"DELETE FROM table_states WHERE table_name IN ({placeholders})"))
-            logger.info("Cleared state for %d table(s) from state.db", len(table_names))
+                conn.execute(sa_text(f"DELETE FROM batch_states WHERE table_name IN ({placeholders}) AND config_key = '{ck}'"))
+                conn.execute(sa_text(f"DELETE FROM table_states WHERE table_name IN ({placeholders}) AND config_key = '{ck}'"))
+            logger.info("Cleared state for %d table(s) from state.db", len(all_names_to_clear))
         except Exception as e:
             logger.warning("Could not clear state entries: %s", e)
         finally:
@@ -132,9 +144,10 @@ def _rerun_cleanup(cfg):
             existing = set(sa_inspect(fr_engine).get_table_names())
             if fr_table in existing:
                 placeholders = ",".join(f"'{t}'" for t in table_names)
+                ck = cfg.config_key
                 with fr_engine.begin() as conn:
                     conn.execute(sa_text(
-                        f"DELETE FROM {fr_table} WHERE table_name IN ({placeholders})"
+                        f"DELETE FROM {fr_table} WHERE table_name IN ({placeholders}) AND config_key = '{ck}'"
                     ))
                 logger.info(
                     "Deleted failed rows for %d table(s) from '%s'",
@@ -145,11 +158,11 @@ def _rerun_cleanup(cfg):
         finally:
             fr_engine.dispose()
 
-    # 4. Remove staging files only for the tables being rerun
+    # 4. Remove staging files only for the tables being rerun (scoped by config_key)
     staging_root = get_staging_root(cfg.state_db_path)
     if staging_root.exists():
         for tname in table_names:
-            table_dir = staging_root / tname
+            table_dir = staging_root / cfg.config_key / tname
             if table_dir.exists():
                 shutil.rmtree(table_dir)
                 logger.info("Removed staging for table: %s", tname)
@@ -158,7 +171,7 @@ def _rerun_cleanup(cfg):
     try:
         import redis
         r = redis.Redis.from_url(cfg.redis_url)
-        queues = [f"deid-write-{t}" for t in table_names]
+        queues = [f"deid-write-{cfg.config_key}-{t}" for t in table_names]
         for q in queues:
             r.delete(q)
         r.close()
@@ -177,12 +190,12 @@ def _record_unmatched_tables(cfg):
     create_all_state_tables(engine)
     try:
         with Session(engine) as session:
-            db_cfg = session.query(StateDbConfig).first()
+            db_cfg = session.query(StateDbConfig).filter_by(name=cfg.config_key).first()
             if not db_cfg:
                 src = cfg.source_db
                 dst = cfg.destination_db
                 db_cfg = StateDbConfig(
-                    name="default",
+                    name=cfg.config_key,
                     source_conn_str=f"{src.type}://{src.host}:{src.port}/{src.database}",
                     dest_conn_str=f"{dst.type}://{dst.host}:{dst.port}/{dst.database}",
                 )
@@ -190,7 +203,9 @@ def _record_unmatched_tables(cfg):
                 session.commit()
 
             for tname in cfg.unmatched_tables:
-                existing = session.query(TableState).filter_by(table_name=tname).first()
+                existing = session.query(TableState).filter_by(
+                    table_name=tname, config_key=cfg.config_key
+                ).first()
                 if existing:
                     existing.status = "failed"
                     existing.failure_remarks = (
@@ -200,6 +215,7 @@ def _record_unmatched_tables(cfg):
                     session.add(TableState(
                         db_config_id=db_cfg.id,
                         table_name=tname,
+                        config_key=cfg.config_key,
                         status="failed",
                         failure_remarks=(
                             "Table listed in tables_to_run but has no de-identification rules in config"
@@ -237,8 +253,8 @@ def _start_workers(cfg, config_path: str = "") -> list[subprocess.Popen]:
     # One dedicated write worker per table (concurrency=1 serialises writes,
     # preventing MySQL lock-wait timeouts from concurrent INSERTs on the same table).
     for table in cfg.tables:
-        queue = f"deid-write-{table.name}"
-        name = f"write-{table.name}"
+        queue = f"deid-write-{cfg.config_key}-{table.name}"
+        name = f"write-{cfg.config_key}-{table.name}"
         cmd = _worker_cmd(queue, 1, name, global_mtpc)
         env = {**os.environ, "DEID_WORKER_QUEUE": queue, "DEID_CONFIG_PATH": config_path}
         proc = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr, env=env)

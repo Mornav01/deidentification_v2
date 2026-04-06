@@ -57,6 +57,7 @@ def _get_schema_table(schema_name: str) -> Table:
         Column("id", Integer, primary_key=True, autoincrement=True),
         Column("source_db", String, index=True),
         Column("table_name", String, index=True),
+        Column("config_key", String, index=True, default="default"),
         Column("reason", String),
         Column("row_data", Text),
         Column("failed_at", DateTime, default=_utcnow),
