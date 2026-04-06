@@ -66,6 +66,7 @@ class BatchState(StateBase):
     __table_args__ = (
         UniqueConstraint("table_name", "start_id", "end_id", "config_key"),
         Index("ix_batchstate_table_config", "table_name", "config_key"),
+        Index("ix_batchstate_status_config", "status", "config_key"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

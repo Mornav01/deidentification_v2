@@ -206,7 +206,7 @@ The pipeline validates prerequisites before starting:
 Then it executes two phases by default:
 
 ### Phase 1: Setup
-- Connects to source DB and counts rows per table
+- Connects to source DB and counts rows per table via `SELECT COUNT(*)` (exact, not catalog estimates)
 - Creates `state.db` with table states and batch ranges
 
 ### Phase 2: Deidentify (3-stage pipeline)
@@ -214,8 +214,10 @@ Then it executes two phases by default:
 - Dispatches 3-stage task chain per batch:
   - **Fetch**: keyset-paginated read from source → Arrow IPC file
   - **Process**: join mappings → apply de-identification rules → Arrow IPC file
-  - **Write**: idempotent INSERT to destination DB
+  - **Write**: idempotent DELETE+INSERT to destination DB
 - Streams progress via Redis pub/sub
+- Each task has an idempotency guard at the top of its inner function — if the batch is already past the current stage (e.g. re-delivered after a worker crash because `task_acks_late=True`), the task skips its work or re-dispatches the next stage instead of duplicating it.
+- A failed task resets its `BatchState` row to `pending`; the orchestrator's watchdog re-dispatches stalled table chains every 2 seconds. The run terminates if no batch progresses for `workers.task_timeout * 2` seconds (`stuck_timeout`).
 
 ### Run Individual Phases
 

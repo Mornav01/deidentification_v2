@@ -163,8 +163,8 @@ async def _setup_phase(config: DeidConfig, state_engine):
     # ── 1. Gather exact row counts for all tables in parallel ─────────────
     @validate_call(config=dict(arbitrary_types_allowed=True))
     async def _get_count(table_name: str) -> tuple[str, int]:
-        count = await loop.run_in_executor(None, source.get_rows_count, table_name)
-        logger.info("  %s: ~%s rows (catalog estimate)", table_name, f"{count:,}")
+        count = await loop.run_in_executor(None, source.get_exact_row_count, table_name)
+        logger.info("  %s: %s rows", table_name, f"{count:,}")
         return table_name, count
 
     table_names = [t.name for t in config.tables]

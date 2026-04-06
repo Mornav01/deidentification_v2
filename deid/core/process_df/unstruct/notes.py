@@ -495,8 +495,7 @@ class NotesRule(RuleBase):
             sample_patterns = pid_to_mask[sample_pid]
             nd_logger.info(
                 f"[{self.__class__.__name__}] [MASK DIAGNOSTIC] "
-                f"Sample patient_id={sample_pid} has {len(sample_patterns)} mask pattern(s). "
-                f"Preview: {dict(list(sample_patterns.items())[:3])}"
+                f"Sample patient_id={sample_pid} has {len(sample_patterns)} mask pattern(s)."
             )
             total_patterns = sum(len(v) for v in pid_to_mask.values())
             nd_logger.info(
@@ -522,8 +521,7 @@ class NotesRule(RuleBase):
             nd_logger.info(
                 f"[{self.__class__.__name__}] [COMBINE DIAGNOSTIC] "
                 f"Sample patient_id={sample_pid} (type={type(sample_pid).__name__}) "
-                f"has {len(sample_rules)} combine regex(es). "
-                f"Pattern preview: {sample_rules[0][0].pattern[:200] if sample_rules else 'N/A'}"
+                f"has {len(sample_rules)} combine regex(es)."
             )
         else:
             nd_logger.warning(
@@ -587,13 +585,6 @@ class NotesRule(RuleBase):
 
             result.append(text)
 
-        # Log first-row text snippet (for debugging: confirm we're processing the right content)
-        if text_list:
-            first_text = text_list[0] if isinstance(text_list[0], str) else ""
-            snippet = (first_text[:150] + "…") if len(first_text) > 150 else first_text
-            nd_logger.info(
-                f"[{self.__class__.__name__}] [MASK DIAGNOSTIC] First row text preview: {repr(snippet)}"
-            )
         nd_logger.info(
             f"[{self.__class__.__name__}] [MASK DIAGNOSTIC] Mask replacements applied to {mask_hit_count}/{len(text_list)} rows."
         )

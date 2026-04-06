@@ -400,9 +400,11 @@ class PatientDOBRule(BaseDateOffsetRule):
         contains = texts.str.contains(self.COMPILED_DATE_PATTERN.pattern)
 
         if contains.sum() == 0:
-            nd_logger.info(
-                f"[{self.__class__.__name__}] No date patterns found. Returning original DataFrame."
+            nd_logger.warning(
+                f"[{self.__class__.__name__}] No date patterns found in column '{col_name}'. "
+                f"Nulling all values to prevent PHI leakage."
             )
+            df = df.with_columns(pl.lit(None).cast(pl.Int64).alias(col_name))
             return df
 
         mask_list = contains.to_list()

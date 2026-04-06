@@ -18,12 +18,23 @@ def get_staging_root(state_db_path: str) -> Path:
     return Path(state_db_path).resolve().parent / ".deid_staging"
 
 
+def _validate_staging_path(root: Path, target: Path) -> Path:
+    """Ensure the target path stays within the staging root (prevents path traversal)."""
+    resolved = target.resolve()
+    root_resolved = root.resolve()
+    if not str(resolved).startswith(str(root_resolved) + os.sep) and resolved != root_resolved:
+        raise ValueError(f"Path traversal detected: {target} escapes staging root {root}")
+    return resolved
+
+
 def batch_fetched_path(root: Path, table: str, start_id: int, end_id: int, config_key: str = "default") -> Path:
-    return root / config_key / table / f"batch_{start_id}_{end_id}.arrow"
+    target = root / config_key / table / f"batch_{start_id}_{end_id}.arrow"
+    return _validate_staging_path(root, target)
 
 
 def batch_processed_path(root: Path, table: str, start_id: int, end_id: int, config_key: str = "default") -> Path:
-    return root / config_key / table / f"batch_{start_id}_{end_id}.proc.arrow"
+    target = root / config_key / table / f"batch_{start_id}_{end_id}.proc.arrow"
+    return _validate_staging_path(root, target)
 
 
 def atomic_write_arrow(df: pl.DataFrame, target_path: Path) -> None:

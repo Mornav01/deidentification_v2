@@ -125,7 +125,7 @@ deid run --config base.yaml [--overlay task.yaml] [--rerun] [--tables-csv tables
 - `pii_loader.py` — Load PII staging tables
 
 **`deid/models/`** — SQLAlchemy 2.0 models
-- `base.py` — Engine factories with WAL mode for state.db, mappings.db, failed_rows.db, qc_results.db
+- `base.py` — Engine factories with WAL mode + `busy_timeout=5000` for state.db, mappings.db, failed_rows.db, qc_results.db. Also exports `get_cached_state_engine(db_path)` — a per-process cached state engine used by all Celery tasks to avoid the overhead of create/dispose cycles on every batch status update.
 - `state.py` — `DbConfig`, `TableState`, `RunLog`, `BatchState` (state.db)
 - `mappings.py` — `PatientMapping`, `EncounterMapping`, `AppointmentMapping`, `PhiStaging` (mappings.db)
 - `failed_rows.py` — Per-schema `failed_rows_{schema_name}` tables (failed_rows.db); `ensure_schema_table()`, `get_schema_table_name()`
@@ -133,9 +133,9 @@ deid run --config base.yaml [--overlay task.yaml] [--rerun] [--tables-csv tables
 
 **`deid/tasks/`** — Celery task definitions (3-stage pipeline)
 - `celery_app.py` — App factory; preloads mapping tables into memory on process workers
-- `fetch.py` — `fetch_batch`: keyset-paginated source reads → Arrow IPC; self-chains next fetch
-- `process.py` — `process_batch`: Arrow IPC → mapping joins → de-identification → Arrow IPC
-- `write.py` — `write_batch`: Arrow IPC → idempotent dest INSERT with PHI type overrides; MySQL row-limit adjustment
+- `fetch.py` — `fetch_batch`: keyset-paginated source reads → Arrow IPC; self-chains next fetch. Idempotency guard at the top of `_fetch_batch_inner` skips re-fetching when re-delivered past `"dispatched"`; if re-delivered with status `"fetched"`, re-dispatches `process_batch` to recover from a lost dispatch. On failure, resets the batch to `"pending"` so the watchdog can re-dispatch.
+- `process.py` — `process_batch`: Arrow IPC → mapping joins → de-identification → Arrow IPC. Idempotency guard skips already-processed batches. On failure, resets batch to `"pending"`.
+- `write.py` — `write_batch`: Arrow IPC → idempotent dest INSERT with PHI type overrides; MySQL row-limit adjustment. Idempotency guard skips already-done batches. `_created_dest_tables` module-level set guards against re-issuing `CREATE TABLE IF NOT EXISTS` DDL on every batch. On non-lock-wait failure, resets batch to `"pending"`.
 - `qc.py` — `run_qc`: dispatches `DbScanner`, persists results to qc_results.db
 - `deidentify.py` — Legacy `deidentify_table` / `deidentify_table_range` (single-task path)
 
@@ -202,3 +202,112 @@ Rules are configured per-column in `config.yaml` tables section. The `DeIdentifi
 - **join_db**: Optional `DbConfig` in the YAML config (`join_db` section, same shape as `source_db`). When set, `ReferenceMappingDataFrameJoiner` uses it for reference-table lookups instead of the source DB. Defaults to source DB when omitted.
 - **Failed rows**: Written to per-source-schema tables (`failed_rows_{schema_name}`) in failed_rows.db. `--rerun` only deletes rows for the tables being rerun.
 - **QC results**: Written incrementally to qc_results.db as each table scan completes. QC is standalone (`deid qc`), not part of `deid run`.
+- **State engine caching**: All Celery tasks use `get_cached_state_engine(db_path)` from `deid/models/base.py` instead of creating and disposing an engine on every batch status update. The cache is a module-level dict keyed by `db_path`. With prefork workers, each child process gets its own empty cache at fork time, populated lazily — so there are no fork-safety concerns with stale connections. `PRAGMA busy_timeout=5000` lets concurrent workers wait up to 5 seconds for the SQLite write lock instead of raising `SQLITE_BUSY` immediately.
+- **Task idempotency**: Because `task_acks_late=True`, a killed Celery worker causes the task to be re-delivered. Each task's `_*_inner()` function checks `BatchState.status` at the top and skips (or re-dispatches the next stage) if the batch is already past the current stage. This is the guard against duplicate fetches/processing/writes on re-delivery.
+- **Fault tolerance**: On task failure (non-retry path), each task resets the batch to `"pending"` so `_deidentify_phase`'s watchdog (see `async_runner.py`) can re-dispatch it. Transient failures self-heal; permanent failures burn time until `stuck_timeout = workers.task_timeout * 2` kicks in.
+- **Exact row counts for batch creation**: `_setup_phase` calls `NDDBHandler.get_exact_row_count(table_name)` (a `SELECT COUNT(*)`) rather than `get_rows_count()` (which uses catalog estimates that can be off by 40–50% on InnoDB). Under-counted batches would silently lose tail rows because the self-chaining fetch can only claim existing `BatchState` rows.
+- **Path traversal validation**: `deid/staging.py` validates that `batch_fetched_path` and `batch_processed_path` resolve within the staging root, rejecting `../` escapes from untrusted table names or `config_key` values.
+- **No PHI in logs**: Do NOT log raw values from clinical notes, patient names, DOBs, or built-from-PII regex patterns. Diagnostic logs in `notes.py` log only counts (`len(patterns)`), never the pattern contents.
+- **Sanitized error output**: Celery task `except` blocks publish `f"{type(exc).__name__}: {exc}"` to Redis — never `traceback.format_exc()` — because Polars error messages can contain raw cell values from PHI columns.
+
+<!-- gitnexus:start -->
+# GitNexus — Code Intelligence
+
+This project is indexed by GitNexus as **deidentification_v2** (1961 symbols, 4869 relationships, 164 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+
+> If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
+
+## Always Do
+
+- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
+- **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
+- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
+- When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
+- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `gitnexus_context({name: "symbolName"})`.
+
+## When Debugging
+
+1. `gitnexus_query({query: "<error or symptom>"})` — find execution flows related to the issue
+2. `gitnexus_context({name: "<suspect function>"})` — see all callers, callees, and process participation
+3. `READ gitnexus://repo/deidentification_v2/process/{processName}` — trace the full execution flow step by step
+4. For regressions: `gitnexus_detect_changes({scope: "compare", base_ref: "main"})` — see what your branch changed
+
+## When Refactoring
+
+- **Renaming**: MUST use `gitnexus_rename({symbol_name: "old", new_name: "new", dry_run: true})` first. Review the preview — graph edits are safe, text_search edits need manual review. Then run with `dry_run: false`.
+- **Extracting/Splitting**: MUST run `gitnexus_context({name: "target"})` to see all incoming/outgoing refs, then `gitnexus_impact({target: "target", direction: "upstream"})` to find all external callers before moving code.
+- After any refactor: run `gitnexus_detect_changes({scope: "all"})` to verify only expected files changed.
+
+## Never Do
+
+- NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
+- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
+- NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
+- NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
+
+## Tools Quick Reference
+
+| Tool | When to use | Command |
+|------|-------------|---------|
+| `query` | Find code by concept | `gitnexus_query({query: "auth validation"})` |
+| `context` | 360-degree view of one symbol | `gitnexus_context({name: "validateUser"})` |
+| `impact` | Blast radius before editing | `gitnexus_impact({target: "X", direction: "upstream"})` |
+| `detect_changes` | Pre-commit scope check | `gitnexus_detect_changes({scope: "staged"})` |
+| `rename` | Safe multi-file rename | `gitnexus_rename({symbol_name: "old", new_name: "new", dry_run: true})` |
+| `cypher` | Custom graph queries | `gitnexus_cypher({query: "MATCH ..."})` |
+
+## Impact Risk Levels
+
+| Depth | Meaning | Action |
+|-------|---------|--------|
+| d=1 | WILL BREAK — direct callers/importers | MUST update these |
+| d=2 | LIKELY AFFECTED — indirect deps | Should test |
+| d=3 | MAY NEED TESTING — transitive | Test if critical path |
+
+## Resources
+
+| Resource | Use for |
+|----------|---------|
+| `gitnexus://repo/deidentification_v2/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/deidentification_v2/clusters` | All functional areas |
+| `gitnexus://repo/deidentification_v2/processes` | All execution flows |
+| `gitnexus://repo/deidentification_v2/process/{name}` | Step-by-step execution trace |
+
+## Self-Check Before Finishing
+
+Before completing any code modification task, verify:
+1. `gitnexus_impact` was run for all modified symbols
+2. No HIGH/CRITICAL risk warnings were ignored
+3. `gitnexus_detect_changes()` confirms changes match expected scope
+4. All d=1 (WILL BREAK) dependents were updated
+
+## Keeping the Index Fresh
+
+After committing code changes, the GitNexus index becomes stale. Re-run analyze to update it:
+
+```bash
+npx gitnexus analyze
+```
+
+If the index previously included embeddings, preserve them by adding `--embeddings`:
+
+```bash
+npx gitnexus analyze --embeddings
+```
+
+To check whether embeddings exist, inspect `.gitnexus/meta.json` — the `stats.embeddings` field shows the count (0 means no embeddings). **Running analyze without `--embeddings` will delete any previously generated embeddings.**
+
+> Claude Code users: A PostToolUse hook handles this automatically after `git commit` and `git merge`.
+
+## CLI
+
+| Task | Read this skill file |
+|------|---------------------|
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
+| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
+| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
+| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
+| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+
+<!-- gitnexus:end -->

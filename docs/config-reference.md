@@ -227,7 +227,7 @@ Each entry:
 | `MASK` | Replace value with a fixed placeholder string, e.g., `<<PATIENT_NAME>>`. The placeholder is derived from the column name. | None. |
 | `DATE_OFFSET` | Shift dates by a per-patient random offset (from mapping table). Handles datetime strings, date-only strings, and embedded dates in text. | Mapping DB populated (uses per-patient offset). |
 | `STATIC_OFFSET` | Shift dates by a fixed global offset (`date_offset_days`). Unlike `DATE_OFFSET`, does not vary per patient. | None. |
-| `PATIENT_DOB` | Extract the birth year only. The full date of birth is replaced with just the 4-digit year. | None. |
+| `PATIENT_DOB` | Extract the birth year only. The full date of birth is replaced with just the 4-digit year (`Int64`). If a column contains values that don't match any known date pattern, **all rows in that column are nulled** rather than passed through, to prevent silent PHI leakage. A warning is logged identifying the affected column. | None. |
 | `ZIP_CODE` | Truncate to first 3 digits (US ZIP codes). Prevents re-identification from geographic data. | None. |
 | `NOTES` | Full PII masking for clinical free-text. Looks up each patient's actual PII values (names, SSN, DOB, etc.) from the PII table and replaces exact matches in their notes. Also applies generic regex patterns for phones, dates, IPs, URLs. | PII tables populated (`deid pii-table`), `pii_config_path` set. |
 | `GENERIC_NOTES` | Regex-only PII masking for free-text. Applies generic patterns (phones, dates, IPs, URLs, driver's licenses) without patient-specific name/DOB matching. Does not require PII tables. | None. |
@@ -267,11 +267,13 @@ state_db_path: ./state.db
 
 The state DB stores:
 - **TableState** — per-table status (pending, in_progress, completed, failed), row counts, and ID ranges.
-- **BatchState** — per-batch status for range-based processing.
+- **BatchState** — per-batch status for range-based processing. State machine: `pending → dispatched → fetched → processed → done`. On task failure, the row is reset to `pending` so the orchestrator's watchdog can re-dispatch it.
 - **RunLog** — timestamped log of pipeline runs with config hash and phase list.
 - **DbConfig** — source/destination connection metadata snapshot.
 
 Created automatically by `deid run` during the setup phase. Used by `deid status` to display progress.
+
+The state DB engine is opened with `PRAGMA journal_mode=WAL` and `PRAGMA busy_timeout=5000` so concurrent Celery workers can update batch status without spurious `SQLITE_BUSY` errors. Each worker process caches a single state engine for the lifetime of the process via `deid.models.base.get_cached_state_engine(db_path)` — no engine create/dispose cycle on the hot batch update path.
 
 ---
 
@@ -394,8 +396,8 @@ phases:
 
 | Phase | Description |
 |-------|-------------|
-| `setup` | Connect to source DB, discover tables, count rows, create `BatchState` entries in the state DB. |
-| `deidentify` | Dispatch 3-stage task chain per batch (fetch → process → write) to Celery workers. Streams progress via Redis. |
+| `setup` | Connect to source DB, discover tables, count rows via `SELECT COUNT(*)` (exact, not catalog estimates), create `BatchState` entries in the state DB. Exact counts ensure no tail rows are silently dropped because of an under-estimated batch range. |
+| `deidentify` | Dispatch 3-stage task chain per batch (fetch → process → write) to Celery workers. Streams progress via Redis. Idempotency guards on each task skip already-completed work when `task_acks_late` re-delivers a message after a worker crash; failed tasks are reset to `pending` and re-dispatched by the watchdog. |
 | `qc` | (Deprecated in `deid run`; use `deid qc` standalone.) Sample rows from source and destination, verify rules, report pass/fail per column. Results saved to `qc_results.db`. |
 
 You can run phases individually:

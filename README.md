@@ -563,20 +563,31 @@ deid/
 │   └── table_schemas.py    #   TypedDicts for runtime table/column config
 │
 ├── models/                 # SQLAlchemy 2.0 models (SQLite)
-│   ├── base.py             #   Engine factories, create_all helpers
-│   ├── state.py            #   DbConfig, TableState, RunLog
-│   └── mappings.py         #   PatientMapping, EncounterMapping, PhiStaging
+│   ├── base.py             #   Engine factories with WAL + busy_timeout=5000;
+│   │                       #   get_cached_state_engine(db_path) — per-process cache
+│   │                       #   used by all Celery tasks for the hot batch update path
+│   ├── state.py            #   DbConfig, TableState, BatchState, RunLog
+│   ├── mappings.py         #   PatientMapping, EncounterMapping, AppointmentMapping, PhiStaging
+│   ├── failed_rows.py      #   Per-source-schema failed_rows_{schema} tables
+│   └── qc_results.py       #   QCTableResult (qc_results.db)
 │
 ├── orchestrator/           # Async pipeline orchestrator
-│   ├── async_runner.py     #   Drives setup → deidentify → QC phases
-│   ├── task_graph.py       #   Builds Celery Canvas groups (single/parallel)
+│   ├── async_runner.py     #   Drives setup → deidentify phases; polls BatchState;
+│   │                       #   watchdog re-dispatches stalled table chains
+│   ├── log_collector.py    #   Async Redis pub/sub log aggregation + summary
 │   └── progress.py         #   Redis pub/sub listener for progress events
 │
-├── tasks/                  # Celery task definitions
-│   ├── celery_app.py       #   App factory (broker, serialization, pooling)
-│   ├── deidentify.py       #   deidentify_table, deidentify_table_range
-│   ├── qc.py               #   run_qc
-│   └── stats.py            #   generate_table_stats
+├── tasks/                  # Celery task definitions (3-stage pipeline)
+│   ├── celery_app.py       #   App factory; preloads mapping tables on workers
+│   ├── fetch.py            #   fetch_batch — keyset-paginated source → Arrow IPC;
+│   │                       #   self-chains next fetch; idempotency guard recovers
+│   │                       #   from acks_late re-delivery; failures reset to pending
+│   ├── process.py          #   process_batch — Arrow IPC → mapping joins →
+│   │                       #   de-identification → Arrow IPC; idempotent on re-delivery
+│   ├── write.py            #   write_batch — Arrow IPC → idempotent dest DELETE+INSERT;
+│   │                       #   per-process _created_dest_tables guard skips DDL
+│   ├── qc.py               #   run_qc — dispatches DbScanner; results to qc_results.db
+│   └── deidentify.py       #   Legacy single-task path
 │
 ├── core/                   # Core de-identification engine
 │   ├── logger.py           #   Logging setup
@@ -613,13 +624,14 @@ deid/
 
 ### State Management
 
-The platform uses two SQLite databases for persistent state:
+The platform uses four SQLite databases for persistent state:
 
 **`state.db`** — Run tracking and table progress:
 | Table | Purpose |
 |-------|---------|
-| `db_configs` | Source/destination connection strings |
-| `table_states` | Per-table status (pending/started/completed/failed), row counts, rules config, QC results |
+| `db_configs` | Source/destination connection metadata snapshot (no passwords) |
+| `table_states` | Per-table status (pending/started/completed/failed), row counts, rules config |
+| `batch_states` | Per-batch state machine: `pending → dispatched → fetched → processed → done`. Failed tasks reset to `pending` for the watchdog to re-dispatch. |
 | `run_logs` | Overall run tracking with config hash, phases, timing |
 
 **`mappings.db`** — ID mapping tables:
@@ -630,16 +642,29 @@ The platform uses two SQLite databases for persistent state:
 | `appointment_mappings` | Original appointment ID → anonymized appointment ID |
 | `phi_staging` | PHI data staging per patient (JSON) |
 
-Both databases use SQLite WAL mode for concurrent read/write access.
+**`failed_rows.db`** — Per-source-schema audit tables:
+| Table | Purpose |
+|-------|---------|
+| `failed_rows_<schema>` | Rows filtered by `InvalidRowHandler` (e.g., unresolved patient IDs) — full row JSON + reason for audit |
 
-### Large Table Parallelism
+**`qc_results.db`** — Quality control output (written incrementally by `deid qc`):
+| Table | Purpose |
+|-------|---------|
+| `qc_table_results` | Per-table pass/fail with per-column detector results |
 
-When a table exceeds `large_table_threshold` (default: 500,000 rows), the orchestrator:
+All four databases use SQLite WAL mode and `PRAGMA busy_timeout=5000` to allow concurrent worker reads/writes without spurious `SQLITE_BUSY` errors. The state engine is created once per worker process via `deid.models.base.get_cached_state_engine(db_path)` — every Celery task on the hot batch update path reuses the same cached engine instead of creating and disposing one per call.
 
-1. Queries the min/max `nd_auto_increment_id` from the source table
-2. Splits the ID range into `parallel_tasks_per_table` equal segments
-3. Dispatches a `deidentify_table_range(start_id, end_id)` task for each segment
-4. Celery executes these in parallel across prefork worker processes
+### 3-Stage Pipeline & Batch Processing
+
+Every table is processed via the same 3-stage Celery pipeline (`fetch → process → write`), regardless of size. During the **setup** phase the orchestrator:
+
+1. Calls `NDDBHandler.get_exact_row_count(table_name)` (`SELECT COUNT(*)` — exact, not catalog estimate) for each configured table.
+2. Splits the row range into `deidentification.batch_size` chunks and creates a `BatchState` row per chunk in `state.db`.
+3. Cleans up stale staging files.
+
+During **deidentify**, each `fetch_batch` keyset-paginates a chunk from the source DB, writes it to an Arrow IPC file, then dispatches `process_batch`, which applies de-identification rules and dispatches `write_batch`. Each `fetch_batch` also self-chains by atomically claiming the next pending batch for the same table — guaranteeing keyset pagination order. Per-table write workers run with `concurrency=1` to avoid MySQL lock-wait timeouts from concurrent inserts on the same table.
+
+If a worker crashes mid-task, `task_acks_late=True` causes Celery to re-deliver the message. Idempotency guards at the top of each task's inner function check `BatchState.status` and skip the work (or re-dispatch the next stage) when the batch is already past the current stage. Non-retry failures reset the batch to `pending` and the orchestrator's watchdog re-dispatches it within 2 seconds.
 
 ### Progress Monitoring
 
@@ -668,7 +693,7 @@ Rules are assigned per-column in the `tables` section of `config.yaml`. The `DeI
 | `DATE_OFFSET` | Shift date by per-patient offset (days) | `2024-03-15` → `2024-04-18` |
 | `STATIC_OFFSET` | Shift date by global fixed offset | `2024-03-15` → `2024-04-18` |
 | `ZIP_CODE` | Truncate to 3 digits or mask | `90210` → `902` |
-| `PATIENT_DOB` | Replace with birth year only | `1985-06-15` → `1985` |
+| `PATIENT_DOB` | Replace with birth year only (`Int64`); columns with no recognised date pattern are nulled to prevent PHI leakage | `1985-06-15` → `1985` |
 | `NOTES` | NLP-based PII extraction and masking | Free-text clinical notes (Presidio + Spacy) |
 | `GENERIC_NOTES` | Regex-based PII masking | Free-text with pattern-based replacement |
 
@@ -783,12 +808,20 @@ python -m pytest tests/ -v
 |-----------|-----------------|
 | `test_config.py` | Config loading, validation, env var interpolation |
 | `test_models.py` | SQLAlchemy model creation, insert/query, mapping helpers |
+| `test_batch_state.py` | `BatchState` CRUD, unique constraints, status transitions |
+| `test_staging.py` | Arrow IPC staging directory helpers, crash-recovery reconciliation |
 | `test_celery_tasks.py` | Celery app creation, task registration |
-| `test_orchestrator.py` | Task graph building (single table, parallel splits) |
+| `test_fetch_task.py` | `fetch_batch` task — keyset pagination, status updates, self-chaining |
+| `test_process_task.py` | `process_batch` task — Arrow read/write, mapping joins, status updates |
+| `test_write_task.py` | `write_batch` task — idempotent DELETE+INSERT, status updates |
+| `test_pipeline_integration.py` | End-to-end fetch → process → write chain with real Arrow IPC files |
+| `test_orchestrator.py` | `_setup_phase` — exact row count, BatchState creation |
+| `test_orchestrator_extended.py` | RunLog status, credential stripping, dispatch helpers |
 | `test_cli.py` | CLI help output, command registration, error handling for missing files |
 | `test_mapping_populator.py` | Mapping population: rule scanning, bulk inserts, idempotency |
 | `test_core_imports.py` | Zero Django/legacy imports in core engine |
 | `test_qc_imports.py` | Zero Django/legacy imports in QC package |
+| `test_log_publisher.py`, `test_log_collector.py`, `test_logging_integration.py` | Redis pub/sub log aggregation and run-summary file output |
 | `test_integration.py` | End-to-end wiring: config → state DB → Celery tasks |
 
 ### Technology Stack
@@ -800,6 +833,6 @@ python -m pytest tests/ -v
 | State Storage | SQLAlchemy 2.0 + SQLite | Run tracking, ID mappings |
 | Config | Pydantic v2 + PyYAML | Validation, env var interpolation |
 | DataFrames | Polars | High-performance columnar processing |
-| Regex | google-re2 | Safe regex (no catastrophic backtracking) |
+| Regex | `regex` (PyPI), with stdlib `re` fallback | High-performance regex engine. Note: `google-re2` is deliberately avoided — its Python bindings have ~50× overhead due to string marshalling. |
 | NLP | Presidio + Spacy | PII detection in unstructured text |
 | Databases | SQLAlchemy | MySQL, MSSQL, PostgreSQL, Snowflake |

@@ -201,3 +201,7 @@ temp/
 .deid_cache/
 docs/plans/
 docs/superpowers/
+.gitnexus
+AGENTS.md
+.claude/
+CLAUDE.md

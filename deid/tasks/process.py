@@ -25,7 +25,7 @@ from deid.core.process_df.main import (
 )
 from deid.tasks.celery_app import get_preloaded_data
 from deid.core.process_df.rowhandler import InvalidRowHandler
-from deid.models.base import create_state_engine
+from deid.models.base import get_cached_state_engine
 from deid.models.state import BatchState
 from deid.staging import batch_fetched_path, batch_processed_path
 
@@ -55,15 +55,34 @@ def process_batch(self, raw_config: dict):
                  duration_ms=duration_ms, peak_memory_mb=get_peak_memory_mb())
         return result
     except Exception as exc:
-        import traceback
+        # Reset batch to pending so the watchdog can re-dispatch it
+        try:
+            _update_batch_status(config, "pending")
+        except Exception:
+            logger.warning("Could not reset batch %s to pending after failure", batch_tag)
         _publish(config, LogLevel.ERROR, "process",
                  f"batch {batch_tag} failed: {exc}",
                  start_id=config.start_id, end_id=config.end_id,
-                 error=traceback.format_exc())
+                 error=f"{type(exc).__name__}: {exc}")
         raise
 
 
 def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
+    # Idempotency guard: skip if already processed or beyond
+    engine = get_cached_state_engine(config.state_db_path)
+    with Session(engine) as session:
+        batch = session.query(BatchState).filter_by(
+            table_name=config.table_name,
+            start_id=config.start_id,
+            end_id=config.end_id,
+            config_key=config.config_key,
+        ).first()
+        if batch and batch.status in ("processed", "done"):
+            logger.info("Skipping already-%s batch %d-%d (idempotency guard)",
+                        batch.status, config.start_id, config.end_id)
+            return {"table": config.table_name, "start_id": config.start_id,
+                    "end_id": config.end_id, "status": batch.status, "rows": 0}
+
     root = Path(config.staging_root)
 
     fetched = batch_fetched_path(root, config.table_name, config.start_id, config.end_id, config.config_key)
@@ -243,9 +262,7 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
 
 
 def _update_batch_status(config: ProcessTaskConfig, status: str):
-    engine = create_state_engine(config.state_db_path)
-    from deid.models.base import create_all_state_tables
-    create_all_state_tables(engine)
+    engine = get_cached_state_engine(config.state_db_path)
     with Session(engine) as session:
         batch = session.query(BatchState).filter_by(
             table_name=config.table_name,
@@ -256,4 +273,3 @@ def _update_batch_status(config: ProcessTaskConfig, status: str):
         if batch:
             batch.status = status
             session.commit()
-    engine.dispose()

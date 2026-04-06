@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from deid.config.task_models import LogLevel, WriteTaskConfig
 from deid.core.dbPkg.dbhandler import NDDBHandler
 from deid.core.log_publisher import get_peak_memory_mb, make_log_record, publish_log
-from deid.models.base import create_state_engine
+from deid.models.base import get_cached_state_engine
 from deid.models.state import BatchState, TableState
 from deid.staging import batch_processed_path
 
@@ -26,6 +26,9 @@ logger = logging.getLogger("deid.tasks.write")
 
 # Module-level handler cache for connection reuse across tasks
 _handler_cache: dict[str, NDDBHandler] = {}
+
+# Module-level guard: dest tables already created in this process
+_created_dest_tables: set[str] = set()
 
 
 def _publish(config: WriteTaskConfig, level: LogLevel, phase: str, message: str, **kwargs):
@@ -66,7 +69,6 @@ def write_batch(self, raw_config: dict):
                  duration_ms=duration_ms, peak_memory_mb=get_peak_memory_mb())
         return result
     except Exception as exc:
-        import traceback
         if _is_lock_error(exc) and self.request.retries < self.max_retries:
             countdown = 10 * (2 ** self.request.retries)  # 10s, 20s, 40s, 80s, 160s
             logger.warning(
@@ -75,14 +77,48 @@ def write_batch(self, raw_config: dict):
                 self.max_retries, countdown,
             )
             raise self.retry(exc=exc, countdown=countdown)
+        # Reset batch to pending so the watchdog can re-dispatch it
+        try:
+            _reset_batch_to_pending(config)
+        except Exception:
+            logger.warning("Could not reset batch %s to pending after failure", batch_tag)
         _publish(config, LogLevel.ERROR, "write",
                  f"batch {batch_tag} failed: {exc}",
                  start_id=config.start_id, end_id=config.end_id,
-                 error=traceback.format_exc())
+                 error=f"{type(exc).__name__}: {exc}")
         raise
 
 
+def _reset_batch_to_pending(config: WriteTaskConfig):
+    """Reset a failed batch to pending so the watchdog can re-dispatch it."""
+    engine = get_cached_state_engine(config.state_db_path)
+    with Session(engine) as session:
+        batch = session.query(BatchState).filter_by(
+            table_name=config.table_name,
+            start_id=config.start_id,
+            end_id=config.end_id,
+            config_key=config.config_key,
+        ).first()
+        if batch:
+            batch.status = "pending"
+            session.commit()
+
+
 def _write_batch_inner(config: WriteTaskConfig, batch_tag: str):
+    # Idempotency guard: skip if already done
+    engine = get_cached_state_engine(config.state_db_path)
+    with Session(engine) as session:
+        batch = session.query(BatchState).filter_by(
+            table_name=config.table_name,
+            start_id=config.start_id,
+            end_id=config.end_id,
+            config_key=config.config_key,
+        ).first()
+        if batch and batch.status == "done":
+            logger.info("Skipping already-done batch %s (idempotency guard)", batch_tag)
+            return {"table": config.table_name, "start_id": config.start_id,
+                    "end_id": config.end_id, "status": "done", "rows": 0}
+
     root = Path(config.staging_root)
 
     proc_path = batch_processed_path(root, config.table_name, config.start_id, config.end_id, config.config_key)
@@ -168,9 +204,7 @@ def _write_batch_inner(config: WriteTaskConfig, batch_tag: str):
 
 def _update_batch_status_and_check_table(config: WriteTaskConfig):
     """Mark batch as done; if all batches for table are done, mark table completed."""
-    engine = create_state_engine(config.state_db_path)
-    from deid.models.base import create_all_state_tables
-    create_all_state_tables(engine)
+    engine = get_cached_state_engine(config.state_db_path)
     with Session(engine) as session:
         batch = session.query(BatchState).filter_by(
             table_name=config.table_name,
@@ -195,7 +229,6 @@ def _update_batch_status_and_check_table(config: WriteTaskConfig):
             if table_state:
                 table_state.status = "completed"
                 session.commit()
-    engine.dispose()
 
 
 def _clean_type_str(raw: str) -> str:
@@ -352,6 +385,8 @@ def _create_dest_table(handler: NDDBHandler, table_name: str, col_schema: dict):
     """Create destination table if it doesn't exist using exact source types."""
     if not col_schema:
         return
+    if table_name in _created_dest_tables:
+        return
 
     qi = lambda name: _quote_identifier(handler.engine, name)
     is_mysql = handler.engine.dialect.name == "mysql"
@@ -372,3 +407,4 @@ def _create_dest_table(handler: NDDBHandler, table_name: str, col_schema: dict):
             conn.exec_driver_sql("SET sql_mode = ''")
             conn.exec_driver_sql("SET innodb_strict_mode = 0")
         conn.exec_driver_sql(ddl_str)
+    _created_dest_tables.add(table_name)

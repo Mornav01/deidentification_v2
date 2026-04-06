@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from deid.config.task_models import FetchTaskConfig, LogLevel
 from deid.core.dbPkg.dbhandler import NDDBHandler, stream_table_keyset
 from deid.core.log_publisher import get_peak_memory_mb, make_log_record, publish_log
-from deid.models.base import create_state_engine
+from deid.models.base import get_cached_state_engine
 from deid.models.state import BatchState
 from deid.staging import batch_fetched_path
 
@@ -55,15 +55,58 @@ def fetch_batch(self, raw_config: dict):
                  duration_ms=duration_ms, peak_memory_mb=get_peak_memory_mb())
         return result
     except Exception as exc:
-        import traceback
+        # Mark batch as failed so the watchdog doesn't treat it as in-flight
+        try:
+            _update_batch_status(config, "pending")
+        except Exception:
+            logger.warning("Could not reset batch %s to pending after failure", batch_tag)
         _publish(config, LogLevel.ERROR, "fetch",
                  f"batch {batch_tag} failed: {exc}",
                  start_id=config.start_id, end_id=config.end_id,
-                 error=traceback.format_exc())
+                 error=f"{type(exc).__name__}: {exc}")
         raise
 
 
 def _fetch_batch_inner(config: FetchTaskConfig, raw_config: dict, batch_tag: str, root):
+    # Idempotency guard: handle re-delivery from task_acks_late after worker kill.
+    engine = get_cached_state_engine(config.state_db_path)
+    with Session(engine) as session:
+        batch = session.query(BatchState).filter_by(
+            table_name=config.table_name,
+            start_id=config.start_id,
+            end_id=config.end_id,
+            config_key=config.config_key,
+        ).first()
+        if batch and batch.status in ("processed", "done"):
+            logger.info("Skipping already-%s batch %s (idempotency guard)", batch.status, batch_tag)
+            return {"table": config.table_name, "start_id": config.start_id,
+                    "end_id": config.end_id, "status": batch.status, "rows": 0}
+        if batch and batch.status == "fetched":
+            # Arrow file is already on disk. Re-dispatch process_batch in case the
+            # original dispatch was lost when the worker died, then return.
+            logger.info(
+                "Re-dispatching process_batch for already-fetched batch %s (idempotency recovery)",
+                batch_tag,
+            )
+            from deid.tasks.process import process_batch
+            process_config = {
+                "table_name": config.table_name,
+                "start_id": config.start_id,
+                "end_id": config.end_id,
+                "staging_root": str(root),
+                "state_db_path": config.state_db_path,
+                "config_key": config.config_key,
+                "redis_url": config.redis_url,
+                "run_config": config.run_config,
+                **{k: raw_config[k] for k in (
+                    "mapping_db_config", "table_details", "source_conn_str",
+                    "offset_days", "pii_config", "pii_db_conn_str",
+                    "secondary_pii_configs", "dest_conn_str", "failed_rows_db_path",
+                ) if k in raw_config},
+            }
+            process_batch.apply_async(args=[process_config], queue="deid-process")
+            return {"table": config.table_name, "start_id": config.start_id,
+                    "end_id": config.end_id, "status": "fetched", "rows": 0}
 
     # 1. Fetch rows from source using keyset pagination (O(1) per batch)
     source = _get_cached_handler(config.source_conn_str, read_only=True)
@@ -175,20 +218,15 @@ def _claim_next_pending_batch(session: Session, table_name: str, config_key: str
 
 def _dispatch_next_fetch(config: FetchTaskConfig, raw_config: dict, last_fetched_id: int):
     """Atomically claim and dispatch the next pending batch for this table."""
-    engine = create_state_engine(config.state_db_path)
-    from deid.models.base import create_all_state_tables
-    create_all_state_tables(engine)
-    try:
-        with Session(engine) as session:
-            next_batch = _claim_next_pending_batch(session, config.table_name, config.config_key)
-            if next_batch:
-                next_cfg = {**raw_config}
-                next_cfg["start_id"] = next_batch.start_id
-                next_cfg["end_id"] = next_batch.end_id
-                next_cfg["last_fetched_id"] = last_fetched_id
-                fetch_batch.apply_async(args=[next_cfg], queue="deid-fetch")
-    finally:
-        engine.dispose()
+    engine = get_cached_state_engine(config.state_db_path)
+    with Session(engine) as session:
+        next_batch = _claim_next_pending_batch(session, config.table_name, config.config_key)
+        if next_batch:
+            next_cfg = {**raw_config}
+            next_cfg["start_id"] = next_batch.start_id
+            next_cfg["end_id"] = next_batch.end_id
+            next_cfg["last_fetched_id"] = last_fetched_id
+            fetch_batch.apply_async(args=[next_cfg], queue="deid-fetch")
 
 
 def _staging_root(config: FetchTaskConfig):
@@ -197,9 +235,7 @@ def _staging_root(config: FetchTaskConfig):
 
 
 def _update_batch_status(config: FetchTaskConfig, status: str, actual_end_id: int | None = None):
-    engine = create_state_engine(config.state_db_path)
-    from deid.models.base import create_all_state_tables
-    create_all_state_tables(engine)
+    engine = get_cached_state_engine(config.state_db_path)
     with Session(engine) as session:
         batch = session.query(BatchState).filter_by(
             table_name=config.table_name,
@@ -212,4 +248,3 @@ def _update_batch_status(config: FetchTaskConfig, status: str, actual_end_id: in
             if actual_end_id is not None:
                 batch.actual_end_id = actual_end_id
             session.commit()
-    engine.dispose()

@@ -164,7 +164,7 @@ class TestCredentialStripping:
         )
 
         mock_handler = MagicMock()
-        mock_handler.get_rows_count.return_value = 100
+        mock_handler.get_exact_row_count.return_value = 100
         mock_handler.get_min_max_id.return_value = (1, 100)
 
         from deid.models.base import create_state_engine, create_all_state_tables

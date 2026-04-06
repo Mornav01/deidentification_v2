@@ -81,32 +81,50 @@ class DataGenerator:
         
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_sample(self, table_name: str, size: int) -> List[Dict[str, Any]]:
-        query = text(f"""SELECT * FROM {table_name} LIMIT {size}""")
-        source_sample = []
+        # Fetch dest rows with a deterministic order for aligned comparison
+        id_col = "nd_auto_increment_id"
         dest_sample = []
         with self.dest_engine.connect() as conn:
-            # query = text(f"""SELECT * FROM {table_name} LIMIT {size}""")
-            result = conn.execute(query)
+            query = text(f"SELECT * FROM {table_name} ORDER BY {id_col} LIMIT :lim")
+            result = conn.execute(query, {"lim": size})
             columns = result.keys()
             dest_sample = [dict(zip(columns, row)) for row in result]
-    
-        with self.source_engine.connect() as conn:
-            # query = text(f"""SELECT TOP {size} * FROM [dbo].[{table_name}] """)
-            result = conn.execute(query)
-            columns = result.keys()
-            source_sample = [dict(zip(columns, row)) for row in result]
+
+        if not dest_sample:
+            return [], []
+
+        # Fetch matching source rows by the same IDs for aligned comparison
+        sample_ids = [row[id_col] for row in dest_sample if id_col in row]
+        source_sample = []
+        if sample_ids:
+            placeholders = ",".join(str(int(i)) for i in sample_ids)
+            with self.source_engine.connect() as conn:
+                query = text(
+                    f"SELECT * FROM {table_name} "
+                    f"WHERE {id_col} IN ({placeholders}) "
+                    f"ORDER BY {id_col}"
+                )
+                result = conn.execute(query)
+                columns = result.keys()
+                source_sample = [dict(zip(columns, row)) for row in result]
         return source_sample, dest_sample
     
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_sample_for_nd_ids(self, table_name: str, nd_auto_incr_ids: list[int]) -> List[Dict[str, Any]]:
-        query = text(f"""SELECT * FROM {table_name} where  nd_auto_increment_id in {nd_auto_incr_ids}""")
+        if not nd_auto_incr_ids:
+            return [], []
+        placeholders = ",".join(str(int(i)) for i in nd_auto_incr_ids)
+        id_col = "nd_auto_increment_id"
+        query = text(
+            f"SELECT * FROM {table_name} WHERE {id_col} IN ({placeholders}) ORDER BY {id_col}"
+        )
         source_sample = []
         dest_sample = []
         with self.dest_engine.connect() as conn:
             result = conn.execute(query)
             columns = result.keys()
             dest_sample = [dict(zip(columns, row)) for row in result]
-    
+
         with self.source_engine.connect() as conn:
             result = conn.execute(query)
             columns = result.keys()

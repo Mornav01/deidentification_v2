@@ -20,6 +20,7 @@ class MappingsBase(DeclarativeBase):
 def _enable_wal(dbapi_conn, connection_record):
     cursor = dbapi_conn.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=5000")
     cursor.close()
 
 
@@ -90,6 +91,27 @@ def create_read_only_mappings_engine(conn_str: str):
 def create_all_state_tables(engine):
     import deid.models.state  # noqa: F401 — ensure models are registered
     StateBase.metadata.create_all(engine)
+
+
+# Module-level state engine cache — one engine per state_db_path, per process.
+# Prefork workers get their own copy after fork (empty at fork time, populated
+# lazily), so there are no fork-safety concerns with stale connections.
+_state_engine_cache: dict = {}
+
+
+def get_cached_state_engine(db_path: str):
+    """Return a cached state engine for ``db_path``.
+
+    Creates the engine and initialises tables on first call per process.
+    Subsequent calls return the same engine, eliminating the overhead of
+    engine create/dispose cycles on every batch status update in the hot
+    task path.
+    """
+    if db_path not in _state_engine_cache:
+        engine = create_state_engine(db_path)
+        create_all_state_tables(engine)
+        _state_engine_cache[db_path] = engine
+    return _state_engine_cache[db_path]
 
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
