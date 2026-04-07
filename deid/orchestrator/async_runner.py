@@ -291,13 +291,13 @@ async def _deidentify_phase(config, state_engine):
                 cfg = _build_fetch_config(config, batch, staging_root, mappings_conn_str)
                 if last_fetched_id is not None:
                     cfg["last_fetched_id"] = last_fetched_id
-                fetch_batch.apply_async(args=[cfg], queue="deid-fetch")
+                fetch_batch.apply_async(args=[cfg], queue=f"deid-fetch-{config.config_key}")
 
     # Resume in-progress batches (fetched -> process, processed -> write)
     with Session(state_engine) as session:
         for batch in session.query(BatchState).filter_by(status="fetched", config_key=config.config_key).all():
             cfg = _build_process_config(config, batch, staging_root, mappings_conn_str)
-            process_batch.apply_async(args=[cfg], queue="deid-process")
+            process_batch.apply_async(args=[cfg], queue=f"deid-process-{config.config_key}")
         for batch in session.query(BatchState).filter_by(status="processed", config_key=config.config_key).all():
             cfg = _build_write_config(config, batch, staging_root)
             write_batch.apply_async(args=[cfg], queue=f"deid-write-{config.config_key}-{batch.table_name}")
@@ -368,7 +368,7 @@ async def _deidentify_phase(config, state_engine):
                         )
                         if last_fetched_id is not None:
                             cfg["last_fetched_id"] = last_fetched_id
-                        fetch_batch.apply_async(args=[cfg], queue="deid-fetch")
+                        fetch_batch.apply_async(args=[cfg], queue=f"deid-fetch-{config.config_key}")
                         logger.warning(
                             "Re-dispatched stalled fetch chain for table %s (last_fetched_id=%s)",
                             tname, last_fetched_id,
@@ -491,7 +491,7 @@ async def _qc_phase(config, state_engine):
         logger.info("No completed tables for QC (configured: %s)", configured_tables)
         return
 
-    # Dispatch all QC tasks to deid-process workers, then wait for all results.
+    # Dispatch all QC tasks to this run's process workers, then wait for all results.
     results = []
     for tname in table_names:
         qc_config = QCTaskConfig(
@@ -503,7 +503,7 @@ async def _qc_phase(config, state_engine):
             table_config=_get_table_details(config, tname),
             qc_results_db_path=config.qc_results_db_path,
         )
-        r = run_qc.apply_async(args=[qc_config.model_dump()], queue="deid-process")
+        r = run_qc.apply_async(args=[qc_config.model_dump()], queue=f"deid-process-{config.config_key}")
         logger.info("Dispatched QC task for table '%s'", tname)
         results.append((tname, r))
 

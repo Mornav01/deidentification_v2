@@ -143,7 +143,7 @@ Use `config_key` when multiple configs run tables with the **same name** against
 The key affects:
 - **`state.db`** — `TableState` and `BatchState` rows have a `config_key` column; uniqueness constraints include it.
 - **Staging paths** — Arrow IPC files are stored under `staging_root/<config_key>/<table>/…` instead of `staging_root/<table>/…`.
-- **Redis write queues** — named `deid-write-<config_key>-<table>` instead of `deid-write-<table>`.
+- **Redis queues** — fetch and process queues are named `deid-fetch-<config_key>` / `deid-process-<config_key>`, and write queues `deid-write-<config_key>-<table>`. Scoping by `config_key` keeps concurrent or re-run pipelines from colliding on each other's task messages.
 - **`failed_rows.db`** — each per-schema table has a `config_key` column; `--rerun` only deletes rows matching the current key.
 
 Check status for a specific key:

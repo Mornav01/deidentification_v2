@@ -73,6 +73,11 @@ def run_command(
     create_celery_app(broker_url=cfg.redis_url, result_backend=cfg.redis_url)
     get_celery_app().conf.deid_config_path = str(config_path)
 
+    # Queue hygiene: drop stale messages from prior aborted runs for this config_key.
+    # State DB idempotency guards + watchdog re-dispatch cover correctness; this
+    # prevents stale tasks from running against renamed/removed state.
+    _purge_run_queues(cfg)
+
     worker_procs = _start_workers(cfg, str(config_path))
 
     try:
@@ -173,17 +178,8 @@ def _rerun_cleanup(cfg):
                 shutil.rmtree(table_dir)
                 logger.info("Removed staging for table: %s", tname)
 
-    # 5. Purge per-table write queues in Redis
-    try:
-        import redis
-        r = redis.Redis.from_url(cfg.redis_url)
-        queues = [f"deid-write-{cfg.config_key}-{t}" for t in table_names]
-        for q in queues:
-            r.delete(q)
-        r.close()
-        logger.info("Purged Redis write queues for rerun tables: %s", queues)
-    except Exception as e:
-        logger.warning("Could not purge Redis queues: %s", e)
+    # Queue purge is handled by _purge_run_queues at run startup — it runs
+    # unconditionally and covers fetch, process, and write queues for this config_key.
 
 
 def _record_unmatched_tables(cfg):
@@ -237,14 +233,39 @@ def _record_unmatched_tables(cfg):
         engine.dispose()
 
 
+def _purge_run_queues(cfg) -> None:
+    """Drop any stale messages in the queues this run will consume.
+
+    Aborted prior runs can leave tasks in Redis that a naive restart would
+    re-execute against changed state. Startup purge is unconditional so
+    `deid run` (with or without --rerun) always begins with a clean queue
+    for its config_key. State-DB idempotency + the orchestrator watchdog
+    handle re-dispatch of anything that genuinely still needs to run.
+    """
+    queues = [
+        f"deid-fetch-{cfg.config_key}",
+        f"deid-process-{cfg.config_key}",
+        *[f"deid-write-{cfg.config_key}-{t.name}" for t in cfg.tables],
+    ]
+    try:
+        import redis
+        r = redis.Redis.from_url(cfg.redis_url)
+        for q in queues:
+            r.delete(q)
+        r.close()
+        logger.info("Purged %d Redis queue(s) for config_key=%s", len(queues), cfg.config_key)
+    except Exception as e:
+        logger.warning("Could not purge Redis queues: %s", e)
+
+
 def _start_workers(cfg, config_path: str = "") -> list[subprocess.Popen]:
     """Spawn Celery worker subprocesses: fetch, process, and one write worker per table."""
     import os
     global_mtpc = cfg.workers.max_tasks_per_child
     shared_configs = [
-        ("deid-fetch", cfg.workers.fetchers, "fetch",
+        (f"deid-fetch-{cfg.config_key}", cfg.workers.fetchers, "fetch",
          cfg.workers.max_tasks_per_child_fetch or global_mtpc),
-        ("deid-process", cfg.workers.processors, "process",
+        (f"deid-process-{cfg.config_key}", cfg.workers.processors, "process",
          cfg.workers.max_tasks_per_child_process or global_mtpc),
     ]
 
