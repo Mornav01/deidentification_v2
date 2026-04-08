@@ -169,8 +169,44 @@ async def _setup_phase(config: DeidConfig, state_engine):
 
     table_names = [t.name for t in config.tables]
     logger.info("Setup: fetching row counts for %d tables...", len(table_names))
-    count_results = await asyncio.gather(*[_get_count(n) for n in table_names])
-    table_row_counts = dict(count_results)
+    count_results = await asyncio.gather(*[_get_count(n) for n in table_names], return_exceptions=True)
+
+    table_row_counts = {}
+    failed_tables = []
+    for tname, result in zip(table_names, count_results):
+        if isinstance(result, Exception):
+            logger.error("  %s: failed to get row count — %s", tname, result)
+            failed_tables.append(tname)
+        else:
+            table_row_counts[tname] = result[1]
+
+    # Remove tables that failed row-count fetch from the run — mark them failed in state.db
+    if failed_tables:
+        with Session(state_engine) as session:
+            db_cfg = session.query(DbConfig).filter_by(name=config.config_key).first()
+            for tname in failed_tables:
+                existing = session.query(TableState).filter_by(
+                    table_name=tname, config_key=config.config_key
+                ).first()
+                if existing:
+                    existing.status = "failed"
+                    existing.failure_remarks = "Table not found or inaccessible in source DB during setup"
+                elif db_cfg:
+                    session.add(TableState(
+                        db_config_id=db_cfg.id,
+                        table_name=tname,
+                        config_key=config.config_key,
+                        status="failed",
+                        failure_remarks="Table not found or inaccessible in source DB during setup",
+                        rules_config={},
+                    ))
+            session.commit()
+            logger.warning("Marked %d table(s) as failed (not found in source DB): %s", len(failed_tables), failed_tables)
+        # Remove from config.tables so they are excluded from batch splitting and deidentify
+        config.tables = [t for t in config.tables if t.name not in failed_tables]
+        if not config.tables:
+            logger.error("All tables failed row-count fetch — nothing to process.")
+            return {}, {}
 
     table_id_ranges = {}  # kept for return value compatibility
 
@@ -220,6 +256,14 @@ async def _setup_phase(config: DeidConfig, state_engine):
             tname = table_cfg.name
             row_count = table_row_counts.get(tname, 0)
             if row_count == 0:
+                # Mark 0-row tables as completed immediately — nothing to process.
+                ts = session.query(TableState).filter_by(
+                    table_name=tname, config_key=config.config_key
+                ).first()
+                if ts:
+                    ts.status = "completed"
+                    ts.row_count = 0
+                logger.info("  %s: 0 rows — marked as completed (skipped).", tname)
                 continue
 
             offset = 0
@@ -228,7 +272,11 @@ async def _setup_phase(config: DeidConfig, state_engine):
                 existing = session.query(BatchState).filter_by(
                     table_name=tname, start_id=offset, end_id=end, config_key=config.config_key
                 ).first()
-                if not existing:
+                if existing:
+                    # Always reset to pending during setup — stale "done" rows from
+                    # a previously interrupted run must not count toward this run's total.
+                    existing.status = "pending"
+                else:
                     session.add(BatchState(
                         table_name=tname, start_id=offset, end_id=end,
                         config_key=config.config_key, status="pending"
@@ -258,13 +306,22 @@ async def _deidentify_phase(config, state_engine):
 
     mappings_conn_str = config.mappings_connection_string
 
-    # Count total batches
+    # Count total batches — scoped to the tables configured for THIS run only,
+    # so that completed rows from previous runs on other tables don't inflate counts.
+    configured_table_names = [t.name for t in config.tables]
     with Session(state_engine) as session:
-        total = session.query(BatchState).filter_by(config_key=config.config_key).count()
-        if total == 0:
-            raise RuntimeError(
-                "No BatchState rows found. Run the 'setup' phase first."
+        total = (
+            session.query(BatchState)
+            .filter(
+                BatchState.config_key == config.config_key,
+                BatchState.table_name.in_(configured_table_names),
             )
+            .count()
+        )
+        if total == 0:
+            # All configured tables had 0 rows — already marked completed in setup.
+            logger.info("All configured tables had 0 rows — nothing to process.")
+            return
 
     # Initial dispatch: atomically claim and dispatch the FIRST pending batch per table.
     from deid.tasks.fetch import _claim_next_pending_batch
@@ -291,13 +348,13 @@ async def _deidentify_phase(config, state_engine):
                 cfg = _build_fetch_config(config, batch, staging_root, mappings_conn_str)
                 if last_fetched_id is not None:
                     cfg["last_fetched_id"] = last_fetched_id
-                fetch_batch.apply_async(args=[cfg], queue="deid-fetch")
+                fetch_batch.apply_async(args=[cfg], queue=f"deid-fetch-{config.config_key}")
 
     # Resume in-progress batches (fetched -> process, processed -> write)
     with Session(state_engine) as session:
         for batch in session.query(BatchState).filter_by(status="fetched", config_key=config.config_key).all():
             cfg = _build_process_config(config, batch, staging_root, mappings_conn_str)
-            process_batch.apply_async(args=[cfg], queue="deid-process")
+            process_batch.apply_async(args=[cfg], queue=f"deid-process-{config.config_key}")
         for batch in session.query(BatchState).filter_by(status="processed", config_key=config.config_key).all():
             cfg = _build_write_config(config, batch, staging_root)
             write_batch.apply_async(args=[cfg], queue=f"deid-write-{config.config_key}-{batch.table_name}")
@@ -311,7 +368,15 @@ async def _deidentify_phase(config, state_engine):
         await asyncio.sleep(2)
 
         with Session(state_engine) as session:
-            done_count = session.query(BatchState).filter_by(status="done", config_key=config.config_key).count()
+            done_count = (
+                session.query(BatchState)
+                .filter(
+                    BatchState.config_key == config.config_key,
+                    BatchState.status == "done",
+                    BatchState.table_name.in_(configured_table_names),
+                )
+                .count()
+            )
 
         if done_count == total:
             logger.info("All %d batches complete.", total)
@@ -368,7 +433,7 @@ async def _deidentify_phase(config, state_engine):
                         )
                         if last_fetched_id is not None:
                             cfg["last_fetched_id"] = last_fetched_id
-                        fetch_batch.apply_async(args=[cfg], queue="deid-fetch")
+                        fetch_batch.apply_async(args=[cfg], queue=f"deid-fetch-{config.config_key}")
                         logger.warning(
                             "Re-dispatched stalled fetch chain for table %s (last_fetched_id=%s)",
                             tname, last_fetched_id,

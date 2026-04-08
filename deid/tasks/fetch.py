@@ -104,7 +104,7 @@ def _fetch_batch_inner(config: FetchTaskConfig, raw_config: dict, batch_tag: str
                     "secondary_pii_configs", "dest_conn_str", "failed_rows_db_path",
                 ) if k in raw_config},
             }
-            process_batch.apply_async(args=[process_config], queue="deid-process")
+            process_batch.apply_async(args=[process_config], queue=f"deid-process-{config.config_key}")
             return {"table": config.table_name, "start_id": config.start_id,
                     "end_id": config.end_id, "status": "fetched", "rows": 0}
 
@@ -182,7 +182,7 @@ def _fetch_batch_inner(config: FetchTaskConfig, raw_config: dict, batch_tag: str
             "secondary_pii_configs", "dest_conn_str", "failed_rows_db_path",
         ) if k in raw_config},
     }
-    process_batch.apply_async(args=[process_config], queue="deid-process")
+    process_batch.apply_async(args=[process_config], queue=f"deid-process-{config.config_key}")
 
     logger.info("Fetched %s batch %s (%d rows)", config.table_name, batch_tag, df.height)
     return {"table": config.table_name, "start_id": config.start_id,
@@ -226,7 +226,7 @@ def _dispatch_next_fetch(config: FetchTaskConfig, raw_config: dict, last_fetched
             next_cfg["start_id"] = next_batch.start_id
             next_cfg["end_id"] = next_batch.end_id
             next_cfg["last_fetched_id"] = last_fetched_id
-            fetch_batch.apply_async(args=[next_cfg], queue="deid-fetch")
+            fetch_batch.apply_async(args=[next_cfg], queue=f"deid-fetch-{config.config_key}")
 
 
 def _staging_root(config: FetchTaskConfig):

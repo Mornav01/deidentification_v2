@@ -231,7 +231,15 @@ class BaseDateOffsetRule(RuleBase):
                 )
                 return date_str
 
-            shifted = parsed + timedelta(days=offset_days)
+            try:
+                shifted = parsed + timedelta(days=offset_days)
+            except OverflowError:
+                nd_logger.warning(
+                    f"[{self.__class__.__name__}] Date shift overflow: "
+                    f"date_str={date_str!r}  parsed={parsed}  offset_days={offset_days} "
+                    f"— leaving original value unchanged"
+                )
+                return date_str
             if re.search(r"\d{2}:\d{2}:\d{2}", date_str):
                 shifted_str = shifted.strftime("%Y-%m-%d %H:%M:%S")
             else:

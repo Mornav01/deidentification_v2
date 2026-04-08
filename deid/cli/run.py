@@ -173,15 +173,20 @@ def _rerun_cleanup(cfg):
                 shutil.rmtree(table_dir)
                 logger.info("Removed staging for table: %s", tname)
 
-    # 5. Purge per-table write queues in Redis
+    # 5. Purge Redis queues scoped to this config_key (fetch, process, write).
+    #    Each config_key now has its own fetch/process queues so purging them
+    #    here cannot affect a concurrently running different config_key.
     try:
         import redis
         r = redis.Redis.from_url(cfg.redis_url)
-        queues = [f"deid-write-{cfg.config_key}-{t}" for t in table_names]
+        queues = (
+            [f"deid-write-{cfg.config_key}-{t}" for t in table_names]
+            + [f"deid-fetch-{cfg.config_key}", f"deid-process-{cfg.config_key}"]
+        )
         for q in queues:
             r.delete(q)
         r.close()
-        logger.info("Purged Redis write queues for rerun tables: %s", queues)
+        logger.info("Purged Redis queues for rerun tables: %s", queues)
     except Exception as e:
         logger.warning("Could not purge Redis queues: %s", e)
 
@@ -242,9 +247,9 @@ def _start_workers(cfg, config_path: str = "") -> list[subprocess.Popen]:
     import os
     global_mtpc = cfg.workers.max_tasks_per_child
     shared_configs = [
-        ("deid-fetch", cfg.workers.fetchers, "fetch",
+        (f"deid-fetch-{cfg.config_key}", cfg.workers.fetchers, "fetch",
          cfg.workers.max_tasks_per_child_fetch or global_mtpc),
-        ("deid-process", cfg.workers.processors, "process",
+        (f"deid-process-{cfg.config_key}", cfg.workers.processors, "process",
          cfg.workers.max_tasks_per_child_process or global_mtpc),
     ]
 
