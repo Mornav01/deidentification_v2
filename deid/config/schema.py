@@ -222,7 +222,7 @@ def _load_tables_from_csv(csv_path: str, source_db: "DbConfig") -> list[TableCon
     If the CSV doesn't exist, auto-generates it by introspecting the source DB.
 
     CSV columns: table_name, column_name, data_type, rule
-    Rows with an empty 'rule' are skipped (non-PHI columns).
+    Rows with an empty 'rule' still register the table (pass-through — no PHI columns).
     """
     path = Path(csv_path)
     if not path.exists():
@@ -233,10 +233,12 @@ def _load_tables_from_csv(csv_path: str, source_db: "DbConfig") -> list[TableCon
     with open(path, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
+            table_name = row["table_name"].strip()
             rule = (row.get("rule") or "").strip()
             if not rule:
+                # Register the table even if this column has no rule (no-PHI pass-through)
+                tables.setdefault(table_name, {})
                 continue
-            table_name = row["table_name"].strip()
             column_name = row["column_name"].strip()
             tables.setdefault(table_name, {})[column_name] = rule
 

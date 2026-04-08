@@ -84,6 +84,28 @@ def _preload_mappings(app: Celery) -> None:
     cfg = load_config(Path(config_path))
     engine = create_read_only_mappings_engine(cfg.mappings_connection_string)
 
+    # Tables that should filter by nd_ActiveFlag = 'Y' when that column exists.
+    _active_flag_tables = {"encounter_mapping_table", "appointment_mapping_table"}
+
+    def _fetch_mapping_table(conn, table_name: str) -> tuple[list, list]:
+        """Return (cols, rows) for a mapping table.
+
+        For encounter/appointment tables, filters WHERE nd_ActiveFlag = 'Y'
+        if that column exists; otherwise falls back to a full SELECT.
+        """
+        if table_name in _active_flag_tables:
+            try:
+                probe = conn.execute(text(
+                    f"SELECT * FROM {table_name} WHERE nd_ActiveFlag = 'Y'"
+                ))
+                return list(probe.keys()), probe.fetchall()
+            except Exception:
+                _preload_logger.info(
+                    "nd_ActiveFlag not found in %s — loading without filter", table_name
+                )
+        result = conn.execute(text(f"SELECT * FROM {table_name}"))
+        return list(result.keys()), result.fetchall()
+
     try:
         with engine.connect() as conn:
             for table_key, table_name in [
@@ -92,9 +114,7 @@ def _preload_mappings(app: Celery) -> None:
                 ("appointment_mapping", "appointment_mapping_table"),
             ]:
                 try:
-                    result = conn.execute(text(f"SELECT * FROM {table_name}"))
-                    cols = list(result.keys())
-                    rows = result.fetchall()
+                    cols, rows = _fetch_mapping_table(conn, table_name)
                     if rows:
                         _preloaded_data[table_key] = pl.DataFrame(
                             [list(r) for r in rows], schema=cols, orient="row",
