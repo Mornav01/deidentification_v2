@@ -556,7 +556,7 @@ async def _qc_phase(config, state_engine):
         logger.info("No completed tables for QC (configured: %s)", configured_tables)
         return
 
-    # Dispatch all QC tasks to deid-process workers, then wait for all results.
+    # Dispatch all QC tasks to this run's process workers, then wait for all results.
     results = []
     for tname in table_names:
         qc_config = QCTaskConfig(
@@ -568,7 +568,7 @@ async def _qc_phase(config, state_engine):
             table_config=_get_table_details(config, tname),
             qc_results_db_path=config.qc_results_db_path,
         )
-        r = run_qc.apply_async(args=[qc_config.model_dump()], queue="deid-process")
+        r = run_qc.apply_async(args=[qc_config.model_dump()], queue=f"deid-process-{config.config_key}")
         logger.info("Dispatched QC task for table '%s'", tname)
         results.append((tname, r))
 

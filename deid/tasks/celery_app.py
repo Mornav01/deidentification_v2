@@ -175,6 +175,8 @@ def _run_preload_in_background(app: Celery) -> None:
 @worker_process_init.connect
 def _on_worker_process_init(**kwargs):
     queue = os.environ.get("DEID_WORKER_QUEUE", "")
+    # Matches both the legacy "deid-process" queue and the per-config_key
+    # "deid-process-<config_key>" queues introduced to isolate concurrent runs.
     if queue.startswith("deid-process"):
         _preload_logger.info("Process worker starting — preloading mapping tables in background...")
         _run_preload_in_background(get_celery_app())

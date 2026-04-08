@@ -49,13 +49,14 @@ def qc_command(
 
 
 def _start_qc_worker(cfg) -> subprocess.Popen:
-    """Spawn a single Celery worker for QC tasks on the deid-process queue."""
+    """Spawn a single Celery worker for QC tasks on this run's process queue."""
     import os
+    queue = f"deid-process-{cfg.config_key}"
     cmd = [
         sys.executable, "-m", "celery",
         "-A", "deid.tasks.celery_app",
         "worker",
-        "--queues=deid-process",
+        f"--queues={queue}",
         f"--concurrency={cfg.workers.processors}",
         "--hostname=qc@%n",
         "--pool=prefork",
@@ -65,7 +66,7 @@ def _start_qc_worker(cfg) -> subprocess.Popen:
         "--without-mingle",
         "--without-gossip",
     ]
-    env = {**os.environ, "DEID_WORKER_QUEUE": "deid-process"}
+    env = {**os.environ, "DEID_WORKER_QUEUE": queue}
     proc = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr, env=env)
     logger.info("Started QC worker (pid=%d, concurrency=%d)", proc.pid, cfg.workers.processors)
     time.sleep(3)
@@ -122,7 +123,7 @@ async def _run_qc(config, table_filter: str | None = None):
             table_config=_get_table_details(config, tname),
             qc_results_db_path=config.qc_results_db_path,
         )
-        r = run_qc.apply_async(args=[qc_config.model_dump()], queue="deid-process")
+        r = run_qc.apply_async(args=[qc_config.model_dump()], queue=f"deid-process-{config.config_key}")
         logger.info("Dispatched QC task for table '%s'", tname)
         results.append((tname, r))
 

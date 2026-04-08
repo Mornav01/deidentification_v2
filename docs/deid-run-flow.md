@@ -34,7 +34,6 @@
               │     │    (batch_states + table_states)   │  │
               │     │ c. DELETE failed_rows for tables   │  │
               │     │ d. rm -rf staging/<table>/ dirs    │  │
-              │     │ e. Purge Redis deid-write-<table>  │  │
               │     └───────────────────────────────────┘  │
               └─────────────────────┬─────────────────────┘
                                     │
@@ -43,17 +42,28 @@
               └─────────────────────┬─────────────────────┘
                                     │
               ┌─────────────────────▼─────────────────────┐
-              │  5. Spawn Celery worker subprocesses       │
+              │  5. Purge Redis queues for this config_key │
+              │     (unconditional — queue hygiene)        │
               │     ┌───────────────────────────────────┐  │
-              │     │ deid-fetch    (N fetchers)        │  │
-              │     │ deid-process  (N processors)      │  │
-              │     │ deid-write-<table> (1 per table)  │  │
+              │     │ deid-fetch-<config_key>            │  │
+              │     │ deid-process-<config_key>          │  │
+              │     │ deid-write-<config_key>-<table>    │  │
+              │     └───────────────────────────────────┘  │
+              └─────────────────────┬─────────────────────┘
+                                    │
+              ┌─────────────────────▼─────────────────────┐
+              │  6. Spawn Celery worker subprocesses       │
+              │     ┌───────────────────────────────────┐  │
+              │     │ deid-fetch-<config_key>   (N)     │  │
+              │     │ deid-process-<config_key> (N)     │  │
+              │     │ deid-write-<config_key>-<table>    │  │
+              │     │     (1 per table)                  │  │
               │     └───────────────────────────────────┘  │
               │     Wait 3s, verify none exited early      │
               └─────────────────────┬─────────────────────┘
                                     │
               ┌─────────────────────▼─────────────────────┐
-              │  6. asyncio.run(orchestrator.run(cfg))     │
+              │  7. asyncio.run(orchestrator.run(cfg))     │
               │     (deid/orchestrator/async_runner.py)    │
               └─────────────────────┬─────────────────────┘
                                     │
@@ -108,7 +118,8 @@
               │  Initial dispatch: claim FIRST pending     │
               │  batch per table via atomic UPDATE         │
               │    pending → dispatched                    │
-              │    → fetch_batch.apply_async(deid-fetch)   │
+              │    → fetch_batch.apply_async              │
+              │       (queue=deid-fetch-<config_key>)      │
               └─────────────────────┬─────────────────────┘
                                     │
               ┌─────────────────────▼─────────────────────┐
@@ -122,7 +133,8 @@
         │        (self-chaining — each batch flows through)      │
         │                                                        │
         │  ┌──────────────────────────────────────────────────┐  │
-        │  │  STAGE 1: fetch_batch (deid-fetch queue)         │  │
+        │  │  STAGE 1: fetch_batch                             │  │
+        │  │           (deid-fetch-<config_key> queue)         │  │
         │  │  ┌────────────────────────────────────────────┐  │  │
         │  │  │ 1. Keyset-paginated SELECT from source DB  │  │  │
         │  │  │    (WHERE id > last_fetched_id LIMIT N)    │  │  │
@@ -139,7 +151,8 @@
         │                          │                              │
         │                          ▼                              │
         │  ┌──────────────────────────────────────────────────┐  │
-        │  │  STAGE 2: process_batch (deid-process queue)     │  │
+        │  │  STAGE 2: process_batch                           │  │
+        │  │           (deid-process-<config_key> queue)       │  │
         │  │  ┌────────────────────────────────────────────┐  │  │
         │  │  │ 1. Read fetched Arrow IPC                  │  │  │
         │  │  │ 2. Reference mapping joins (if configured) │  │  │
@@ -173,7 +186,8 @@
         │                          │                              │
         │                          ▼                              │
         │  ┌──────────────────────────────────────────────────┐  │
-        │  │  STAGE 3: write_batch (deid-write-<table> queue) │  │
+        │  │  STAGE 3: write_batch                             │  │
+        │  │           (deid-write-<config_key>-<table> queue) │  │
         │  │  ┌────────────────────────────────────────────┐  │  │
         │  │  │ 1. Read processed Arrow IPC + metadata     │  │  │
         │  │  │ 2. CREATE TABLE IF NOT EXISTS (raw DDL)    │  │  │

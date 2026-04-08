@@ -121,7 +121,7 @@ async def _retry_run(config, batch_failures: list[BatchFailure]):
 
         batch_obj = _Batch(failure.table, failure.start_id, failure.end_id)
         cfg = _build_fetch_config(config, batch_obj, staging_root, mappings_conn_str)
-        fetch_batch.apply_async(args=[cfg], queue="deid-fetch")
+        fetch_batch.apply_async(args=[cfg], queue=f"deid-fetch-{config.config_key}")
         dispatched += 1
 
     if dispatched == 0:
