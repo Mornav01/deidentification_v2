@@ -36,6 +36,9 @@ def create_celery_app(
         task_track_started=True,
         task_acks_late=True,
         worker_prefetch_multiplier=1,
+        # Recycle each worker process after 50 tasks to prevent memory buildup.
+        # This causes a clean exit rather than a BrokenPipeError from an OOM kill.
+        worker_max_tasks_per_child=50,
     )
     _app = app
     return app

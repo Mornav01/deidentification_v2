@@ -395,7 +395,11 @@ async def _deidentify_phase(config, state_engine):
 
         # Watchdog: re-dispatch stalled table chains (pending with no in-flight work).
         # "dispatched", "fetched", and "processed" all count as in-flight.
-        if 0 < done_count < total:
+        # Changed from `0 < done_count < total` to `done_count < total` so that a
+        # failed batch (reset to 'pending') is re-dispatched even while other batches
+        # for the same table are still in-flight — previously the guard blocked the
+        # watchdog until ALL in-flight work finished, causing the pipeline to stall.
+        if done_count < total:
             from deid.tasks.fetch import _claim_next_pending_batch
             with Session(state_engine) as session:
                 table_names_with_pending = [

@@ -58,11 +58,18 @@ class ReferenceMappingDataFrameJoiner:
         chunk_size = self._IN_CLAUSE_CHUNK_SIZE
         chunks = [filter_values[i:i + chunk_size] for i in range(0, len(filter_values), chunk_size)]
 
+        # Filter by nd_ActiveFlag = 'Y' if that column exists in the reference table.
+        # This ensures deterministic results when a reference table has multiple rows
+        # for the same join key (e.g. one active, one inactive record).
+        active_flag_filter = table.c["nd_ActiveFlag"] == "Y" if "nd_ActiveFlag" in table.c else None
+
         rows = []
         col_names = None
         with self.engine.connect() as conn:
             for chunk in chunks:
                 stmt = select(*columns_expr).where(table.c[filter_column].in_(chunk))
+                if active_flag_filter is not None:
+                    stmt = stmt.where(active_flag_filter)
                 result = conn.execute(stmt)
                 if col_names is None:
                     col_names = list(result.keys())
