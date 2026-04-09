@@ -226,8 +226,8 @@ class BaseDateOffsetRule(RuleBase):
                     except Exception:
                         continue
             if parsed is None:
-                nd_logger.error(
-                    f"[{self.__class__.__name__}] Failed to parse '{date_str}'"
+                nd_logger.warning(
+                    f"[{self.__class__.__name__}] Failed to parse '{date_str}' (invalid date in source data) — leaving unchanged"
                 )
                 return date_str
 
@@ -255,15 +255,34 @@ class BaseDateOffsetRule(RuleBase):
         Parses the column with ``str.to_datetime``, adds the offset via ``pl.duration``,
         and formats back — all in a single Rust-level pass.  Non-date values are
         preserved as-is; nulls and empty strings become null.
+
+        All detected formats are tried in order so that a cached format from a previous
+        batch (e.g. with microseconds) does not silently skip rows that use a different
+        but valid format (e.g. without microseconds) in a later batch.
         """
-        fmt = formats[0]
-        has_time = any(x in fmt for x in ("%H", "%M", "%S", "%f"))
+        has_time = any(any(x in fmt for x in ("%H", "%M", "%S", "%f")) for fmt in formats)
         output_fmt = "%Y-%m-%d %H:%M:%S" if (self.format_as_datetime or has_time) else "%Y-%m-%d"
 
         offset_expr = self._get_offset_expr(df)
         col_str = pl.col(col_name).cast(pl.Utf8)
         null_or_empty = col_str.is_null() | (col_str.str.strip_chars().str.len_chars() == 0)
-        parsed = col_str.str.to_datetime(format=fmt, strict=False, ambiguous="earliest")
+
+        # Try each detected format; coalesce so a row parsed by any format gets shifted.
+        parsed = pl.lit(None, dtype=pl.Datetime)
+        for fmt in formats:
+            parsed = pl.coalesce([
+                parsed,
+                col_str.str.to_datetime(format=fmt, strict=False, ambiguous="earliest"),
+            ])
+
+        # Also try common fallback formats not seen in first-20 sample (e.g. without microseconds)
+        for fallback_fmt in _KNOWN_DATE_FORMATS:
+            if fallback_fmt not in formats:
+                parsed = pl.coalesce([
+                    parsed,
+                    col_str.str.to_datetime(format=fallback_fmt, strict=False, ambiguous="earliest"),
+                ])
+
         shifted = (parsed + pl.duration(days=offset_expr)).dt.strftime(output_fmt)
 
         return df.with_columns(
@@ -285,14 +304,13 @@ class BaseDateOffsetRule(RuleBase):
             nd_logger.warning(f"[{self.__class__.__name__}] Column '{col_name}' not in DataFrame.")
             return df
 
-        # Detect date formats from a sample of this column's values
-        table_name = column_config.get("table_name", "")
-        cache_key = (table_name, col_name)
-        if cache_key not in _DATE_FORMAT_CACHE:
-            _s = df[col_name].cast(pl.Utf8).drop_nulls()
-            texts_sample = _s.filter(_s.str.strip_chars().str.len_chars() > 0).head(20).to_list()
-            _DATE_FORMAT_CACHE[cache_key] = _detect_formats(texts_sample)
-        formats = _DATE_FORMAT_CACHE[cache_key]
+        # Detect date formats from a sample of this batch's values.
+        # Format detection is intentionally NOT cached across batches — the same column
+        # can have different formats in different batches (e.g. with vs without microseconds),
+        # and a stale cached format would silently skip rows that don't match it.
+        _s = df[col_name].cast(pl.Utf8).drop_nulls()
+        texts_sample = _s.filter(_s.str.strip_chars().str.len_chars() > 0).head(20).to_list()
+        formats = _detect_formats(texts_sample)
 
         # Fast path: fully vectorized Polars — used for structured date columns.
         # Notes columns embed dates inside text, so they still need the regex sub path.

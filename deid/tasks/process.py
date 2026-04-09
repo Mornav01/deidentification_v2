@@ -126,7 +126,19 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
         apt_df = preloaded.get("appointment_mapping")
 
         if enc_df is not None and key_phi_columns[0]:
-            df = join_dataframes(df, enc_df, left_on=key_phi_columns[0][0],
+            # Pre-enrich enc_df with patient_mapping so that PatientIdentifierResolver
+            # finds patient_id_from_encounter_mapping / nd_patient_id_from_encounter_mapping
+            # (mirrors what JoinMapping._get_mapping_with_patient_join() does on the SQL path).
+            if pat_df is not None:
+                enc_enriched = join_dataframes(enc_df, pat_df,
+                                               left_on="patient_id", right_on="patient_id",
+                                               how="left", right_suffix="from_encounter_mapping",
+                                               drop_left_join_column=False)
+                if "patient_id" in enc_enriched.columns:
+                    enc_enriched = enc_enriched.rename({"patient_id": "patient_id_from_encounter_mapping"})
+            else:
+                enc_enriched = enc_df
+            df = join_dataframes(df, enc_enriched, left_on=key_phi_columns[0][0],
                                  right_on="encounter_id", how="left", right_suffix="",
                                  drop_right_join_column=True)
         if pat_df is not None and key_phi_columns[1]:
@@ -140,7 +152,17 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
                                  right_suffix="from_referencepid_mapping",
                                  how="left", drop_right_join_column=True)
         if apt_df is not None and key_phi_columns[3]:
-            df = join_dataframes(df, apt_df, left_on=key_phi_columns[3][0],
+            # Same pre-enrichment for appointment mapping.
+            if pat_df is not None:
+                apt_enriched = join_dataframes(apt_df, pat_df,
+                                               left_on="patient_id", right_on="patient_id",
+                                               how="left", right_suffix="from_appointment_mapping",
+                                               drop_left_join_column=False)
+                if "patient_id" in apt_enriched.columns:
+                    apt_enriched = apt_enriched.rename({"patient_id": "patient_id_from_appointment_mapping"})
+            else:
+                apt_enriched = apt_df
+            df = join_dataframes(df, apt_enriched, left_on=key_phi_columns[3][0],
                                  right_on="appointment_id", how="left",
                                  drop_right_join_column=True)
     else:
