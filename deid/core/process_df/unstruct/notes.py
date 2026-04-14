@@ -22,7 +22,7 @@ from deid.core.process_df.unstruct.xml import deidentify_xml_tags
 from deid.core.process_df.unstruct.xml_utils import xml_tag_replacements
 
 from deid.core.dbPkg.dbhandler import create_read_only_engine
-from deid.core.process_df.rules import _fast_parse as _fast_parse_date, _KNOWN_DATE_FORMATS
+from deid.core.process_df.rules import _fast_parse as _fast_parse_date, _KNOWN_DATE_FORMATS, _fix_two_digit_year
 
 
 def _normalize_pid(val):
@@ -418,7 +418,7 @@ class NotesRule(RuleBase):
                     if not val:
                         continue
                     try:
-                        parsed = date_parser.parse(val, fuzzy=True).date()
+                        parsed = _fix_two_digit_year(date_parser.parse(val, fuzzy=True), max_future=0).date()
                         dob_map[parsed] = str(parsed.year)
                     except Exception:
                         pass
@@ -570,6 +570,9 @@ class NotesRule(RuleBase):
                         parsed = _fast_parse_date(ds, _fmts)
                         if parsed is None:
                             return ds
+                        # DOB must never be in the future — fix 2-digit years
+                        # (e.g. "1/7/44" → strptime gives 2044, but DOB key is 1944)
+                        parsed = _fix_two_digit_year(parsed, max_future=0)
                         return _repl.get(parsed.date(), ds)
                     text = date_re.sub(_dob_replacer, text)
 
@@ -843,7 +846,7 @@ class NotesRule(RuleBase):
                 val = dob_col_lists[col][i]
                 if val is not None and str(val).strip():
                     try:
-                        parsed_dob = date_parser.parse(str(val), fuzzy=True).date()
+                        parsed_dob = _fix_two_digit_year(date_parser.parse(str(val), fuzzy=True), max_future=0).date()
                         row_map[parsed_dob] = str(parsed_dob.year)
                     except Exception as e:
                         nd_logger.debug(
@@ -860,7 +863,7 @@ class NotesRule(RuleBase):
             def replacer(match):
                 date_str = match.group(0)
                 try:
-                    parsed_date = date_parser.parse(date_str, fuzzy=True).date()
+                    parsed_date = _fix_two_digit_year(date_parser.parse(date_str, fuzzy=True), max_future=0).date()
                     return replacements.get(parsed_date, date_str)
                 except Exception:
                     return date_str
