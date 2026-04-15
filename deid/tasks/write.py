@@ -249,13 +249,34 @@ def _clean_type_str(raw: str) -> str:
     upper = s.upper()
     if upper in ("VARCHAR", "NVARCHAR"):
         return "LONGTEXT"
+    # NVARCHAR(n) → VARCHAR(n), or LONGTEXT for large/max lengths
+    if upper.startswith("NVARCHAR("):
+        m = re.search(r"\((\d+)\)", s)
+        if m:
+            length = int(m.group(1))
+            return "LONGTEXT" if length >= 255 else f"VARCHAR({length})"
+        return "LONGTEXT"
     # MSSQL XML type has no MySQL equivalent — store as LONGTEXT
     if upper == "XML":
         return "LONGTEXT"
     if upper in ("CHAR", "NCHAR"):
         return f"{s}(255)"
+    # NCHAR(n) → CHAR(n)
+    if upper.startswith("NCHAR("):
+        return re.sub(r"(?i)^NCHAR", "CHAR", s)
     if upper in ("VARBINARY", "BINARY"):
         return "LONGBLOB"
+    # MSSQL DATETIME2 / SMALLDATETIME / DATETIMEOFFSET → DATETIME
+    if re.match(r"(?i)^DATETIME2", s) or upper in ("SMALLDATETIME", "DATETIMEOFFSET"):
+        return "DATETIME"
+    # MSSQL UNIQUEIDENTIFIER → CHAR(36)
+    if upper == "UNIQUEIDENTIFIER":
+        return "CHAR(36)"
+    # MSSQL MONEY / SMALLMONEY → DECIMAL
+    if upper == "MONEY":
+        return "DECIMAL(19,4)"
+    if upper == "SMALLMONEY":
+        return "DECIMAL(10,4)"
     return s
 
 

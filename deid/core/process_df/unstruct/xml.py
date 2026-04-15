@@ -2,7 +2,9 @@ try:
     import regex as re  # type: ignore[no-redef]
 except ImportError:
     pass  # stdlib re already available
+import sys
 import xml.etree.ElementTree as ET
+from datetime import datetime as _datetime
 from dateutil import parser as date_parser
 from deid.core.logger import nd_logger
 
@@ -78,25 +80,24 @@ def robust_xml_parse(raw_xml: str):
     s = XML_DECLARATION_RE.sub("", s)
     s = XML_STYLESHEET_RE.sub("", s)
 
-    # 1: try lxml recover directly
-    if HAS_LXML:
-        root = try_lxml_recover_parse(s)
-        if root is not None:
-            return root
+    # 1: Wrap multi-root fragments FIRST so all top-level elements are preserved.
+    # lxml's fromstring(recover=True) silently discards every element after the
+    # first top-level tag, so we must never call it on an unwrapped fragment.
+    wrapped = wrap_with_root_if_needed(s)
 
-    # 2: try ElementTree directly
-    root = try_et_parse(s)
+    # 2: Try stdlib ET on the (possibly wrapped) content — no data loss.
+    root = try_et_parse(wrapped)
     if root is not None:
         return root
 
-    # 3: apply cleaning steps progressively
+    # 3: Apply cleaning steps progressively, re-try ET after each.
     steps = [
         remove_control_chars,
         remove_processing_instructions,
         escape_bare_ampersands,
         normalize_br,
     ]
-    current = s
+    current = wrapped
     for func in steps:
         try:
             current = func(current)
@@ -106,19 +107,11 @@ def robust_xml_parse(raw_xml: str):
         if root is not None:
             return root
 
-    # 4: try wrapping with <root>
-    wrapped = wrap_with_root_if_needed(current)
-    if wrapped != current:
-        root = try_et_parse(wrapped)
-        if root is not None:
-            return root
-
-    # 5: last chance with lxml recover on wrapped
-    if HAS_LXML:
-        root = try_lxml_recover_parse("<root>" + current + "</root>")
-        if root is not None:
-            return root
-
+    # 4: ET could not parse the content even after cleaning.
+    # This typically means the content is HTML (unquoted attributes, void
+    # elements, etc.) rather than XML.  lxml recovery mode can parse it but
+    # silently drops sibling elements, causing data loss.  Return None so the
+    # caller returns the original text unchanged.
     return None
 
 # ---------------- main deid ----------------
@@ -150,6 +143,9 @@ def deidentify_xml_tags(text: str, tag_replacements: dict) -> str:
         if tag_name.lower() in ["dob", "dateofbirth", "ptdob"]:
             try:
                 parsed = date_parser.parse(val)
+                # 2-digit year fix: "1/7/44" → dateutil gives 2044, should be 1944
+                if parsed.year > _datetime.now().year:
+                    parsed = parsed.replace(year=parsed.year - 100)
                 tag.text = str(parsed.year)  # keep only year
             except Exception:
                 tag.text = val
@@ -162,7 +158,7 @@ def deidentify_xml_tags(text: str, tag_replacements: dict) -> str:
         elif tag_name in tag_replacements:
             tag.text = tag_replacements[tag_name]
 
-    # Remove or skip comment elements before serialization
+    # Remove comment elements before serialization
     for elem in list(root):
         if not isinstance(elem.tag, str):
             root.remove(elem)
@@ -183,7 +179,12 @@ def deidentify_xml_tags(text: str, tag_replacements: dict) -> str:
 
     try:
         _remove_recursive_refs(root)
-        return ET.tostring(root, encoding="utf-8", xml_declaration=True).decode("utf-8")
-    except TypeError as e:
+        old_limit = sys.getrecursionlimit()
+        sys.setrecursionlimit(max(old_limit, 5000))
+        try:
+            return ET.tostring(root, encoding="utf-8", xml_declaration=True).decode("utf-8")
+        finally:
+            sys.setrecursionlimit(old_limit)
+    except (TypeError, RecursionError) as e:
         nd_logger.error(f"[XMLUtils] XML serialization failed: {e}")
         return text

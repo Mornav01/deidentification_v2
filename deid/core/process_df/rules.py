@@ -32,6 +32,23 @@ _KNOWN_DATE_FORMATS = [
 ]
 
 
+def _fix_two_digit_year(dt: datetime, max_future: int = 10) -> datetime:
+    """Roll back a datetime that dateutil misread as a future century due to a 2-digit year.
+
+    dateutil interprets "44" as 2044.  Medical records almost never contain dates that
+    far ahead, so we subtract 100 years whenever the parsed year exceeds the cutoff.
+
+    Args:
+        dt: The datetime returned by date_parser.parse().
+        max_future: How many years ahead of today is still considered valid.
+                    Use 0 for DOB (never in the future), 10 for other dates
+                    (allows scheduling up to 10 years out).
+    """
+    if dt.year > datetime.now().year + max_future:
+        return dt.replace(year=dt.year - 100)
+    return dt
+
+
 def _detect_formats(values: list[str]) -> list[str]:
     """Sample values and return matching strptime formats."""
     detected = []
@@ -52,11 +69,16 @@ def _fast_parse(val: str, formats: list[str]) -> datetime | None:
     val = val.strip()
     for fmt in formats:
         try:
-            return datetime.strptime(val, fmt)
+            dt = datetime.strptime(val, fmt)
+            # Only fix 2-digit year formats (%y) — 4-digit (%Y) are taken at face value
+            if "%y" in fmt:
+                dt = _fix_two_digit_year(dt)
+            return dt
         except (ValueError, AttributeError):
             continue
     try:
-        return date_parser.parse(val)
+        # dateutil also misreads 2-digit years (e.g. "1/7/44" → 2044); fix unconditionally
+        return _fix_two_digit_year(date_parser.parse(val))
     except Exception:
         return None
 
@@ -178,7 +200,7 @@ def _normalize_to_mysql_datetime(val) -> str | None:
     if val is None or str(val).strip() == "":
         return None
     try:
-        parsed = date_parser.parse(str(val))
+        parsed = _fix_two_digit_year(date_parser.parse(str(val)))
         return parsed.strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return None
@@ -268,20 +290,32 @@ class BaseDateOffsetRule(RuleBase):
         null_or_empty = col_str.is_null() | (col_str.str.strip_chars().str.len_chars() == 0)
 
         # Try each detected format; coalesce so a row parsed by any format gets shifted.
+        # For 2-digit year formats (%y), Polars gives e.g. 2044 for "44" — track which
+        # rows came from a %y format so we can roll them back 100 years.
         parsed = pl.lit(None, dtype=pl.Datetime)
+        parsed_from_2digit = pl.lit(None, dtype=pl.Datetime)  # rows parsed via %y format
         for fmt in formats:
-            parsed = pl.coalesce([
-                parsed,
-                col_str.str.to_datetime(format=fmt, strict=False, ambiguous="earliest"),
-            ])
+            dt_expr = col_str.str.to_datetime(format=fmt, strict=False, ambiguous="earliest")
+            parsed = pl.coalesce([parsed, dt_expr])
+            if "%y" in fmt:
+                parsed_from_2digit = pl.coalesce([parsed_from_2digit, dt_expr])
 
         # Also try common fallback formats not seen in first-20 sample (e.g. without microseconds)
         for fallback_fmt in _KNOWN_DATE_FORMATS:
             if fallback_fmt not in formats:
-                parsed = pl.coalesce([
-                    parsed,
-                    col_str.str.to_datetime(format=fallback_fmt, strict=False, ambiguous="earliest"),
-                ])
+                dt_expr = col_str.str.to_datetime(format=fallback_fmt, strict=False, ambiguous="earliest")
+                parsed = pl.coalesce([parsed, dt_expr])
+                if "%y" in fallback_fmt:
+                    parsed_from_2digit = pl.coalesce([parsed_from_2digit, dt_expr])
+
+        # Roll back 100 years for rows that matched a 2-digit year format and landed
+        # more than 10 years in the future (i.e. dateutil/strptime misread "44" as 2044)
+        cutoff_year = datetime.now().year + 10
+        parsed = pl.when(
+            parsed_from_2digit.is_not_null() & (parsed_from_2digit.dt.year() > cutoff_year)
+        ).then(
+            parsed - pl.duration(days=36524)  # subtract ~100 years (365.24 days × 100)
+        ).otherwise(parsed)
 
         shifted = (parsed + pl.duration(days=offset_expr)).dt.strftime(output_fmt)
 
@@ -399,7 +433,7 @@ class PatientDOBRule(BaseDateOffsetRule):
         try:
             match = self.COMPILED_DATE_PATTERN.search(text)
             if match:
-                parsed = date_parser.parse(match.group(0))
+                parsed = _fix_two_digit_year(date_parser.parse(match.group(0)), max_future=0)
                 return parsed.year
         except Exception as e:
             match_val = match.group(0) if match else text
