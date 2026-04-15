@@ -39,7 +39,7 @@ def create_celery_app(
         # Recycle a worker process once it exceeds 3 GB RSS.
         # Memory-based recycling checks happen *between* tasks (not during),
         # so it avoids the BrokenPipeError race that task-count recycling causes.
-        worker_max_memory_per_child=3_000_000,  # 3 GB in KB
+        worker_max_memory_per_child=10_000_000,  # 10 GB in KB
     )
     _app = app
     return app
