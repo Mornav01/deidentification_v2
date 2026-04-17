@@ -26,9 +26,14 @@ from deid.core.process_df.rowhandler import InvalidRowHandler
 
 
 def get_key_phi_column_list(column_details: list) -> tuple:
-    """Return (encounter_ids, patient_ids, reference_pids, appointment_ids)."""
+    """Return (encounter_ids, patient_ids, reference_pids, appointment_ids).
+
+    patient_ids is a dict mapping rule_name -> [column_names], supporting
+    dynamic PATIENT_* rules (e.g. PATIENT_PATIENTID, PATIENT_CHARTID).
+    Legacy PATIENT_ID is treated as PATIENT_PATIENTID-equivalent.
+    """
     encounter_id_columns: list = []
-    patient_id_columns: list = []
+    patient_id_columns: dict = {}
     reference_pid_column: list = []
     appointment_id_columns: list = []
 
@@ -38,8 +43,8 @@ def get_key_phi_column_list(column_details: list) -> tuple:
     for column in column_details:
         rule = column["de_identification_rule"]
         if column["is_phi"]:
-            if rule == "PATIENT_ID":
-                patient_id_columns.append(column["column_name"])
+            if rule.startswith("PATIENT_"):
+                patient_id_columns.setdefault(rule, []).append(column["column_name"])
             elif rule == "ENCOUNTER_ID":
                 encounter_id_columns.append(column["column_name"])
             elif rule == "REFERENCE_PID":
@@ -55,17 +60,19 @@ def get_key_phi_column_list(column_details: list) -> tuple:
 # ---------------------------------------------------------------------------
 
 class PatientIdentifierResolver:
-    """Consolidate mapping-table joined columns into canonical _resolved_* columns."""
+    """Consolidate mapping-table joined columns into canonical _resolved_* columns.
 
-    def __init__(self, key_phi_columns: tuple, offset_days: int = 34):
+    Supports dynamic PATIENT_* rules (e.g. PATIENT_PATIENTID, PATIENT_CHARTID).
+    key_phi_columns[1] is a dict mapping rule_name -> [column_names].
+
+    Priority order for coalesce: referencepid > encounter > [identifier_groups...] > appointment.
+    """
+
+    def __init__(self, key_phi_columns: tuple, possible_patient_identifier_columns: list[str] | None = None, offset_days: int = 34):
         self.key_phi_columns = key_phi_columns
+        self.possible_patient_identifier_columns = possible_patient_identifier_columns or []
         self.offset_days = offset_days
-        self.patient_group = {
-            "nd_patient_id": "nd_patient_id_from_patient_mapping",
-            "offset": "offset_from_patient_mapping",
-        }
         self.encounter_group = {
-            "patient_id": "patient_id_from_encounter_mapping",
             "nd_patient_id": "nd_patient_id_from_encounter_mapping",
             "offset": "offset_from_encounter_mapping",
         }
@@ -75,12 +82,26 @@ class PatientIdentifierResolver:
             "offset": "offset_from_referencepid_mapping",
         }
         self.appointment_group = {
-            "patient_id": "patient_id_from_appointment_mapping",
             "nd_patient_id": "nd_patient_id_from_appointment_mapping",
             "offset": "offset_from_appointment_mapping",
         }
+        self.identifier_groups = self._create_dynamic_identifier_groups()
 
-    
+    def _create_dynamic_identifier_groups(self) -> list[dict]:
+        """One group per PATIENT_* rule — keys the lookup suffix used during mapping joins."""
+        groups = []
+        for rule_name in self.key_phi_columns[1]:
+            # "PATIENT_CHARTID" -> "chartid"; legacy "PATIENT_ID" -> "patient_id"
+            if rule_name == "PATIENT_ID":
+                identifier_col = "patient_id"
+            else:
+                identifier_col = rule_name.split("_")[-1].lower()
+            groups.append({
+                "nd_patient_id": f"nd_patient_id_from_{identifier_col}_mapping",
+                "offset": f"offset_from_{identifier_col}_mapping",
+            })
+        return groups
+
     def _coalesce_expr(self, df: pl.DataFrame, candidates: list[str | None]) -> pl.Expr | None:
         """Return pl.coalesce() over the candidate columns that actually exist."""
         existing = [c for c in candidates if c and c in df.columns]
@@ -88,17 +109,17 @@ class PatientIdentifierResolver:
             return None
         return pl.coalesce([pl.col(c) for c in existing])
 
-    
     def transform(self, df: pl.DataFrame) -> pl.DataFrame:
         nd_logger.info(f"[{self.__class__.__name__}] Starting patient identifier resolution...")
 
+        all_groups = (
+            [self.referencepid_group, self.encounter_group]
+            + self.identifier_groups
+            + [self.appointment_group]
+        )
+
         # --- Step 1: _resolved_offset ---
-        offset_candidates = [
-            self.referencepid_group.get("offset"),
-            self.encounter_group.get("offset"),
-            self.patient_group.get("offset"),
-            self.appointment_group.get("offset"),
-        ]
+        offset_candidates = [g.get("offset") for g in all_groups]
         offset_expr = self._coalesce_expr(df, offset_candidates)
         if offset_expr is not None:
             df = df.with_columns(
@@ -109,13 +130,12 @@ class PatientIdentifierResolver:
                 pl.lit(self.offset_days).alias("_resolved_offset")
             )
 
-        # --- Step 2: _resolved_patient_id ---
-        ref_phi_col = self.key_phi_columns[1][0] if self.key_phi_columns[1] else None
+        # --- Step 2: _resolved_patient_id (first source column as fallback) ---
+        first_rule_cols = next(iter(self.key_phi_columns[1].values()), [])
+        ref_phi_col = first_rule_cols[0] if first_rule_cols else None
         patient_id_candidates = [
             self.referencepid_group.get("patient_id"),
-            self.encounter_group.get("patient_id"),
             ref_phi_col,
-            self.appointment_group.get("patient_id"),
         ]
         patient_expr = self._coalesce_expr(df, patient_id_candidates)
         if patient_expr is not None:
@@ -126,12 +146,7 @@ class PatientIdentifierResolver:
             )
 
         # --- Step 3: _resolved_nd_patient_id ---
-        nd_patient_id_candidates = [
-            self.referencepid_group.get("nd_patient_id"),
-            self.encounter_group.get("nd_patient_id"),
-            self.patient_group.get("nd_patient_id"),
-            self.appointment_group.get("nd_patient_id"),
-        ]
+        nd_patient_id_candidates = [g.get("nd_patient_id") for g in all_groups]
         nd_patient_expr = self._coalesce_expr(df, nd_patient_id_candidates)
         if nd_patient_expr is not None:
             df = df.with_columns(nd_patient_expr.alias("_resolved_nd_patient_id"))
@@ -140,13 +155,21 @@ class PatientIdentifierResolver:
                 f"[{self.__class__.__name__}] No columns found for _resolved_nd_patient_id. Skipping."
             )
 
-        # --- Step 4: drop intermediate mapping columns ---
-        all_used = set(
-            filter(None, offset_candidates + patient_id_candidates + nd_patient_id_candidates)
-        )
-        if ref_phi_col:
-            all_used.discard(ref_phi_col)
-        to_drop = [c for c in all_used if c in df.columns]
+        # --- Step 4: _resolved_{col} for each source identifier column ---
+        # NotesRule uses these to mask original ID values in free text.
+        original_key_cols: set[str] = set()
+        for rule_cols in self.key_phi_columns[1].values():
+            for col in rule_cols:
+                original_key_cols.add(col)
+                if col in df.columns:
+                    df = df.with_columns(pl.col(col).alias(f"_resolved_{col}"))
+
+        # --- Step 5: drop intermediate mapping columns ---
+        all_candidates = offset_candidates + patient_id_candidates + nd_patient_id_candidates
+        all_used = set(filter(None, all_candidates))
+        # Never drop the original source columns or their resolved aliases
+        preserved = original_key_cols | {f"_resolved_{c}" for c in original_key_cols}
+        to_drop = [c for c in all_used if c in df.columns and c not in preserved]
         if to_drop:
             nd_logger.debug(
                 f"[{self.__class__.__name__}] Dropping intermediate columns: {to_drop}"
@@ -218,10 +241,6 @@ class JoinMapping:
         return self._get_distinct_ids(0, "encounter IDs")
 
     
-    def _get_distinct_patientids(self):
-        return self._get_distinct_ids(1, "patient IDs")
-
-    
     def _get_distinct_referencepids(self):
         return self._get_distinct_ids(2, "reference PIDs")
 
@@ -230,32 +249,164 @@ class JoinMapping:
         return self._get_distinct_ids(3, "appointment IDs")
 
     
-    def _get_patient_mapping(self, patient_ids: list) -> pl.DataFrame | None:
-        if not patient_ids:
-            nd_logger.warning(f"[{self.__class__.__name__}] No patient IDs provided.")
+    def get_possible_patient_identifier_columns(self) -> tuple[list[str], str | None]:
+        """Return (patient_identifier_columns, error_message) from config.
+
+        Reads ``patient_identifier_columns`` from mapping_db_config (set in YAML under
+        ``mapping_tables.patient.identifier_columns``) and validates each column exists
+        in ``patient_mapping_table``.
+
+        Returns ``(columns, None)`` on success, ``([], error_message)`` on failure.
+        Never raises — callers decide how to handle the error (e.g. write to state.db).
+        """
+        configured = self.mapping_db_config.get("patient_identifier_columns") or []
+        if not configured:
+            msg = (
+                "patient_identifier_columns is not configured. "
+                "Add 'identifier_columns' under 'mapping_tables.patient' in your config YAML."
+            )
+            nd_logger.error("[%s] %s", self.table_name, msg)
+            return [], msg
+
+        # Validate configured columns exist in the actual mapping table schema.
+        metadata = MetaData()
+        patient_mapping = Table("patient_mapping_table", metadata, autoload_with=self.engine)
+        actual_cols = {c.name for c in patient_mapping.columns}
+        missing = [c for c in configured if c not in actual_cols]
+        if missing:
+            msg = (
+                f"Configured patient_identifier_columns not found in patient_mapping_table: "
+                f"{missing}. Available columns: {sorted(actual_cols)}"
+            )
+            nd_logger.error("[%s] %s", self.table_name, msg)
+            return [], msg
+
+        nd_logger.info(
+            "[%s] Patient identifier columns (from config): %s", self.table_name, configured
+        )
+        return configured, None
+
+    def _get_patient_mapping_from_nd_patient_id(
+        self,
+        nd_patient_ids: list,
+        possible_patient_identifier_columns: list[str],
+    ) -> pl.DataFrame | None:
+        """Fetch patient_mapping rows by nd_patient_id.
+
+        Used by the encounter/appointment indirect lookup path: those tables
+        carry nd_patient_id, so we join patient_mapping on that key to get
+        all identifier columns + offset.
+        """
+        if not nd_patient_ids:
+            nd_logger.warning(f"[{self.__class__.__name__}] No nd_patient_ids provided.")
             return None
 
         nd_logger.info(
-            f"[{self.__class__.__name__}] Fetching patient mappings for {len(patient_ids)} IDs..."
+            f"[{self.__class__.__name__}] Fetching patient mapping for "
+            f"{len(nd_patient_ids)} nd_patient_ids..."
         )
         metadata = MetaData()
         patient_mapping = Table("patient_mapping_table", metadata, autoload_with=self.engine)
-        stmt = (
-            select(
-                patient_mapping.c.patient_id,
-                patient_mapping.c.nd_patient_id,
-                patient_mapping.c.offset,
-            )
-            .where(patient_mapping.c.patient_id.in_(patient_ids))
+        all_mapping_cols = [col.name for col in patient_mapping.columns]
+        cols_to_select = [patient_mapping.c.nd_patient_id, patient_mapping.c.offset] + [
+            patient_mapping.c[c]
+            for c in possible_patient_identifier_columns
+            if c in all_mapping_cols
+        ]
+        stmt = select(*cols_to_select).where(
+            patient_mapping.c.nd_patient_id.in_(nd_patient_ids)
         )
         with self.engine.connect() as conn:
             df = _sql_result_to_polars(conn.execute(stmt))
         nd_logger.info(
-            f"[{self.__class__.__name__}] Retrieved {df.height} rows from patient_mapping_table."
+            f"[{self.__class__.__name__}] Retrieved {df.height} rows from patient_mapping_table "
+            f"(by nd_patient_id)."
         )
         return df
 
-    
+    def apply_patient_mappings(self, possible_patient_identifier_columns: list[str]) -> None:
+        """Apply direct patient mapping lookups for every PATIENT_* rule.
+
+        For each rule in key_phi_columns[1]:
+        - Derives the mapping-table identifier column from the rule name
+          (e.g. PATIENT_CHARTID -> 'chartid'; legacy PATIENT_ID -> 'patient_id')
+        - Fetches matching rows from patient_mapping_table
+        - Joins result into self.df with suffix 'from_{identifier_col}_mapping'
+
+        Mutates self.df in place.
+        """
+        if not self.key_phi_columns[1]:
+            nd_logger.warning(f"[{self.__class__.__name__}] No PATIENT_* rules found.")
+            return
+
+        metadata = MetaData()
+        patient_mapping_table = Table("patient_mapping_table", metadata, autoload_with=self.engine)
+        all_mapping_cols = [col.name for col in patient_mapping_table.columns]
+
+        for rule, columns in self.key_phi_columns[1].items():
+            if not columns:
+                continue
+
+            left_col = columns[0]
+            if rule == "PATIENT_ID":
+                identifier_col = "patient_id"  # backward compat
+            else:
+                identifier_col = rule.split("_")[-1].lower()  # PATIENT_CHARTID -> chartid
+
+            nd_logger.info(
+                f"[{self.__class__.__name__}] Processing rule '{rule}' — "
+                f"source col '{left_col}' mapped via '{identifier_col}'"
+            )
+
+            if identifier_col not in all_mapping_cols:
+                nd_logger.warning(
+                    f"[{self.__class__.__name__}] Identifier column '{identifier_col}' not found "
+                    f"in patient_mapping_table. Skipping rule '{rule}'."
+                )
+                continue
+
+            distinct_values = DistinctValueFetcher(self.df).get_distinct_values(left_col)
+            if not distinct_values:
+                nd_logger.warning(
+                    f"[{self.__class__.__name__}] No values in column '{left_col}'. Skipping."
+                )
+                continue
+
+            other_cols = [
+                patient_mapping_table.c[c]
+                for c in possible_patient_identifier_columns
+                if c != identifier_col and c in all_mapping_cols
+            ]
+            cols_to_select = (
+                [patient_mapping_table.c[identifier_col]]
+                + other_cols
+                + [patient_mapping_table.c.nd_patient_id, patient_mapping_table.c.offset]
+            )
+            stmt = select(*cols_to_select).where(
+                patient_mapping_table.c[identifier_col].in_(distinct_values)
+            )
+            with self.engine.connect() as conn:
+                df_mapping = _sql_result_to_polars(conn.execute(stmt))
+
+            nd_logger.info(
+                f"[{self.__class__.__name__}] Retrieved {df_mapping.height} rows for rule '{rule}'."
+            )
+
+            if df_mapping.height > 0:
+                self.df = join_dataframes(
+                    self.df,
+                    df_mapping,
+                    left_on=left_col,
+                    right_on=identifier_col,
+                    how="left",
+                    right_suffix=f"from_{identifier_col}_mapping",
+                    drop_right_join_column=True,
+                )
+            else:
+                nd_logger.warning(
+                    f"[{self.__class__.__name__}] No mappings found for column '{left_col}'."
+                )
+
     def _get_mapping_with_patient_join(
         self,
         ids: list,
@@ -263,7 +414,13 @@ class JoinMapping:
         id_column: str,
         nd_id_column: str,
         right_suffix: str,
+        possible_patient_identifier_columns: list[str],
     ) -> pl.DataFrame | None:
+        """Fetch encounter/appointment mapping rows and enrich with patient_mapping data.
+
+        Uses nd_patient_id to join patient_mapping_table, matching the old-code approach
+        where encounter/appointment tables carry nd_patient_id (not patient_id).
+        """
         if not ids:
             nd_logger.warning(f"[{self.__class__.__name__}] No IDs for {table_name}.")
             return None
@@ -278,72 +435,67 @@ class JoinMapping:
             select(
                 mapping_table.c[id_column],
                 cast(mapping_table.c[nd_id_column], String(50)).label(nd_id_column),
-                mapping_table.c.patient_id.label("patient_id"),
+                mapping_table.c.nd_patient_id.label("nd_patient_id"),
             )
             .where(mapping_table.c[id_column].in_(ids))
         )
         with self.engine.connect() as conn:
             df_mapping = _sql_result_to_polars(conn.execute(stmt))
-            # Keep nd_id_column as Utf8 (cast already happened in SQL).
 
         nd_logger.info(
             f"[{self.__class__.__name__}] Retrieved {df_mapping.height} rows from {table_name}."
         )
 
-        patient_ids = DistinctValueFetcher(df_mapping).get_distinct_values("patient_id")
+        nd_patient_ids = DistinctValueFetcher(df_mapping).get_distinct_values("nd_patient_id")
         nd_logger.info(
-            f"[{self.__class__.__name__}] Extracted {len(patient_ids)} unique patient IDs."
+            f"[{self.__class__.__name__}] Extracted {len(nd_patient_ids)} unique nd_patient_ids."
         )
 
-        df_patient_mapping = self._get_patient_mapping(patient_ids)
+        df_patient_mapping = self._get_patient_mapping_from_nd_patient_id(
+            nd_patient_ids, possible_patient_identifier_columns
+        )
         if df_patient_mapping is None:
             df_patient_mapping = pl.DataFrame(
-                schema={"patient_id": pl.Int64, "nd_patient_id": pl.Int64, "offset": pl.Int64}
+                schema={"nd_patient_id": pl.Int64, "offset": pl.Int64}
             )
 
-        # Keep drop_left_join_column=False so the original patient_id from the
-        # encounter/appointment row survives the join.  Polars always drops the
-        # *right* key when left_on != right_on, so the renamed right-side key
-        # (e.g. "patient_id_from_encounter_mapping") disappears automatically.
-        # We then rename the surviving left-side "patient_id" to
-        # "patient_id_{right_suffix}" so PatientIdentifierResolver can coalesce
-        # it into _resolved_patient_id for use in de_identify_key_phi_columns.
         df_joined = join_dataframes(
             df_mapping,
             df_patient_mapping,
-            left_on="patient_id",
-            right_on="patient_id",
+            left_on="nd_patient_id",
+            right_on="nd_patient_id",
             how="left",
             right_suffix=right_suffix,
-            drop_left_join_column=False,   # ← keep original patient_id
+            drop_left_join_column=True,
         )
-        # Rename patient_id (left key) → patient_id_{right_suffix}
-        if "patient_id" in df_joined.columns and f"patient_id_{right_suffix}" not in df_joined.columns:
-            df_joined = df_joined.rename({"patient_id": f"patient_id_{right_suffix}"})
         nd_logger.info(
             f"[{self.__class__.__name__}] Joined {table_name} + patient_mapping. "
             f"Final rows: {df_joined.height}, columns: {df_joined.columns}"
         )
         return df_joined
 
-    
-    def _get_encounter_mapping(self, encounter_ids: list) -> pl.DataFrame | None:
+    def _get_encounter_mapping(
+        self, encounter_ids: list, possible_patient_identifier_columns: list[str]
+    ) -> pl.DataFrame | None:
         return self._get_mapping_with_patient_join(
             ids=encounter_ids,
             table_name="encounter_mapping_table",
             id_column="encounter_id",
             nd_id_column="nd_encounter_id",
             right_suffix="from_encounter_mapping",
+            possible_patient_identifier_columns=possible_patient_identifier_columns,
         )
 
-    
-    def _get_appointment_mapping(self, appointment_ids: list) -> pl.DataFrame | None:
+    def _get_appointment_mapping(
+        self, appointment_ids: list, possible_patient_identifier_columns: list[str]
+    ) -> pl.DataFrame | None:
         return self._get_mapping_with_patient_join(
             ids=appointment_ids,
             table_name="appointment_mapping_table",
             id_column="appointment_id",
             nd_id_column="nd_appointment_id",
             right_suffix="from_appointment_mapping",
+            possible_patient_identifier_columns=possible_patient_identifier_columns,
         )
 
     
@@ -424,7 +576,14 @@ def _get_columns_schema_mapping(
             continue
 
         col_name = col_conf["column_name"]
-        rule     = Rules[col_conf["de_identification_rule"]]
+        rule_name = col_conf["de_identification_rule"]
+        try:
+            rule = Rules[rule_name]
+        except KeyError:
+            if rule_name.startswith("PATIENT_"):
+                rule = Rules.PATIENT_ID  # dynamic rules share the BIGINT schema
+            else:
+                raise ValueError(f"Unknown de-identification rule: {rule_name}")
 
         if rule == Rules.MASK:
             # Compute the placeholder width:  "(({mask_value}))"
@@ -548,6 +707,11 @@ def start_de_identification_for_table(
     column_schema_mapping = _get_columns_schema_mapping(table_config, _source_col_lengths)
 
     mapping_obj: JoinMapping | None = None
+    # Read identifier columns from mapping_db_config (set from YAML mapping_tables.patient.identifier_columns).
+    # Validation against the actual table schema happens on first JoinMapping init.
+    possible_patient_identifier_columns: list[str] = (
+        (mapping_db_config or {}).get("patient_identifier_columns") or []
+    )
     deidentifier: DeIdentifier | None = None
     dest_table_created = False
     batch_num = 0
@@ -651,12 +815,23 @@ def start_de_identification_for_table(
             # Reuse JoinMapping connection pool across batches.
             if mapping_obj is None:
                 mapping_obj = JoinMapping(df, key_phi_columns, mapping_db_config or {}, table_name)
+                # Validate configured identifier columns against the actual mapping table schema.
+                _, _col_err = mapping_obj.get_possible_patient_identifier_columns()
+                if _col_err:
+                    nd_logger.error("[%s] Aborting: %s", table_name, _col_err)
+                    break
             else:
                 mapping_obj.df = df
                 mapping_obj.key_phi_columns = key_phi_columns
 
+            # Direct patient mapping: one join per PATIENT_* rule (mutates mapping_obj.df).
+            mapping_obj.apply_patient_mappings(possible_patient_identifier_columns)
+            df = mapping_obj.df
+
             distinct_encounterIds = mapping_obj._get_distinct_encounterids()
-            df_encounter_mapping = mapping_obj._get_encounter_mapping(distinct_encounterIds)
+            df_encounter_mapping = mapping_obj._get_encounter_mapping(
+                distinct_encounterIds, possible_patient_identifier_columns
+            )
             if df_encounter_mapping is not None and key_phi_columns[0]:
                 df = join_dataframes(
                     df, df_encounter_mapping,
@@ -664,18 +839,6 @@ def start_de_identification_for_table(
                     right_on="encounter_id",
                     how="left",
                     right_suffix="",
-                    drop_right_join_column=True,
-                )
-
-            distinct_patientIds = mapping_obj._get_distinct_patientids()
-            df_patient_mapping = mapping_obj._get_patient_mapping(distinct_patientIds)
-            if df_patient_mapping is not None and key_phi_columns[1]:
-                df = join_dataframes(
-                    df, df_patient_mapping,
-                    left_on=key_phi_columns[1][0],
-                    right_on="patient_id",
-                    how="left",
-                    right_suffix="from_patient_mapping",
                     drop_right_join_column=True,
                 )
 
@@ -692,7 +855,9 @@ def start_de_identification_for_table(
                 )
 
             distinct_appointmentIds = mapping_obj._get_distinct_appointmentids()
-            df_appointment_mapping = mapping_obj._get_appointment_mapping(distinct_appointmentIds)
+            df_appointment_mapping = mapping_obj._get_appointment_mapping(
+                distinct_appointmentIds, possible_patient_identifier_columns
+            )
             if df_appointment_mapping is not None and key_phi_columns[3]:
                 df = join_dataframes(
                     df, df_appointment_mapping,
@@ -702,7 +867,11 @@ def start_de_identification_for_table(
                     drop_right_join_column=True,
                 )
 
-            resolver = PatientIdentifierResolver(key_phi_columns, offset_days=offset_days)
+            resolver = PatientIdentifierResolver(
+                key_phi_columns,
+                possible_patient_identifier_columns,
+                offset_days=offset_days,
+            )
             df = resolver.transform(df)
             nd_logger.info(
                 f"[{table_name}] DataFrame columns: {df.columns}"

@@ -272,7 +272,8 @@ def _start_workers(cfg, config_path: str = "") -> list[subprocess.Popen]:
     processes = []
     for queue, concurrency, name, mtpc in shared_configs:
         cmd = _worker_cmd(queue, concurrency, name, mtpc)
-        env = {**os.environ, "DEID_WORKER_QUEUE": queue, "DEID_CONFIG_PATH": config_path}
+        env = {**os.environ, "DEID_WORKER_QUEUE": queue, "DEID_CONFIG_PATH": config_path,
+               "DEID_BROKER_URL": cfg.redis_url}
         proc = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr, env=env)
         logger.info("Started %s worker (pid=%d, concurrency=%d, mtpc=%d)", name, proc.pid, concurrency, mtpc)
         processes.append(proc)
@@ -283,7 +284,8 @@ def _start_workers(cfg, config_path: str = "") -> list[subprocess.Popen]:
         queue = f"deid-write-{cfg.config_key}-{table.name}"
         name = f"write-{cfg.config_key}-{table.name}"
         cmd = _worker_cmd(queue, 1, name, global_mtpc)
-        env = {**os.environ, "DEID_WORKER_QUEUE": queue, "DEID_CONFIG_PATH": config_path}
+        env = {**os.environ, "DEID_WORKER_QUEUE": queue, "DEID_CONFIG_PATH": config_path,
+               "DEID_BROKER_URL": cfg.redis_url}
         proc = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr, env=env)
         logger.info("Started write worker for table '%s' (pid=%d)", table.name, proc.pid)
         processes.append(proc)

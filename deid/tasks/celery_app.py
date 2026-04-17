@@ -22,9 +22,12 @@ _app: Celery | None = None
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
 def create_celery_app(
-    broker_url: str = "redis://localhost:6379/0",
+    broker_url: str | None = None,
     result_backend: str | None = None,
 ) -> Celery:
+    import os
+    if broker_url is None:
+        broker_url = os.environ.get("DEID_BROKER_URL", "redis://localhost:6379/0")
     global _app
     app = Celery("deid", include=_TASK_MODULES)
     app.conf.update(

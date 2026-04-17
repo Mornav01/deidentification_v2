@@ -155,19 +155,20 @@ class NotesRule(RuleBase):
             self.key_phi_columns
         )
         encounter_id_col = encounter_id_cols[0] if encounter_id_cols else None
-        patient_id_col = (
-            "_resolved_patient_id" if "_resolved_patient_id" in df.columns else None
-        )
         reference_pid_col = reference_pid_cols[0] if reference_pid_cols else None
         appointment_id_col = appointment_id_cols[0] if appointment_id_cols else None
 
+        # patient_id_cols is a dict mapping rule_name -> [source_column_names].
+        # Flatten all source column names so we can mask each one in notes text.
+        patient_idfr_cols: list[str] = []
+        for cols in patient_id_cols.values():
+            patient_idfr_cols.extend(cols)
+
         nd_logger.info(
             f"[{self.__class__.__name__}] Key-PHI de-identification: "
-            f"enc={encounter_id_col}, pid={patient_id_col}, "
+            f"enc={encounter_id_col}, patient_cols={patient_idfr_cols}, "
             f"ref={reference_pid_col}, appt={appointment_id_col}"
         )
-        # nd_logger.info(f"[{self.__class__.__name__}] df.columns: {df.columns}")
-        # nd_logger.info(f"[{self.__class__.__name__}] df.head(): {df.head()}")
 
         text_list = df[text_column].cast(pl.Utf8).to_list()
 
@@ -193,7 +194,11 @@ class NotesRule(RuleBase):
         nd_enc_list    = _str_list("nd_encounter_id")
         appt_orig_list = _str_list(appointment_id_col)
         nd_appt_list   = _str_list("nd_appointment_id")
-        pid_orig_list  = _int_str_list(patient_id_col)
+        # PatientIdentifierResolver creates _resolved_{col} for each source identifier column.
+        # Load a list per column so all patient identifier values can be masked in text.
+        pid_orig_lists = [
+            _int_str_list(f"_resolved_{col}") for col in patient_idfr_cols
+        ]
         ref_orig_list  = _int_str_list(reference_pid_col)
         nd_pid_list    = _int_str_list("_resolved_nd_patient_id")
 
@@ -227,11 +232,12 @@ class NotesRule(RuleBase):
                     nd_appt = nd_appt_list[i]
                     repl = nd_appt if nd_appt is not None else "((APPOINTMENT_ID))"
                     text = _compiled(appt).sub(repl, text)
-                # Patient ID and reference PID share the same anonymised replacement
+                # All patient identifier columns share the same anonymised replacement
                 nd_pid_repl = nd_pid_list[i] if nd_pid_list[i] is not None else "((PATIENT_ID))"
-                pid = pid_orig_list[i]
-                if pid is not None:
-                    text = _compiled(pid).sub(nd_pid_repl, text)
+                for pid_list in pid_orig_lists:
+                    pid = pid_list[i]
+                    if pid is not None:
+                        text = _compiled(pid).sub(nd_pid_repl, text)
                 ref = ref_orig_list[i]
                 if ref is not None:
                     text = _compiled(ref).sub(nd_pid_repl, text)

@@ -119,6 +119,10 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
 
     # 3. Mapping joins
     preloaded = get_preloaded_data()
+    # Read patient identifier columns from config (validated against the mapping table by JoinMapping).
+    possible_patient_identifier_columns: list[str] = (
+        config.mapping_db_config.get("patient_identifier_columns") or []
+    )
     if preloaded:
         # Use preloaded in-memory DataFrames (avoids per-batch SQL round-trips)
         enc_df = preloaded.get("encounter_mapping")
@@ -126,62 +130,73 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
         apt_df = preloaded.get("appointment_mapping")
 
         if enc_df is not None and key_phi_columns[0]:
-            # Pre-enrich enc_df with patient_mapping so that PatientIdentifierResolver
-            # finds patient_id_from_encounter_mapping / nd_patient_id_from_encounter_mapping
-            # (mirrors what JoinMapping._get_mapping_with_patient_join() does on the SQL path).
+            # Enrich enc_df with patient_mapping via nd_patient_id (enc table carries nd_patient_id).
             if pat_df is not None:
                 enc_enriched = join_dataframes(enc_df, pat_df,
-                                               left_on="patient_id", right_on="patient_id",
+                                               left_on="nd_patient_id", right_on="nd_patient_id",
                                                how="left", right_suffix="from_encounter_mapping",
-                                               drop_left_join_column=False)
-                if "patient_id" in enc_enriched.columns:
-                    enc_enriched = enc_enriched.rename({"patient_id": "patient_id_from_encounter_mapping"})
+                                               drop_left_join_column=True)
             else:
                 enc_enriched = enc_df
             df = join_dataframes(df, enc_enriched, left_on=key_phi_columns[0][0],
                                  right_on="encounter_id", how="left", right_suffix="",
                                  drop_right_join_column=True)
+
+        # Direct patient mapping: one join per PATIENT_* rule, by the rule's identifier column.
         if pat_df is not None and key_phi_columns[1]:
-            df = join_dataframes(df, pat_df, left_on=key_phi_columns[1][0],
-                                 right_on="patient_id", how="left",
-                                 right_suffix="from_patient_mapping",
-                                 drop_right_join_column=True)
+            pat_cols = pat_df.columns
+            for rule, columns in key_phi_columns[1].items():
+                if not columns:
+                    continue
+                left_col = columns[0]
+                identifier_col = "patient_id" if rule == "PATIENT_ID" else rule.split("_")[-1].lower()
+                if identifier_col in pat_cols and left_col in df.columns:
+                    df = join_dataframes(df, pat_df, left_on=left_col,
+                                         right_on=identifier_col, how="left",
+                                         right_suffix=f"from_{identifier_col}_mapping",
+                                         drop_right_join_column=True)
+
         if pat_df is not None and key_phi_columns[2]:
             df = join_dataframes(df, pat_df, left_on=key_phi_columns[2][0],
                                  right_on="reference_mapping",
                                  right_suffix="from_referencepid_mapping",
                                  how="left", drop_right_join_column=True)
         if apt_df is not None and key_phi_columns[3]:
-            # Same pre-enrichment for appointment mapping.
+            # Enrich apt_df with patient_mapping via nd_patient_id.
             if pat_df is not None:
                 apt_enriched = join_dataframes(apt_df, pat_df,
-                                               left_on="patient_id", right_on="patient_id",
+                                               left_on="nd_patient_id", right_on="nd_patient_id",
                                                how="left", right_suffix="from_appointment_mapping",
-                                               drop_left_join_column=False)
-                if "patient_id" in apt_enriched.columns:
-                    apt_enriched = apt_enriched.rename({"patient_id": "patient_id_from_appointment_mapping"})
+                                               drop_left_join_column=True)
             else:
                 apt_enriched = apt_df
             df = join_dataframes(df, apt_enriched, left_on=key_phi_columns[3][0],
                                  right_on="appointment_id", how="left",
                                  drop_right_join_column=True)
     else:
-        # Fallback: per-batch SQL joins
+        # Fallback: per-batch SQL joins via JoinMapping
         mapping_obj = JoinMapping(df, key_phi_columns, config.mapping_db_config, config.table_name)
         try:
+            # Validate configured identifier columns exist in the mapping table.
+            _, validation_err = mapping_obj.get_possible_patient_identifier_columns()
+            if validation_err:
+                _update_table_state_failed(config, validation_err)
+                _publish(config, LogLevel.ERROR, "process",
+                         f"batch {config.start_id}-{config.end_id} skipped: {validation_err}",
+                         start_id=config.start_id, end_id=config.end_id, error=validation_err)
+                return {"table": config.table_name, "start_id": config.start_id,
+                        "end_id": config.end_id, "status": "failed", "rows": 0,
+                        "error": validation_err}
+
+            # Direct patient mapping (one join per PATIENT_* rule).
+            mapping_obj.apply_patient_mappings(possible_patient_identifier_columns)
+            df = mapping_obj.df
+
             distinct_eids = mapping_obj._get_distinct_encounterids()
-            df_enc = mapping_obj._get_encounter_mapping(distinct_eids)
+            df_enc = mapping_obj._get_encounter_mapping(distinct_eids, possible_patient_identifier_columns)
             if df_enc is not None and key_phi_columns[0]:
                 df = join_dataframes(df, df_enc, left_on=key_phi_columns[0][0],
                                      right_on="encounter_id", how="left", right_suffix="",
-                                     drop_right_join_column=True)
-
-            distinct_pids = mapping_obj._get_distinct_patientids()
-            df_pat = mapping_obj._get_patient_mapping(distinct_pids)
-            if df_pat is not None and key_phi_columns[1]:
-                df = join_dataframes(df, df_pat, left_on=key_phi_columns[1][0],
-                                     right_on="patient_id", how="left",
-                                     right_suffix="from_patient_mapping",
                                      drop_right_join_column=True)
 
             distinct_rpids = mapping_obj._get_distinct_referencepids()
@@ -192,7 +207,7 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
                                      how="left", drop_right_join_column=True)
 
             distinct_aids = mapping_obj._get_distinct_appointmentids()
-            df_apt = mapping_obj._get_appointment_mapping(distinct_aids)
+            df_apt = mapping_obj._get_appointment_mapping(distinct_aids, possible_patient_identifier_columns)
             if df_apt is not None and key_phi_columns[3]:
                 df = join_dataframes(df, df_apt, left_on=key_phi_columns[3][0],
                                      right_on="appointment_id", how="left",
@@ -201,7 +216,9 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
             mapping_obj.close_connection()
 
     # 4. Resolve patient identifiers
-    resolver = PatientIdentifierResolver(key_phi_columns, offset_days=config.offset_days)
+    resolver = PatientIdentifierResolver(
+        key_phi_columns, possible_patient_identifier_columns, offset_days=config.offset_days
+    )
     df = resolver.transform(df)
 
     # 5. Invalid row handling
@@ -295,3 +312,23 @@ def _update_batch_status(config: ProcessTaskConfig, status: str):
         if batch:
             batch.status = status
             session.commit()
+
+
+def _update_table_state_failed(config: ProcessTaskConfig, message: str):
+    """Mark the table as failed in state.db with a descriptive error message."""
+    from deid.models.state import TableState
+    engine = get_cached_state_engine(config.state_db_path)
+    with Session(engine) as session:
+        table_state = session.query(TableState).filter_by(
+            table_name=config.table_name,
+            config_key=config.config_key,
+        ).first()
+        if table_state:
+            table_state.status = "failed"
+            table_state.failure_remarks = message
+            session.commit()
+        else:
+            logger.warning(
+                "Could not find TableState for %s (config_key=%s) to record failure: %s",
+                config.table_name, config.config_key, message,
+            )

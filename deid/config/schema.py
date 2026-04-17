@@ -60,6 +60,10 @@ class MappingTableConfig(BaseModel):
     source_column: str
     destination_column: str
     reference: Optional[str] = None
+    identifier_columns: list[str] = []
+    """Patient identifier columns used for PATIENT_* rule lookups (e.g. patientid, chartid, pid).
+    Required on the 'patient' mapping entry when any PATIENT_* column rules are configured.
+    Validated against the actual mapping table schema at runtime."""
 
 
 class WorkerSettings(BaseModel):

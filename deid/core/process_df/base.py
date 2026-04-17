@@ -93,6 +93,10 @@ class DeIdentifier:
             rule_type = column_config.get("de_identification_rule")
             col_name = column_config.get("column_name", "")
             rule_class = RULE_DISPATCHER.get(rule_type)
+            # Dynamic PATIENT_* rules (e.g. PATIENT_PATIENTID, PATIENT_CHARTID) all
+            # resolve to _resolved_nd_patient_id, so PatientIDRule handles them all.
+            if rule_class is None and rule_type and rule_type.startswith("PATIENT_"):
+                rule_class = PatientIDRule
             if rule_class:
                 if rule_class is StaticDateOffsetRule:
                     rule_instance = rule_class(offset_days=self.offset_days)

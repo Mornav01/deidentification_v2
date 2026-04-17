@@ -52,7 +52,7 @@ async def run(config: DeidConfig, config_path: str):
             config.secondary_pii_configs = _yaml.safe_load(f)
 
     # ── Validate prerequisites ────────────────────────────────────────────
-    from deid.models.mappings import PatientMapping
+    from sqlalchemy import text as _text
 
     if not config.mappings_db and not Path(config.mappings_db_path).exists():
         raise SystemExit(
@@ -60,8 +60,9 @@ async def run(config: DeidConfig, config_path: str):
             "Run `deid mapping --config <config.yaml>` first."
         )
 
-    with Session(mappings_engine) as session:
-        if session.query(PatientMapping).count() == 0:
+    with mappings_engine.connect() as _conn:
+        _count = _conn.execute(_text("SELECT COUNT(*) FROM patient_mapping_table")).scalar()
+        if not _count:
             raise SystemExit(
                 "No patient mappings found in mappings DB. "
                 "Run `deid mapping --config <config.yaml>` first."
@@ -490,7 +491,11 @@ def _build_fetch_config(config, batch, staging_root, mappings_conn_str):
         redis_url=config.redis_url,
     ).model_dump()
     # Extra fields forwarded by fetch_batch to process_batch and write_batch
-    base["mapping_db_config"] = {"connection_str": mappings_conn_str}
+    _pat_mapping = config.mapping_tables.get("patient")
+    base["mapping_db_config"] = {
+        "connection_str": mappings_conn_str,
+        "patient_identifier_columns": _pat_mapping.identifier_columns if _pat_mapping else [],
+    }
     base["table_details"] = _get_table_details(config, batch.table_name)
     base["offset_days"] = config.deidentification.date_offset_days
     base["dest_conn_str"] = config.destination_db.connection_string()
@@ -506,13 +511,17 @@ def _build_fetch_config(config, batch, staging_root, mappings_conn_str):
 
 def _build_process_config(config, batch, staging_root, mappings_conn_str):
     from deid.config.task_models import ProcessTaskConfig
+    _pat_mapping = config.mapping_tables.get("patient")
     base = ProcessTaskConfig(
         table_name=batch.table_name,
         start_id=batch.start_id,
         end_id=batch.end_id,
         staging_root=str(staging_root),
         state_db_path=config.state_db_path,
-        mapping_db_config={"connection_str": mappings_conn_str},
+        mapping_db_config={
+            "connection_str": mappings_conn_str,
+            "patient_identifier_columns": _pat_mapping.identifier_columns if _pat_mapping else [],
+        },
         table_details=_get_table_details(config, batch.table_name),
         source_conn_str=config.source_db.connection_string(),
         config_key=config.config_key,
