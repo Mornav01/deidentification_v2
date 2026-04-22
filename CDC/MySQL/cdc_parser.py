@@ -4,13 +4,15 @@ import json
 import argparse
 import subprocess
 import logging
-import mysql.connector
+import pymysql.err
 import pandas as pd
 import multiprocessing as mp
 import time
-import sys
-from datetime import datetime, timedelta, date
+from datetime import datetime
 from queue import Empty
+
+from sqlalchemy import create_engine
+from sqlalchemy.engine import URL
  
 # Try to import orjson for faster JSON serialization
 try:
@@ -32,9 +34,9 @@ logger = logging.getLogger(__name__)
 # ============================
 # Configuration
 # ============================
-MYSQL_USER = "ndadmin"
-MYSQL_PASS = "ndADMIN@2025"
-MYSQL_DB = "cdc"
+MYSQL_USER = os.environ.get("DB_USER", "")
+MYSQL_PASS = os.environ.get("DB_PASS", "")
+MYSQL_DB = os.environ.get("DB_CDC_SCHEMA", "cdc")
 WHITELIST_SCHEMAS = {"mobiledoc"}
  
 # ============================
@@ -81,90 +83,158 @@ def save_checkpoint(checkpoint_file, processed_files):
         logger.error(f"Failed to save checkpoint: {e}")
  
 # ============================
-# DB Connection
+# DB URL (SQLAlchemy + PyMySQL)
 # ============================
-def get_db_config():
-    return {
-        "host": "localhost",
-        "user": MYSQL_USER,
-        "password": MYSQL_PASS,
-        "database": MYSQL_DB
-    }
- 
-def get_db_conn():
-    return mysql.connector.connect(**get_db_config())
- 
+def get_cdc_db_url() -> str:
+    """
+    mysql+pymysql URL for the CDC database.
+    Override with DB_USER / DB_PASS / DB_HOST / DB_PORT (same convention as cdc_restore.py).
+    """
+    return URL.create(
+        "mysql+pymysql",
+        username=os.environ.get("DB_USER", MYSQL_USER),
+        password=os.environ.get("DB_PASS", MYSQL_PASS),
+        host=os.environ.get("DB_HOST", "localhost"),
+        port=int(os.environ.get("DB_PORT", "3306")),
+        database=MYSQL_DB,
+    ).render_as_string(hide_password=False)
+
+
+def _writer_engine(db_url: str, pool_size: int):
+    ps = max(1, min(int(pool_size), 32))
+    return create_engine(
+        db_url,
+        pool_size=ps,
+        max_overflow=0,
+        pool_pre_ping=True,
+        pool_recycle=3600,
+    )
+
+
 # ============================
 # Worker: DB Writer (Consumer)
 # ============================
-def worker_db_writer(queue, table_name, db_config, batch_size=2000, commit_interval=1.0):
+def worker_db_writer(queue, table_name, db_url, batch_size=2000, commit_interval=1.0, writer_pool_size=3):
     """
-    Consumer process that pulls records from the queue and batch inserts them into MySQL.
+    Consumer process that pulls records from the queue and batch inserts into MySQL.
+
+    Uses a SQLAlchemy engine (mysql+pymysql) with a per-process pool; checkout a raw
+    DBAPI connection for fast executemany + commit.
     """
-    logger.info(f"DB Writer process started (Batch: {batch_size}, Interval: {commit_interval}s)")
+    logger.info(
+        "DB Writer started | batch=%s | commit_interval=%ss | pool_size=%s",
+        batch_size,
+        commit_interval,
+        writer_pool_size,
+    )
     try:
-        conn = mysql.connector.connect(**db_config)
-        cursor = conn.cursor()
+        engine = _writer_engine(db_url, writer_pool_size)
     except Exception as e:
-        logger.error(f"DB Writer failed to connect: {e}")
+        logger.error("DB Writer failed to create engine: %s", e)
         return
- 
+
+    conn = None
+    cursor = None
+
+    def checkout():
+        nonlocal conn, cursor
+        if cursor is not None:
+            try:
+                cursor.close()
+            except pymysql.err.Error:
+                pass
+            cursor = None
+        if conn is not None:
+            try:
+                conn.close()
+            except pymysql.err.Error:
+                pass
+            conn = None
+        conn = engine.raw_connection()
+        cursor = conn.cursor()
+
+    try:
+        checkout()
+    except Exception as e:
+        logger.error("DB Writer failed initial checkout: %s", e)
+        try:
+            engine.dispose()
+        except Exception:
+            pass
+        return
+
     batch = []
     last_commit_time = time.time()
- 
-    # Use INSERT IGNORE to handle potential duplicates from re-processing
+
     sql = f"""
-        INSERT IGNORE INTO {table_name}
-        (table_name, operation, record_data, binlog_file, binlog_pos) 
+        INSERT IGNORE INTO `{table_name}`
+        (table_name, operation, record_data, binlog_file, binlog_pos)
         VALUES (%s, %s, %s, %s, %s)
     """
- 
+
     total_inserted = 0
- 
-    while True:
+
+    def flush_batch():
+        nonlocal batch, last_commit_time, total_inserted
+        if not batch:
+            return
+        cursor.executemany(sql, batch)
+        conn.commit()
+        total_inserted += len(batch)
+        batch = []
+        last_commit_time = time.time()
+
+    def run_flush():
+        if not batch:
+            return
         try:
-            # Wait for records with a timeout to allow periodic flushing
-            record = queue.get(timeout=0.5)
-            
-            # Sentinel value to stop the worker
-            if record is None:
-                break
-            
-            batch.append(record)
-            
-            if len(batch) >= batch_size:
-                cursor.executemany(sql, batch)
-                conn.commit()
-                total_inserted += len(batch)
-                batch = []
-                last_commit_time = time.time()
-                
-        except Empty:
-            # If queue is empty, flush whatever we have if enough time passed
-            if batch and (time.time() - last_commit_time > commit_interval):
-                cursor.executemany(sql, batch)
-                conn.commit()
-                total_inserted += len(batch)
-                batch = []
-                last_commit_time = time.time()
-            continue
-        except Exception as e:
-            logger.error(f"DB Writer error: {e}")
-            # In a real production system, you might want to retry or handle connection loss
-            time.sleep(1)
- 
-    # Final flush
-    if batch:
-        try:
-            cursor.executemany(sql, batch)
-            conn.commit()
-            total_inserted += len(batch)
-        except Exception as e:
-            logger.error(f"Final flush error: {e}")
- 
-    cursor.close()
-    conn.close()
-    logger.info(f"DB Writer finished. Total inserted: {total_inserted}")
+            flush_batch()
+        except pymysql.err.Error as e:
+            logger.error("DB Writer MySQL error during flush: %s", e)
+            try:
+                checkout()
+            except Exception as e2:
+                logger.error("DB Writer reconnect failed: %s", e2)
+                return
+            if not batch:
+                return
+            try:
+                flush_batch()
+            except pymysql.err.Error as e3:
+                logger.error("DB Writer flush after reconnect failed: %s", e3)
+
+    try:
+        while True:
+            try:
+                record = queue.get(timeout=0.5)
+                if record is None:
+                    break
+                batch.append(record)
+                if len(batch) >= batch_size:
+                    run_flush()
+            except Empty:
+                if batch and (time.time() - last_commit_time > commit_interval):
+                    run_flush()
+                continue
+            except Exception as e:
+                logger.error("DB Writer error: %s", e)
+                time.sleep(1)
+
+        if batch:
+            run_flush()
+    finally:
+        if cursor is not None:
+            try:
+                cursor.close()
+            except pymysql.err.Error:
+                pass
+        if conn is not None:
+            try:
+                conn.close()
+            except pymysql.err.Error:
+                pass
+        engine.dispose()
+    logger.info("DB Writer finished. Total inserted: %s", total_inserted)
  
 # ============================
 # Worker: Parser (Producer)
@@ -455,7 +525,13 @@ def parse_args():
         "--num_writers",
         type=int,
         default=5,
-        help="Number of DB writer processes (default: 2)",
+        help="Number of DB writer processes (default: 5)",
+    )
+    parser.add_argument(
+        "--writer_pool_size",
+        type=int,
+        default=3,
+        help="SQLAlchemy pool_size per writer process (mysql+pymysql, default: 3)",
     )
     parser.add_argument(
         "--max_workers",
@@ -467,7 +543,7 @@ def parse_args():
         "--batch_size",
         type=int,
         default=5000,
-        help="DB insert batch size (default: 2000)",
+        help="DB insert batch size (default: 5000)",
     )
     parser.add_argument(
         "--commit_interval",
@@ -477,7 +553,7 @@ def parse_args():
     )
     parser.add_argument(
         "--binlog_dir",
-        default="/Volumes/NDAIVol/BinaryLog",
+        default=os.environ.get("BINLOG_DIR", "/Volumes/NDAIVol/BinaryLog"),
         help="Directory containing binary logs",
     )
     parser.add_argument(
@@ -576,11 +652,18 @@ def main():
     
     try:
         # Start DB Writers (Consumer Pool)
-        db_config = get_db_config()
+        db_url = get_cdc_db_url()
         for i in range(args.num_writers):
             wp = mp.Process(
                 target=worker_db_writer,
-                args=(queue, cdc_table_name, db_config, args.batch_size, args.commit_interval)
+                args=(
+                    queue,
+                    cdc_table_name,
+                    db_url,
+                    args.batch_size,
+                    args.commit_interval,
+                    args.writer_pool_size,
+                ),
             )
             wp.start()
             writer_processes.append(wp)

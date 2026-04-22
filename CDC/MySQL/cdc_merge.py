@@ -2,6 +2,7 @@ from sqlalchemy import create_engine, text, inspect
 from collections import defaultdict
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import os
 import pandas as pd
 import logging
 import argparse
@@ -12,7 +13,7 @@ except ImportError:
     from datetime import timezone
     UTC = timezone.utc
 
-LOG_FILE = "/Users/ndaidcnd/Desktop/deidentification/CDC/MySQL/cdc_merger_deid.log"
+LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cdc_merge.log")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,18 +43,18 @@ def parse_args():
     Parse command-line arguments for CDC merge.
 
     Example:
-        python cdc_merge.py --staging_schema "mobiledoc_staging" --prod_schema "mobiledoc_oct"
+        python cdc_merge.py --staging_schema "mobiledoc_apr26_staging" --prod_schema "mobiledoc_apr26"
     """
     parser = argparse.ArgumentParser(description="CDC merge: upsert from staging schema into prod schema")
     parser.add_argument(
         "--staging_schema",
         required=True,
-        help='Staging schema to read from (e.g. "mobiledoc_staging")',
+        help='Staging schema to read from (e.g. "mobiledoc_apr26_staging")',
     )
     parser.add_argument(
         "--prod_schema",
         required=True,
-        help='Prod schema to write into (e.g. "mobiledoc_oct")',
+        help='Prod schema to write into (e.g. "mobiledoc_apr26")',
     )
     parser.add_argument(
         "--max_workers",
@@ -76,14 +77,19 @@ def init_databases(staging_schema_arg: str, prod_schema_arg: str):
 
     logger.info(f"Using staging_schema={staging_schema}, prod_schema={prod_schema}")
 
+    _db_user = os.environ.get("DB_USER", "")
+    _db_pass = os.environ.get("DB_PASS", "")
+    _db_host = os.environ.get("DB_HOST", "localhost")
+    _db_port = os.environ.get("DB_PORT", "3306")
+
     staging_engine = create_engine(
-        f"mysql+pymysql://ndadmin:ndADMIN%402025@localhost:3306/{staging_schema}",
+        f"mysql+pymysql://{_db_user}:{_db_pass}@{_db_host}:{_db_port}/{staging_schema}",
         pool_recycle=3600,
         pool_pre_ping=True,
     )
 
     prod_engine = create_engine(
-        f"mysql+pymysql://ndadmin:ndADMIN%402025@localhost:3306/{prod_schema}",
+        f"mysql+pymysql://{_db_user}:{_db_pass}@{_db_host}:{_db_port}/{prod_schema}",
         pool_recycle=3600,
         pool_pre_ping=True,
     )
@@ -126,9 +132,10 @@ def init_databases(staging_schema_arg: str, prod_schema_arg: str):
     logger.info(f"✅ Cached column metadata for {len(table_columns)} tables")
 
 CDC_COLS = [
-    ("nd_created_at", "DATETIME DEFAULT NULL"),
-    ("nd_updated_at", "DATETIME DEFAULT NULL"),
-    ("nd_operation", "VARCHAR(100)")
+    ("nd_extracted_at",        "DATETIME DEFAULT NULL"),
+    ("nd_updated_at",        "DATETIME DEFAULT NULL"),
+    ("nd_operation",         "VARCHAR(100)"),
+    ("nd_is_active",         "VARCHAR(100)"),
 ]
 
 def ensure_cdc_columns_for_table(conn, table_name, table_columns):

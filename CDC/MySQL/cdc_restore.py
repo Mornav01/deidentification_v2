@@ -26,9 +26,10 @@ _RE_VALUES = re.compile(r"\)\s*VALUES\s*\(", re.IGNORECASE)
 # All audit columns added/ensured on every CDC-touched staging table
 _ALTER_COLS = [
     ("nd_auto_increment_id", "BIGINT DEFAULT NULL"),
-    ("nd_created_at",        "DATETIME DEFAULT NULL"),
+    ("nd_extracted_at",        "DATETIME DEFAULT NULL"),
     ("nd_updated_at",        "DATETIME DEFAULT NULL"),
     ("nd_operation",         "VARCHAR(100)"),
+    ("nd_is_active",         "VARCHAR(100)"),
 ]
 
 
@@ -46,8 +47,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="CDC restore: apply CDC change log into staging schema")
     parser.add_argument("--run_date",       required=True, help="Run date in YYYY-MM-DD format")
     parser.add_argument("--table_name",     required=True, help='CDC change-log table name (e.g. "change_log")')
-    parser.add_argument("--staging_schema", required=True, help='Target staging schema (e.g. "mobiledoc_staging")')
-    parser.add_argument("--prod_schema",    required=True, help='Source prod schema (e.g. "mobiledoc_oct")')
+    parser.add_argument("--staging_schema", required=True, help='Target staging schema (e.g. "mobiledoc_apr26_staging")')
+    parser.add_argument("--prod_schema",    required=True, help='Source prod schema (e.g. "mobiledoc_apr26")')
     parser.add_argument(
         "--output_dir",
         default=os.path.dirname(os.path.abspath(__file__)),
@@ -57,7 +58,7 @@ def parse_args():
         "--max_workers",
         type=int,
         default=10,
-        help="Number of tables to process in parallel (default: 5)",
+        help="Number of tables to process in parallel (default: 10)",
     )
     return parser.parse_args()
 
@@ -66,9 +67,9 @@ def parse_args():
 # DB helpers
 # ============================
 def _db_url(schema: str) -> str:
-    """Build a MySQL connection URL. Override via DB_USER / DB_PASS / DB_HOST / DB_PORT env vars."""
-    user     = os.environ.get("DB_USER", "ndadmin")
-    password = os.environ.get("DB_PASS", "ndADMIN%402025")
+    """Build a MySQL connection URL. Set DB_USER / DB_PASS / DB_HOST / DB_PORT env vars."""
+    user     = os.environ.get("DB_USER", "")
+    password = os.environ.get("DB_PASS", "")
     host     = os.environ.get("DB_HOST", "localhost")
     port     = os.environ.get("DB_PORT", "3306")
     return f"mysql+pymysql://{user}:{password}@{host}:{port}/{schema}"
@@ -83,53 +84,119 @@ def stream_cdc_data(engine, table_name, batch_size=10000):
         total_rows = conn.execute(text(f"SELECT COUNT(*) FROM {table_name}")).scalar()
     logger.info("Starting stream: %s rows from CDC table %s", f"{total_rows:,}", table_name)
 
-    last_id = 0
+    last_bf: str = ""
+    last_bp: int = 0
+    last_id: int = 0
     query = text(f"""
         SELECT * FROM {table_name}
-        WHERE id > :last_id
-        ORDER BY id ASC
+        WHERE binlog_file IS NOT NULL
+        AND (
+                binlog_file > :last_bf
+            OR (binlog_file = :last_bf AND binlog_pos > :last_bp)
+            OR (binlog_file = :last_bf AND binlog_pos = :last_bp AND id > :last_id)
+        )
+        ORDER BY binlog_file ASC, binlog_pos ASC, id ASC
         LIMIT :limit
     """)
 
     while True:
         with engine.connect() as conn:
-            result = conn.execute(query, {"last_id": last_id, "limit": batch_size}).fetchall()
+            result = conn.execute(query, {"last_bf": last_bf, "last_bp": last_bp, "last_id": last_id, "limit": batch_size}).fetchall()
 
         if not result:
             break
 
         for row in result:
             yield row
+            last_bf = row.binlog_file
+            last_bp = row.binlog_pos
             last_id = row.id
 
         logger.info("Progress: %s rows streamed", f"{last_id:,}")
 
 
-def stream_cdc_data_for_table(engine, cdc_table, target_table, batch_size=10000):
+def stream_cdc_data_for_table(
+    engine,
+    cdc_table,
+    target_table,
+    batch_size=10000,
+    dump_binlog_file=None,
+    dump_binlog_pos=None,
+):
     """
     Yield CDC rows for a single target_table in ID-ordered chunks.
     Used by parallel workers so each thread only pulls its own table's events.
+
+    dump_binlog_file / dump_binlog_pos (optional):
+        When provided, only events whose binlog position is STRICTLY AFTER the
+        dump snapshot are returned — i.e. events already captured in the
+        mysqldump are silently skipped at the query level.
+
+        Comparison rule (mirrors MySQL binlog ordering):
+            binlog_file > dump_binlog_file      → include (later file)
+            binlog_file = dump_binlog_file
+              AND binlog_pos >= dump_binlog_pos → include (same file, at or after
+                                                  MASTER_LOG_POS = first post-dump event)
+            binlog_file IS NULL                 → EXCLUDE (unknown origin; safer than
+                                                  risking replay of pre-dump events)
+            anything else                       → exclude (pre-dump)
     """
+    # Build the dump-position WHERE fragment once; reused in COUNT + paging queries.
+    dump_filter = ""
+    dump_params: dict = {}
+    if dump_binlog_file is not None and dump_binlog_pos is not None:
+        # Keep only events that are STRICTLY AFTER the dump snapshot:
+        #   binlog_file > dump_bf            → later file, always post-dump
+        #   binlog_file = dump_bf
+        #     AND binlog_pos >= dump_bp      → same file; MASTER_LOG_POS is the
+        #                                      position of the FIRST post-dump event,
+        #                                      so >= is correct (not >).
+        #
+        # NOTE: events with binlog_file IS NULL are intentionally EXCLUDED.
+        # cdc_parser.py always records the binlog filename, so NULL only occurs for
+        # legacy / manually-inserted rows whose position relative to the dump is
+        # unknown.  Including them risks replaying pre-dump events into staging.
+        dump_filter = (
+            " AND binlog_file IS NOT NULL AND ("
+            "    binlog_file > :dump_bf"
+            "    OR (binlog_file = :dump_bf AND binlog_pos >= :dump_bp)"
+            ")"
+        )
+        dump_params = {"dump_bf": dump_binlog_file, "dump_bp": dump_binlog_pos}
+        logger.info(
+            "[%s] Pre-dump filter active: replay events from %s @ %s onwards",
+            target_table, dump_binlog_file, dump_binlog_pos,
+        )
+
     with engine.connect() as conn:
         total_rows = conn.execute(
-            text(f"SELECT COUNT(*) FROM {cdc_table} WHERE table_name = :tname"),
-            {"tname": target_table},
+            text(f"SELECT COUNT(*) FROM {cdc_table} WHERE table_name = :tname {dump_filter}"),
+            {"tname": target_table, **dump_params},
         ).scalar()
-    logger.info("[%s] %s CDC rows to process", target_table, f"{total_rows:,}")
+    logger.info("[%s] %s CDC rows to process (post-dump snapshot)", target_table, f"{total_rows:,}")
 
-    last_id = 0
+    last_bf: str = ""   # empty string sorts before any real binlog filename (e.g. 'binarylogs.*')
+    last_bp: int = 0
+    last_id: int = 0
     query = text(f"""
         SELECT * FROM {cdc_table}
-        WHERE id > :last_id
-          AND table_name = :tname
-        ORDER BY id ASC
+        WHERE table_name = :tname
+        AND binlog_file IS NOT NULL
+        AND (
+                binlog_file > :last_bf
+            OR (binlog_file = :last_bf AND binlog_pos > :last_bp)
+            OR (binlog_file = :last_bf AND binlog_pos = :last_bp AND id > :last_id)
+        )
+        {dump_filter}
+        ORDER BY binlog_file ASC, binlog_pos ASC, id ASC
         LIMIT :limit
     """)
 
     while True:
         with engine.connect() as conn:
             result = conn.execute(
-                query, {"last_id": last_id, "limit": batch_size, "tname": target_table}
+                query,
+                {"last_bf": last_bf, "last_bp": last_bp, "last_id": last_id, "limit": batch_size, "tname": target_table, **dump_params},
             ).fetchall()
 
         if not result:
@@ -137,9 +204,45 @@ def stream_cdc_data_for_table(engine, cdc_table, target_table, batch_size=10000)
 
         for row in result:
             yield row
+            last_bf = row.binlog_file
+            last_bp = row.binlog_pos
             last_id = row.id
 
-        logger.info("[%s] Progress: %s rows streamed", target_table, f"{last_id:,}")
+        logger.info("[%s] Progress: streamed up to %s @ %s (id=%s)", target_table, last_bf, last_bp, last_id)
+
+
+def load_dump_metadata(cdc_engine, schema_name: str) -> dict:
+    """
+    Read cdc.dump_metadata and return a dict:
+        { table_name_lower: (binlog_file, binlog_pos) }
+
+    Only rows where BOTH binlog_file and binlog_pos are non-NULL are included.
+    Tables absent from (or with NULL positions in) dump_metadata will receive
+    no pre-dump filter — all their CDC events will be replayed.
+    """
+    try:
+        with cdc_engine.connect() as conn:
+            rows = conn.execute(
+                text("""
+                    SELECT table_name, binlog_file, binlog_pos
+                    FROM   dump_metadata
+                    WHERE  schema_name  = :schema
+                      AND  binlog_file  IS NOT NULL
+                      AND  binlog_pos   IS NOT NULL
+                """),
+                {"schema": schema_name},
+            ).fetchall()
+        metadata = {r[0].lower(): (r[1], int(r[2])) for r in rows}
+        logger.info(
+            "Loaded dump snapshot positions for %d tables (schema=%s)",
+            len(metadata), schema_name,
+        )
+        return metadata
+    except Exception as e:
+        logger.warning(
+            "Could not load dump_metadata — pre-dump filtering disabled: %s", e
+        )
+        return {}
 
 
 # ============================
@@ -320,6 +423,32 @@ def remove_generated_columns(table_name, columns, values, generated_cols):
     return cleaned_cols, cleaned_vals
 
 
+def strip_auto_increment_from_insert(columns, values, ai_column):
+    """
+    Remove the AUTO_INCREMENT PK column from a CDC INSERT statement so that
+    MySQL auto-assigns the next sequential ID in staging.
+
+    Used exclusively for INSERT events replayed directly from change_log —
+    those statements were originally executed in prod WITHOUT an explicit PK
+    value (MySQL assigned it there too).  Stripping it here ensures staging
+    gets the same sequential behaviour rather than an explicit prod ID that
+    could collide or create gaps.
+
+    NOT used for prod-fetched fallback INSERTs (UPDATE path), where we
+    intentionally preserve the exact prod PK.
+    """
+    if not ai_column or not columns or len(columns) != len(values):
+        return columns, values
+    for i, c in enumerate(columns):
+        if c.lower() == ai_column.lower():
+            cols = list(columns)
+            vals = list(values)
+            cols.pop(i)
+            vals.pop(i)
+            return cols, vals
+    return columns, values
+
+
 def convert_update_join_to_select(sql):
     lower = sql.lower()
 
@@ -370,40 +499,44 @@ def _build_enriched_insert(table_name, prod_data, table_columns, generated_cols,
     Strip generated columns from prod rows and append audit fields.
     Returns (insert_sql, enriched_rows, insert_columns).
     Called by both JOIN and non-JOIN UPDATE paths — no duplication.
+    The AUTO_INCREMENT PK column is intentionally kept so the prod value is
+    preserved in staging rather than re-generated.
     """
     all_cols = list(table_columns[table_name.lower()])
-    gen_cols = generated_cols.get(table_name.lower(), set())
-    drop_idx = {i for i, col in enumerate(all_cols) if col in gen_cols}
+    # gen_cols = generated_cols.get(table_name.lower(), set())
+    # drop_idx = {i for i, col in enumerate(all_cols) if col in gen_cols}
 
-    insert_columns = [col for i, col in enumerate(all_cols) if i not in drop_idx]
-    add_audit = "nd_created_at" not in insert_columns
+    insert_columns = [col for i, col in enumerate(all_cols)]
+    add_audit = "nd_extracted_at" not in insert_columns
 
     if add_audit:
-        insert_columns.extend(["nd_created_at", "nd_updated_at", "nd_operation"])
-        idx_created = idx_updated = idx_op = None
+        insert_columns.extend(["nd_extracted_at", "nd_updated_at", "nd_operation", "nd_is_active"])
+        idx_extracted = idx_updated = idx_op = None
     else:
-        idx_created = insert_columns.index("nd_created_at")
+        idx_extracted = insert_columns.index("nd_extracted_at")
         idx_updated = insert_columns.index("nd_updated_at")
         idx_op      = insert_columns.index("nd_operation")
+        idx_ac      = insert_columns.index("nd_is_active")
 
     now = datetime.now()
     enriched_data = []
 
     for row_data in prod_data:
-        cleaned = [v for i, v in enumerate(row_data) if i not in drop_idx]
+        cleaned = [v for i, v in enumerate(row_data)]
 
         if add_audit:
-            cleaned.extend([now, now, op])
+            cleaned.extend([now, now, op, 'Yes'])
         else:
             try:
-                if cleaned[idx_created] is None:
-                    cleaned[idx_created] = now
+                if cleaned[idx_extracted] is None:
+                    cleaned[idx_extracted] = now
                     cleaned[idx_updated] = now
                     cleaned[idx_op]      = op
+                    cleaned[idx_ac]      = 'Yes'
                 else:
                     cleaned[idx_updated] = now
             except IndexError:
-                cleaned.extend([now, now, op])
+                cleaned.extend([now, now, op, 'Yes'])
 
         enriched_data.append(tuple(cleaned))
 
@@ -417,8 +550,8 @@ def _build_enriched_insert(table_name, prod_data, table_columns, generated_cols,
 
 
 def append_audit(columns, values, next_id, op):
-    columns.extend(["nd_auto_increment_id", "nd_created_at", "nd_updated_at", "nd_operation"])
-    values.extend([str(next_id), "NOW()", "NOW()", f"'{op}'"])
+    columns.extend(["nd_auto_increment_id", "nd_extracted_at", "nd_updated_at", "nd_operation", "nd_is_active"])
+    values.extend([str(next_id), "NOW()", "NOW()", f"'{op}'", "'Yes'"])
     return columns, values
 
 
@@ -428,7 +561,16 @@ def build_final_insert(table_name, columns, values, staging_schema):
     return f"INSERT INTO {staging_schema}.`{table_name}` ({col_str}) VALUES ({val_str})"
 
 
-def handle_insert_select(sql, staging_conn, prod_conn, table_columns, generated_cols, stats, nd_counter, table_name_override=None):
+def handle_insert_select(
+    sql,
+    staging_conn,
+    prod_conn,
+    table_columns,
+    generated_cols,
+    stats,
+    nd_counter,
+    table_name_override=None,
+):
     table_name, _insert_cols, select_sql = parse_insert_select(sql)
 
     if table_name_override:
@@ -452,12 +594,12 @@ def handle_insert_select(sql, staging_conn, prod_conn, table_columns, generated_
     enriched_rows = []
     for row in prod_rows:
         cleaned = [v for i, v in enumerate(row) if i not in drop_idx]
-        cleaned.extend([next_id, datetime.now(), datetime.now(), "INSERT_SELECT"])
+        cleaned.extend([next_id, datetime.now(), datetime.now(), "INSERT_SELECT", "Yes"])
         enriched_rows.append(tuple(cleaned))
         next_id += 1
 
     insert_cols_cleaned = [c for c in all_cols if c not in gen_cols]
-    insert_cols_cleaned.extend(["nd_auto_increment_id", "nd_created_at", "nd_updated_at", "nd_operation"])
+    insert_cols_cleaned.extend(["nd_auto_increment_id", "nd_extracted_at", "nd_updated_at", "nd_operation", "nd_is_active"])
 
     placeholders = ", ".join(["%s"] * len(enriched_rows[0]))
     insert_sql = (
@@ -489,15 +631,46 @@ def process_table(
     table_columns,
     generated_cols,
     new_tables,
+    auto_increment_by_table,
+    dump_metadata=None,
 ):
     """
     Process all CDC events for a single table.
     Each call opens its own DB connections, making it fully thread-safe.
     Returns (stats_dict, failed_cases_list).
+
+    dump_metadata (optional):
+        Dict returned by load_dump_metadata().  When present, CDC events that
+        occurred at or before the mysqldump snapshot position for this table
+        are skipped — they were already captured in the dump and replaying
+        them would cause duplicate-key conflicts or silent INSERT IGNORE drops.
     """
     if table_name.lower() in new_tables:
         logger.info("[%s] Skipping — new table with no staging counterpart", table_name)
         return _empty_stats(), []
+
+    # Resolve this table's dump snapshot position (may be None if not in metadata)
+    _dump_pos    = (dump_metadata or {}).get(table_name.lower())
+    dump_bf      = _dump_pos[0] if _dump_pos else None
+    dump_bp      = _dump_pos[1] if _dump_pos else None
+
+    # Warn loudly when dump_metadata was loaded but this table has no entry:
+    # stream_cdc_data_for_table() will apply NO binlog-position filter, so ALL
+    # change_log events (including pre-dump ones) will be replayed.
+    # Typical causes: dump file missing from folder, or mysqldump ran without
+    # --master-data=2 (so no CHANGE MASTER TO header was written).
+    if dump_metadata is not None and _dump_pos is None:
+        logger.warning(
+            "[%s] NOT found in dump_metadata — pre-dump binlog filter is DISABLED. "
+            "All change_log events for this table will be replayed. "
+            "If this is unexpected, re-run parse_dump_metadata.py and ensure "
+            "the dump file was created with --master-data=2 (or --source-data=2).",
+            table_name,
+        )
+    elif _dump_pos is not None:
+        logger.debug(
+            "[%s] dump_metadata pos: %s @ %s", table_name, dump_bf, dump_bp
+        )
 
     stats = _empty_stats()
     failed_cases = []
@@ -508,8 +681,51 @@ def process_table(
         staging_conn.execute(text("SET FOREIGN_KEY_CHECKS=0;"))
         cursor = staging_conn.connection.cursor()
 
+        # ------------------------------------------------------------------
+        # AUTO_INCREMENT tracker
+        # Tracks the highest PK value assigned so far in staging for this
+        # table.  Read once from the DB before any cursor writes (so the
+        # SELECT MAX is accurate); then maintained purely in memory.
+        #
+        # Why not re-query during the loop?
+        #   cursor writes are uncommitted when staging_conn.execute() runs
+        #   (different transaction view) → SELECT MAX() returns stale data →
+        #   ALTER TABLE AUTO_INCREMENT = stale+1 rewinds the counter below
+        #   IDs already given out → duplicate-key errors on later INSERTs.
+        #
+        # Rules:
+        #   INSERT event succeeds  → tracker += 1  (MySQL just used tracker+1)
+        #   UPDATE fallback INSERT → ALTER TABLE AUTO_INCREMENT = tracker+1
+        #                           (undo the jump from the high prod PK;
+        #                            tracker itself does NOT change)
+        # ------------------------------------------------------------------
+        _ai_tracker: dict = {}
+        _ai_col_init = auto_increment_by_table.get(table_name.lower())
+        if _ai_col_init:
+            # Read the table's current AUTO_INCREMENT counter directly from
+            # information_schema — this IS the next value MySQL will assign,
+            # no +1 arithmetic required.  Read once before any cursor writes
+            # so the value is accurate (no transaction-isolation lag).
+            _auto_inc = staging_conn.execute(
+                text(
+                    "SELECT AUTO_INCREMENT FROM information_schema.TABLES "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :tname"
+                ),
+                {"tname": table_name},
+            ).scalar() or 1
+            _ai_tracker[table_name.lower()] = int(_auto_inc)
+            logger.debug(
+                "[%s] AI tracker init: %s AUTO_INCREMENT = %s",
+                table_name, _ai_col_init, _auto_inc,
+            )
+
         for i, row in enumerate(
-            stream_cdc_data_for_table(cdc_engine, cdc_table, table_name, batch_size=10000), 1
+            stream_cdc_data_for_table(
+                cdc_engine, cdc_table, table_name,
+                batch_size=10000,
+                dump_binlog_file=dump_bf,
+                dump_binlog_pos=dump_bp,
+            ), 1
         ):
             row_table = row[1]
             op        = row[2]
@@ -575,11 +791,25 @@ def process_table(
                             stats["errors_update_prod"] += 1
                             continue
 
+                    _ai_col = auto_increment_by_table.get(row_table.lower())
                     insert_sql, enriched_data, _ = _build_enriched_insert(
-                        row_table, prod_data, table_columns, generated_cols, op
+                        row_table,
+                        prod_data,
+                        table_columns,
+                        generated_cols,
+                        op,
                     )
                     try:
                         cursor.executemany(insert_sql, enriched_data)
+                        # Reset AUTO_INCREMENT to the in-memory tracked value so
+                        # subsequent auto-assigned INSERTs get the correct sequential
+                        # ID, undoing any jump caused by inserting the high prod PK.
+                        # tracker is NOT incremented here — only INSERT events do that.
+                        if _ai_col and row_table.lower() in _ai_tracker:
+                            cursor.execute(
+                                f"ALTER TABLE `{row_table}` "
+                                f"AUTO_INCREMENT = {_ai_tracker[row_table.lower()]}"
+                            )
                         cursor._defer_warnings = True
                         cursor.execute(sql)
                         stats["updated"] += 1
@@ -616,6 +846,12 @@ def process_table(
                         continue
 
                     columns, values = remove_generated_columns(row_table, columns, values, generated_cols)
+                    # Strip the AUTO_INCREMENT PK so MySQL assigns the next
+                    # sequential ID in staging — matching how the original prod
+                    # INSERT worked (client didn't specify the PK; MySQL did).
+                    ai_col = auto_increment_by_table.get(row_table.lower())
+                    if ai_col:
+                        columns, values = strip_auto_increment_from_insert(columns, values, ai_col)
 
                     if len(columns) != len(values):
                         stats["errors_insert_mismatch"] += 1
@@ -631,6 +867,11 @@ def process_table(
                         cursor._defer_warnings = True
                         cursor.execute(final_sql)
                         stats["inserted"] += 1
+                        # MySQL just assigned tracker+1 to this row — advance tracker
+                        # so the next INSERT and any UPDATE fallback reset both agree
+                        # on the correct next sequential ID.
+                        if row_table.lower() in _ai_tracker:
+                            _ai_tracker[row_table.lower()] += 1
                     except Exception as e:
                         failed_cases.append({"type": "errors_insert", "table_name": row_table, "operation": op, "sql": sql, "error": str(e)})
                         stats["errors_insert"] += 1
@@ -673,7 +914,7 @@ def run_restore(run_date, cdc_table, staging_schema, prod_schema, output_dir, ma
     Tables are processed in parallel (up to max_workers at a time); events within
     each table are always applied in their original CDC order.
     """
-    start_time = datetime.utcnow()
+    start_time = datetime.now()
 
     cdc_engine     = create_engine(_db_url("cdc"),     pool_size=max_workers + 2, max_overflow=max_workers)
     staging_engine = create_engine(_db_url(staging_schema), pool_size=max_workers + 2, max_overflow=max_workers)
@@ -715,6 +956,28 @@ def run_restore(run_date, cdc_table, staging_schema, prod_schema, output_dir, ma
     for tname, cname in existing_cols:
         table_columns[tname.lower()].append(cname)
     logger.info("Cached column metadata for %d tables", len(table_columns))
+
+    auto_increment_by_table = {}
+    with staging_engine.connect() as conn:
+        logger.info("Loading AUTO_INCREMENT column per table...")
+        ai_rows = conn.execute(
+            text("""
+                SELECT TABLE_NAME, COLUMN_NAME
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = :schema
+                  AND EXTRA LIKE '%auto_increment%'
+            """),
+            {"schema": staging_schema},
+        ).fetchall()
+    for tnm, cnm in ai_rows:
+        auto_increment_by_table[tnm.lower()] = cnm
+    logger.info("Tables with AUTO_INCREMENT: %d", len(auto_increment_by_table))
+
+    # Load per-table dump snapshot positions from cdc.dump_metadata.
+    # These tell us the exact binlog (file, pos) at which each table's dump
+    # was taken.  Events at or before that position are already captured in the
+    # dump and must NOT be replayed.
+    dump_metadata = load_dump_metadata(cdc_engine, "mobiledoc")
 
     # Relax MySQL strict mode before any DDL / DML
     with staging_engine.connect() as conn:
@@ -777,6 +1040,8 @@ def run_restore(run_date, cdc_table, staging_schema, prod_schema, output_dir, ma
                 table_columns,
                 generated_cols,
                 new_tables_set,
+                auto_increment_by_table,
+                dump_metadata,          # pre-dump position filter per table
             ): tname
             for tname in all_tables
         }
@@ -791,7 +1056,7 @@ def run_restore(run_date, cdc_table, staging_schema, prod_schema, output_dir, ma
             except Exception as e:
                 logger.error("[%s] Worker raised an unexpected exception: %s", tname, e, exc_info=True)
 
-    end_time = datetime.utcnow()
+    end_time = datetime.now()
     runtime  = (end_time - start_time).total_seconds()
 
     logger.info("CDC sync complete")
