@@ -17,12 +17,14 @@ from sqlalchemy import create_engine, text, inspect
 from sqlalchemy.exc import ProgrammingError
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Setup logging
+# Setup logging — file + stdout so Airflow captures output
 logging.basicConfig(
-    filename="add_nd_auto_inc_id.log",   # log file name
-    filemode="a",                          # append mode
+    level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+    handlers=[
+        logging.FileHandler("add_nd_auto_inc_id.log", mode="a"),
+        logging.StreamHandler(sys.stdout),
+    ],
 )
 logger = logging.getLogger(__name__)
 
@@ -43,7 +45,7 @@ def process_tables_mysql(engine, table_name):
         columns = [col['name'] for col in inspector.get_columns(table_name)]
         if 'nd_auto_increment_id' in columns:
             logger.info(f"  Column 'nd_auto_increment_id' already exists in {table_name}. Skipping.")
-            return False
+            return {"success": True, "action": "skipped"}
             # try:
             #     conn.execute(text(f"ALTER TABLE `{table_name}` DROP COLUMN `nd_auto_increment_id`"))
             #     logger.info(f"  Dropped existing column in {table_name}")
@@ -83,16 +85,15 @@ def process_tables_mysql(engine, table_name):
             conn.execute(text("SET sql_safe_updates = 1;"))
 
             logger.info(f"✅ Successfully processed {table_name}")
-            return True
+            return {"success": True, "action": "added"}
 
         except Exception as e:
             logger.error(f"❌ Error during MySQL processing of {table_name}: {e}")
-            # Ensure we attempt to turn binary logging back on even if it fails
             try:
                 conn.execute(text("SET sql_log_bin = 1;"))
             except:
                 pass
-            return False
+            return {"success": False, "action": "error"}
 
 
 def get_tables_from_cdc(engine, cdc_schema: str, cdc_table: str) -> list:
@@ -179,16 +180,12 @@ def main():
                 table_name = futures[future]
                 try:
                     result = future.result()
+                    result["table"] = table_name
                     results.append(result)
                 except Exception as e:
                     logger.error(f"❌ Table `{table_name}` processing failed: {e}")
-                    results.append({
-                        "table": table_name,
-                        "success": False,
-                        "action": None,
-                        "error": str(e)
-                    })
-        
+                    results.append({"table": table_name, "success": False, "action": "error"})
+
         # Step 3: Retry failed tables with single worker
         failed_tables = [r["table"] for r in results if not r["success"]]
         
@@ -209,16 +206,12 @@ def main():
                     table_name = futures[future]
                     try:
                         result = future.result()
+                        result["table"] = table_name
                         retry_results.append(result)
                     except Exception as e:
                         logger.error(f"❌ Table `{table_name}` retry failed: {e}")
-                        retry_results.append({
-                            "table": table_name,
-                            "success": False,
-                            "action": None,
-                            "error": str(e)
-                        })
-            
+                        retry_results.append({"table": table_name, "success": False, "action": "error"})
+
             # Update original results with retry results
             retry_dict = {r["table"]: r for r in retry_results}
             for i, result in enumerate(results):
