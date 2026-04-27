@@ -141,14 +141,15 @@ def run_mapping_delta(mapping_schema: str, staging_schema: str):
             old_pat_encids[row[0]][row[3]] = row[4]
 
     logger.info(
-        "Existing patient mappings: %d, encounter mappings: %d, last_patid=%s",
+        "Existing patient mappings: %d, encounter mappings: %d, last_patid=%s, "
+        "created_by=%s, created_at=%s, updated_by=%s, updated_at=%s",
         len(old_pat_ids),
         len(old_pat_encids),
         last_patid,
-        old_created_by, 
-        old_created_at, 
-        old_updated_by, 
-        old_updated_at
+        old_created_by,
+        old_created_at,
+        old_updated_by,
+        old_updated_at,
     )
 
     # -------------------------------------------------------------------------
