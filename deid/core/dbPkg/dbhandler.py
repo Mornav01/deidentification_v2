@@ -86,7 +86,7 @@ def _normalize_rows(rows, table_name: str = "") -> list:
         new_row = list(row)
         for col_idx, normalizer in col_normalizers.items():
             val = new_row[col_idx]
-            if val is not None:
+            if val is not None and not isinstance(val, str):
                 new_row[col_idx] = normalizer(val)
         result.append(new_row)
     return result

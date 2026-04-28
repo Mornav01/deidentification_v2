@@ -11,6 +11,8 @@ from celery import shared_task
 from sqlalchemy.orm import Session
 
 from deid.config.task_models import FetchTaskConfig, LogLevel
+from sqlalchemy.types import Enum as SAEnum
+
 from deid.core.dbPkg.dbhandler import NDDBHandler, stream_table_keyset
 from deid.core.log_publisher import get_peak_memory_mb, make_log_record, publish_log
 from deid.models.base import get_cached_state_engine
@@ -113,9 +115,15 @@ def _fetch_batch_inner(config: FetchTaskConfig, raw_config: dict, batch_tag: str
     col_info = source.get_columns(config.table_name)
     col_schema = {}
     for c in col_info:
-        length = getattr(c.get("type"), "length", None)
+        col_type = c.get("type")
+        length = getattr(col_type, "length", None)
+        # ENUM: str() renders without values ("ENUM" is invalid DDL); use VARCHAR instead.
+        if isinstance(col_type, SAEnum):
+            type_str = "VARCHAR(255)"
+        else:
+            type_str = str(col_type) if col_type is not None else ""
         col_schema[c["name"]] = {
-            "type": str(c.get("type", "")),
+            "type": type_str,
             "length": int(length) if length else None,
         }
 

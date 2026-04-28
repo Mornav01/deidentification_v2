@@ -245,6 +245,9 @@ def _clean_type_str(raw: str) -> str:
     # NullType() stringifies to "NULL" — not a valid column type
     if not s or s.upper() == "NULL" or s.upper() == "NULLTYPE":
         return "TEXT"
+    # Bare ENUM without values is invalid MySQL DDL; treat as VARCHAR
+    if s.upper() == "ENUM" or s.upper() == "ENUM()":
+        return "VARCHAR(255)"
     # VARCHAR/NVARCHAR without a length means the source had unbounded text — use LONGTEXT
     upper = s.upper()
     if upper in ("VARCHAR", "NVARCHAR"):

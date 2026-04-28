@@ -110,6 +110,23 @@ def _preload_mappings(app: Celery) -> None:
         result = conn.execute(text(f"SELECT * FROM {table_name}"))
         return list(result.keys()), result.fetchall()
 
+    from datetime import date as _date, datetime as _datetime
+
+    def _to_df(cols: list, rows: list) -> "pl.DataFrame":
+        """Build a Polars DataFrame from SQLAlchemy rows.
+
+        Column-dict construction (instead of orient="row") lets Polars process
+        each column as a whole, so it correctly resolves columns that are all-None
+        in the first N rows.  date → datetime normalisation avoids a type conflict
+        when a table mixes SQL DATE and DATETIME columns.
+        """
+        def _norm(v):
+            # MySQL DATE → Python date; Polars needs datetime for mixed columns.
+            return _datetime(v.year, v.month, v.day) if (isinstance(v, _date) and not isinstance(v, _datetime)) else v
+
+        data = {col: [_norm(row[i]) for row in rows] for i, col in enumerate(cols)}
+        return pl.DataFrame(data, infer_schema_length=None)
+
     try:
         with engine.connect() as conn:
             for table_key, table_name in [
@@ -120,10 +137,7 @@ def _preload_mappings(app: Celery) -> None:
                 try:
                     cols, rows = _fetch_mapping_table(conn, table_name)
                     if rows:
-                        _preloaded_data[table_key] = pl.DataFrame(
-                            [list(r) for r in rows], schema=cols, orient="row",
-                            infer_schema_length=len(rows),
-                        )
+                        _preloaded_data[table_key] = _to_df(cols, rows)
                         _preload_logger.info("Preloaded %s: %d rows", table_key, len(rows))
                 except Exception as e:
                     _preload_logger.warning("Failed to preload %s: %s", table_name, e)
@@ -140,10 +154,7 @@ def _preload_mappings(app: Celery) -> None:
                 cols = list(result.keys())
                 rows = result.fetchall()
                 if rows:
-                    _preloaded_data["pii_data_table"] = pl.DataFrame(
-                        [list(r) for r in rows], schema=cols, orient="row",
-                        infer_schema_length=len(rows),
-                    )
+                    _preloaded_data["pii_data_table"] = _to_df(cols, rows)
                     _preload_logger.info("Preloaded pii_data_table: %d rows", len(rows))
             pii_engine.dispose()
         except Exception as e:
