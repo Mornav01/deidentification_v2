@@ -29,7 +29,7 @@ _ALTER_COLS = [
     ("nd_extracted_at",        "DATETIME DEFAULT NULL"),
     ("nd_updated_at",        "DATETIME DEFAULT NULL"),
     ("nd_operation",         "VARCHAR(100)"),
-    ("nd_is_active",         "VARCHAR(100)"),
+    ("nd_ActiveFlag",         "VARCHAR(100)"),
 ]
 
 
@@ -510,13 +510,13 @@ def _build_enriched_insert(table_name, prod_data, table_columns, generated_cols,
     add_audit = "nd_extracted_at" not in insert_columns
 
     if add_audit:
-        insert_columns.extend(["nd_extracted_at", "nd_updated_at", "nd_operation", "nd_is_active"])
+        insert_columns.extend(["nd_extracted_at", "nd_updated_at", "nd_operation", "nd_ActiveFlag"])
         idx_extracted = idx_updated = idx_op = None
     else:
         idx_extracted = insert_columns.index("nd_extracted_at")
         idx_updated = insert_columns.index("nd_updated_at")
         idx_op      = insert_columns.index("nd_operation")
-        idx_ac      = insert_columns.index("nd_is_active")
+        idx_ac      = insert_columns.index("nd_ActiveFlag")
 
     now = datetime.now()
     enriched_data = []
@@ -550,7 +550,7 @@ def _build_enriched_insert(table_name, prod_data, table_columns, generated_cols,
 
 
 def append_audit(columns, values, next_id, op):
-    columns.extend(["nd_auto_increment_id", "nd_extracted_at", "nd_updated_at", "nd_operation", "nd_is_active"])
+    columns.extend(["nd_auto_increment_id", "nd_extracted_at", "nd_updated_at", "nd_operation", "nd_ActiveFlag"])
     values.extend([str(next_id), "NOW()", "NOW()", f"'{op}'", "'Yes'"])
     return columns, values
 
@@ -599,7 +599,7 @@ def handle_insert_select(
         next_id += 1
 
     insert_cols_cleaned = [c for c in all_cols if c not in gen_cols]
-    insert_cols_cleaned.extend(["nd_auto_increment_id", "nd_extracted_at", "nd_updated_at", "nd_operation", "nd_is_active"])
+    insert_cols_cleaned.extend(["nd_auto_increment_id", "nd_extracted_at", "nd_updated_at", "nd_operation", "nd_ActiveFlag"])
 
     placeholders = ", ".join(["%s"] * len(enriched_rows[0]))
     insert_sql = (
