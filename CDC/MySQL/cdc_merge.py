@@ -132,7 +132,7 @@ def init_databases(staging_schema_arg: str, prod_schema_arg: str):
     logger.info(f"✅ Cached column metadata for {len(table_columns)} tables")
 
 CDC_COLS = [
-    ("nd_extracted_at",        "DATETIME DEFAULT NULL"),
+    ("nd_extracted_date",        "DATETIME DEFAULT NULL"),
     ("nd_updated_at",        "DATETIME DEFAULT NULL"),
     ("nd_operation",         "VARCHAR(100)"),
     ("nd_ActiveFlag",         "VARCHAR(100)"),

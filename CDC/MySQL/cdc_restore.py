@@ -2,7 +2,7 @@ import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import defaultdict
 import json
 import re
@@ -26,7 +26,7 @@ _RE_VALUES = re.compile(r"\)\s*VALUES\s*\(", re.IGNORECASE)
 # All audit columns added/ensured on every CDC-touched staging table
 _ALTER_COLS = [
     ("nd_auto_increment_id", "BIGINT DEFAULT NULL"),
-    ("nd_extracted_at",        "DATETIME DEFAULT NULL"),
+    ("nd_extracted_date",        "DATETIME DEFAULT NULL"),
     ("nd_updated_at",        "DATETIME DEFAULT NULL"),
     ("nd_operation",         "VARCHAR(100)"),
     ("nd_ActiveFlag",         "VARCHAR(100)"),
@@ -59,6 +59,14 @@ def parse_args():
         type=int,
         default=10,
         help="Number of tables to process in parallel (default: 10)",
+    )
+    parser.add_argument(
+        "--source_schema",
+        default=None,
+        help=(
+            "Original MySQL schema name used in dump_metadata "
+            "(e.g. 'mobiledoc'). Defaults to prod_schema if not set."
+        ),
     )
     return parser.parse_args()
 
@@ -122,50 +130,39 @@ def stream_cdc_data_for_table(
     batch_size=10000,
     dump_binlog_file=None,
     dump_binlog_pos=None,
+    strict_after=False,
 ):
     """
     Yield CDC rows for a single target_table in ID-ordered chunks.
     Used by parallel workers so each thread only pulls its own table's events.
 
     dump_binlog_file / dump_binlog_pos (optional):
-        When provided, only events whose binlog position is STRICTLY AFTER the
-        dump snapshot are returned — i.e. events already captured in the
-        mysqldump are silently skipped at the query level.
+        When provided, only events whose binlog position is at or after this
+        point are returned.
 
-        Comparison rule (mirrors MySQL binlog ordering):
-            binlog_file > dump_binlog_file      → include (later file)
-            binlog_file = dump_binlog_file
-              AND binlog_pos >= dump_binlog_pos → include (same file, at or after
-                                                  MASTER_LOG_POS = first post-dump event)
-            binlog_file IS NULL                 → EXCLUDE (unknown origin; safer than
-                                                  risking replay of pre-dump events)
-            anything else                       → exclude (pre-dump)
+    strict_after (bool, default False):
+        False → use binlog_pos >= dump_bp  (dump_metadata: MASTER_LOG_POS is
+                                            the first post-dump event, include it)
+        True  → use binlog_pos >  dump_bp  (daily checkpoint: stored pos is the
+                                            last processed event, exclude it on
+                                            the next run to avoid replay)
     """
     # Build the dump-position WHERE fragment once; reused in COUNT + paging queries.
     dump_filter = ""
     dump_params: dict = {}
     if dump_binlog_file is not None and dump_binlog_pos is not None:
-        # Keep only events that are STRICTLY AFTER the dump snapshot:
-        #   binlog_file > dump_bf            → later file, always post-dump
-        #   binlog_file = dump_bf
-        #     AND binlog_pos >= dump_bp      → same file; MASTER_LOG_POS is the
-        #                                      position of the FIRST post-dump event,
-        #                                      so >= is correct (not >).
-        #
-        # NOTE: events with binlog_file IS NULL are intentionally EXCLUDED.
-        # cdc_parser.py always records the binlog filename, so NULL only occurs for
-        # legacy / manually-inserted rows whose position relative to the dump is
-        # unknown.  Including them risks replaying pre-dump events into staging.
+        pos_op = ">" if strict_after else ">="
         dump_filter = (
             " AND binlog_file IS NOT NULL AND ("
             "    binlog_file > :dump_bf"
-            "    OR (binlog_file = :dump_bf AND binlog_pos >= :dump_bp)"
+            f"   OR (binlog_file = :dump_bf AND binlog_pos {pos_op} :dump_bp)"
             ")"
         )
         dump_params = {"dump_bf": dump_binlog_file, "dump_bp": dump_binlog_pos}
+        filter_label = "checkpoint (strict >)" if strict_after else "dump_metadata (>=)"
         logger.info(
-            "[%s] Pre-dump filter active: replay events from %s @ %s onwards",
-            target_table, dump_binlog_file, dump_binlog_pos,
+            "[%s] Binlog filter active [%s]: %s @ %s",
+            target_table, filter_label, dump_binlog_file, dump_binlog_pos,
         )
 
     with engine.connect() as conn:
@@ -209,6 +206,68 @@ def stream_cdc_data_for_table(
             last_id = row.id
 
         logger.info("[%s] Progress: streamed up to %s @ %s (id=%s)", target_table, last_bf, last_bp, last_id)
+
+
+def load_binlog_checkpoint(
+    cdc_engine, schema_name: str, run_date: str
+) -> tuple:
+    """
+    Try to load yesterday's dump_metadata_{mmddyyyy} as a rolling checkpoint.
+
+    Returns (metadata_dict, found) where:
+      found=True  → checkpoint loaded; use strict_after=True in
+                    stream_cdc_data_for_table() so the filter is binlog_pos > pos
+                    (the stored position is the LAST processed event, not the
+                    first post-dump event, so we must exclude it on the next run)
+      found=False → no checkpoint; caller should fall back to load_dump_metadata()
+    """
+    yesterday_fmt = (
+        datetime.strptime(run_date, "%Y-%m-%d") - timedelta(days=1)
+    ).strftime("%m%d%Y")
+    checkpoint_table = f"dump_metadata_{yesterday_fmt}"
+
+    try:
+        with cdc_engine.connect() as conn:
+            exists = conn.execute(
+                text(
+                    "SELECT COUNT(*) FROM information_schema.TABLES "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :t"
+                ),
+                {"t": checkpoint_table},
+            ).scalar()
+
+            if not exists:
+                logger.info("No checkpoint table found: %s", checkpoint_table)
+                return {}, False
+
+            rows = conn.execute(
+                text(f"""
+                    SELECT table_name, binlog_file, binlog_pos
+                    FROM   `{checkpoint_table}`
+                    WHERE  schema_name = :schema
+                      AND  binlog_file  IS NOT NULL
+                      AND  binlog_pos   IS NOT NULL
+                """),
+                {"schema": schema_name},
+            ).fetchall()
+
+        if not rows:
+            logger.info(
+                "Checkpoint %s has no rows for schema=%s",
+                checkpoint_table, schema_name,
+            )
+            return {}, False
+
+        metadata = {r[0].lower(): (r[1], int(r[2])) for r in rows}
+        logger.info(
+            "Loaded checkpoint from %s: %d tables (schema=%s)",
+            checkpoint_table, len(metadata), schema_name,
+        )
+        return metadata, True
+
+    except Exception as e:
+        logger.warning("Could not load checkpoint %s: %s", checkpoint_table, e)
+        return {}, False
 
 
 def load_dump_metadata(cdc_engine, schema_name: str) -> dict:
@@ -507,13 +566,13 @@ def _build_enriched_insert(table_name, prod_data, table_columns, generated_cols,
     # drop_idx = {i for i, col in enumerate(all_cols) if col in gen_cols}
 
     insert_columns = [col for i, col in enumerate(all_cols)]
-    add_audit = "nd_extracted_at" not in insert_columns
+    add_audit = "nd_extracted_date" not in insert_columns
 
     if add_audit:
-        insert_columns.extend(["nd_extracted_at", "nd_updated_at", "nd_operation", "nd_ActiveFlag"])
+        insert_columns.extend(["nd_extracted_date", "nd_updated_at", "nd_operation", "nd_ActiveFlag"])
         idx_extracted = idx_updated = idx_op = None
     else:
-        idx_extracted = insert_columns.index("nd_extracted_at")
+        idx_extracted = insert_columns.index("nd_extracted_date")
         idx_updated = insert_columns.index("nd_updated_at")
         idx_op      = insert_columns.index("nd_operation")
         idx_ac      = insert_columns.index("nd_ActiveFlag")
@@ -550,7 +609,7 @@ def _build_enriched_insert(table_name, prod_data, table_columns, generated_cols,
 
 
 def append_audit(columns, values, next_id, op):
-    columns.extend(["nd_auto_increment_id", "nd_extracted_at", "nd_updated_at", "nd_operation", "nd_ActiveFlag"])
+    columns.extend(["nd_auto_increment_id", "nd_extracted_date", "nd_updated_at", "nd_operation", "nd_ActiveFlag"])
     values.extend([str(next_id), "NOW()", "NOW()", f"'{op}'", "'Yes'"])
     return columns, values
 
@@ -599,7 +658,7 @@ def handle_insert_select(
         next_id += 1
 
     insert_cols_cleaned = [c for c in all_cols if c not in gen_cols]
-    insert_cols_cleaned.extend(["nd_auto_increment_id", "nd_extracted_at", "nd_updated_at", "nd_operation", "nd_ActiveFlag"])
+    insert_cols_cleaned.extend(["nd_auto_increment_id", "nd_extracted_date", "nd_updated_at", "nd_operation", "nd_ActiveFlag"])
 
     placeholders = ", ".join(["%s"] * len(enriched_rows[0]))
     insert_sql = (
@@ -633,6 +692,7 @@ def process_table(
     new_tables,
     auto_increment_by_table,
     dump_metadata=None,
+    strict_after=False,
 ):
     """
     Process all CDC events for a single table.
@@ -725,6 +785,7 @@ def process_table(
                 batch_size=10000,
                 dump_binlog_file=dump_bf,
                 dump_binlog_pos=dump_bp,
+                strict_after=strict_after,
             ), 1
         ):
             row_table = row[1]
@@ -908,7 +969,7 @@ def _empty_stats():
 # ============================
 # Core restore
 # ============================
-def run_restore(run_date, cdc_table, staging_schema, prod_schema, output_dir, max_workers=5):
+def run_restore(run_date, cdc_table, staging_schema, prod_schema, output_dir, max_workers=5, source_schema=None):
     """
     Read every event from the CDC change-log table and apply it into the staging schema.
     Tables are processed in parallel (up to max_workers at a time); events within
@@ -973,11 +1034,27 @@ def run_restore(run_date, cdc_table, staging_schema, prod_schema, output_dir, ma
         auto_increment_by_table[tnm.lower()] = cnm
     logger.info("Tables with AUTO_INCREMENT: %d", len(auto_increment_by_table))
 
-    # Load per-table dump snapshot positions from cdc.dump_metadata.
-    # These tell us the exact binlog (file, pos) at which each table's dump
-    # was taken.  Events at or before that position are already captured in the
-    # dump and must NOT be replayed.
-    dump_metadata = load_dump_metadata(cdc_engine, "mobiledoc")
+    # source_schema is the original MySQL schema name used in dump_metadata
+    # (e.g. "mobiledoc").  Falls back to prod_schema if not supplied.
+    _source_schema = source_schema or prod_schema
+
+    # Determine the binlog lower-bound filter for this run.
+    # Priority: yesterday's daily snapshot → original dump_metadata fallback.
+    # When using the daily snapshot, strict_after=True so the filter is
+    # binlog_pos > pos (the stored position was already processed yesterday).
+    # When using the original dump_metadata, strict_after=False keeps the
+    # existing >= behaviour (MASTER_LOG_POS = first post-dump event, include it).
+    checkpoint, found_checkpoint = load_binlog_checkpoint(
+        cdc_engine, _source_schema, run_date
+    )
+    if found_checkpoint:
+        dump_metadata = checkpoint
+        strict_after  = True
+        logger.info("Using daily checkpoint as binlog filter (strict_after=True)")
+    else:
+        dump_metadata = load_dump_metadata(cdc_engine, _source_schema)
+        strict_after  = False
+        logger.info("Using original dump_metadata as binlog filter (strict_after=False)")
 
     # Relax MySQL strict mode before any DDL / DML
     with staging_engine.connect() as conn:
@@ -1041,7 +1118,8 @@ def run_restore(run_date, cdc_table, staging_schema, prod_schema, output_dir, ma
                 generated_cols,
                 new_tables_set,
                 auto_increment_by_table,
-                dump_metadata,          # pre-dump position filter per table
+                dump_metadata,
+                strict_after,
             ): tname
             for tname in all_tables
         }
@@ -1071,8 +1149,9 @@ def run_restore(run_date, cdc_table, staging_schema, prod_schema, output_dir, ma
 def main():
     args = parse_args()
     logger.info(
-        "CDC restore | run_date=%s | staging=%s | prod=%s | max_workers=%d",
-        args.run_date, args.staging_schema, args.prod_schema, args.max_workers,
+        "CDC restore | run_date=%s | staging=%s | prod=%s | source=%s | max_workers=%d",
+        args.run_date, args.staging_schema, args.prod_schema,
+        args.source_schema or "(default: prod_schema)", args.max_workers,
     )
     run_restore(
         args.run_date,
@@ -1081,6 +1160,7 @@ def main():
         args.prod_schema,
         args.output_dir,
         args.max_workers,
+        args.source_schema,
     )
 
 
