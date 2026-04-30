@@ -82,6 +82,16 @@ def _to_mmddyyyy(date_str: str) -> str:
     return datetime.strptime(date_str, "%Y-%m-%d").strftime("%m%d%Y")
 
 
+def _find_latest_snapshot(conn, run_date: str, max_lookback: int = 30) -> str | None:
+    current = datetime.strptime(run_date, "%Y-%m-%d") - timedelta(days=1)
+    for _ in range(max_lookback):
+        candidate = f"dump_metadata_{current.strftime('%m%d%Y')}"
+        if _table_exists(conn, candidate):
+            return candidate
+        current -= timedelta(days=1)
+    return None
+
+
 # ============================
 # Core
 # ============================
@@ -89,16 +99,10 @@ def build_snapshot(cdc_engine, schema_name: str, run_date: str) -> None:
     """
     Create and populate dump_metadata_{run_date} inside the cdc schema.
     """
-    yesterday_str = (
-        datetime.strptime(run_date, "%Y-%m-%d") - timedelta(days=1)
-    ).strftime("%Y-%m-%d")
-
-    today_fmt     = _to_mmddyyyy(run_date)
-    yesterday_fmt = _to_mmddyyyy(yesterday_str)
+    today_fmt = _to_mmddyyyy(run_date)
 
     snapshot_table = f"dump_metadata_{today_fmt}"
     change_log     = f"change_log_{today_fmt}"
-    prev_snapshot  = f"dump_metadata_{yesterday_fmt}"
     fallback       = "dump_metadata"          # original initial-load table
 
     with cdc_engine.begin() as conn:
@@ -148,15 +152,13 @@ def build_snapshot(cdc_engine, schema_name: str, run_date: str) -> None:
             """)).fetchall())
 
         # ── 4. Choose carry-forward source ────────────────────────────────
-        if _table_exists(conn, prev_snapshot):
-            carry_source = prev_snapshot
-            logger.info("Carry-forward source: %s", prev_snapshot)
+        latest_snapshot = _find_latest_snapshot(conn, run_date)
+        if latest_snapshot:
+            carry_source = latest_snapshot
+            logger.info("Carry-forward source: %s", latest_snapshot)
         else:
             carry_source = fallback
-            logger.info(
-                "No previous snapshot (%s) — falling back to %s",
-                prev_snapshot, fallback,
-            )
+            logger.info("No prior snapshot found — falling back to %s", fallback)
 
         # ── 5. Load carry-forward rows (tables absent from today's log) ───
         carry_rows = conn.execute(text(f"""
