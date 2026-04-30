@@ -29,7 +29,7 @@ _ALTER_COLS = [
     ("nd_extracted_date",        "DATETIME DEFAULT NULL"),
     ("nd_updated_at",        "DATETIME DEFAULT NULL"),
     ("nd_operation",         "VARCHAR(100)"),
-    ("nd_ActiveFlag",         "VARCHAR(100)"),
+    ("nd_ActiveFlag",         "VARCHAR(10)"),
 ]
 
 
