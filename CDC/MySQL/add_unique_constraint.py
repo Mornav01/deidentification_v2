@@ -29,8 +29,8 @@ logger = logging.getLogger(__name__)
 
 
 def _db_url(schema: str) -> str:
-    user     = os.environ.get("DB_USER", "")
-    password = os.environ.get("DB_PASS", "")
+    user     = os.environ.get("DB_USER", "ndadmin")
+    password = os.environ.get("DB_PASS", "ndADMIN%402025")
     host     = os.environ.get("DB_HOST", "localhost")
     port     = os.environ.get("DB_PORT", "3306")
     return f"mysql+pymysql://{user}:{password}@{host}:{port}/{schema}"
@@ -174,7 +174,7 @@ def run(schema: str, max_workers: int = 10) -> None:
     )
 
     # tables = get_all_tables(engine, schema)
-    df = pd.read_csv("/Users/ndaidcnd/Desktop/Air_DEID/airflow-automation/Airflow/input/deid_runner.csv")
+    df = pd.read_csv("/Users/ndaidcnd/Desktop/Air_DEID/airflow-automation/Airflow/input/deid_runner.csv", header=None, names=['table_name'])
     tables = df['table_name'].to_list()
 
     if not tables:
