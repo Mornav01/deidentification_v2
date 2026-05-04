@@ -54,21 +54,21 @@ class ReferenceMappingDataFrameJoiner:
         """
         nd_logger.debug(f"[ReferenceJoiner] Loading '{table_name}' (cols={columns}) from {self._ref_db.engine.url}")
         table = self._ref_db._reflect_table(table_name)
-        columns_expr = [table.c[col] for col in columns]
+        # Case-insensitive column map so config names (any case) resolve to real DB columns.
+        col_map = {c.name.lower(): c for c in table.columns}
+        columns_expr = [col_map[col.lower()] for col in columns]
 
         chunk_size = self._IN_CLAUSE_CHUNK_SIZE
         chunks = [filter_values[i:i + chunk_size] for i in range(0, len(filter_values), chunk_size)]
 
-        # Filter by nd_ActiveFlag = 'Y' if that column exists in the reference table.
-        # This ensures deterministic results when a reference table has multiple rows
-        # for the same join key (e.g. one active, one inactive record).
-        active_flag_filter = table.c["nd_ActiveFlag"] == "Y" if "nd_ActiveFlag" in table.c else None
+        active_col = col_map.get("nd_activeflag")
+        active_flag_filter = active_col == "Y" if active_col is not None else None
 
         rows = []
         col_names = None
         with self.engine.connect() as conn:
             for chunk in chunks:
-                stmt = select(*columns_expr).where(table.c[filter_column].in_(chunk))
+                stmt = select(*columns_expr).where(col_map[filter_column.lower()].in_(chunk))
                 if active_flag_filter is not None:
                     stmt = stmt.where(active_flag_filter)
                 result = conn.execute(stmt)
