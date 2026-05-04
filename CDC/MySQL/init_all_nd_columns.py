@@ -108,6 +108,7 @@ def prefetch_existing_cols(engine, schema: str, tables: list) -> dict:
 # ============================
 def process_table(
     engine,
+    schema: str,
     table_name: str,
     extracted_date: str,
     updated_at: str,
@@ -123,21 +124,21 @@ def process_table(
         with no UPDATE pass needed
       • nd_auto_increment_id → one UPDATE with @row_num after the ALTER,
         then an ADD INDEX
+      • Columns that already exist but have NULL rows → UPDATE to fill them
     """
-    need_inc      = "nd_auto_increment_id" not in existing_cols
-    need_extracted = "nd_extracted_date"   not in existing_cols
-    need_updated   = "nd_updated_at"       not in existing_cols
-    need_flag      = "nd_ActiveFlag"       not in existing_cols
+    need_inc       = "nd_auto_increment_id" not in existing_cols
+    need_extracted = "nd_extracted_date"    not in existing_cols
+    need_updated   = "nd_updated_at"        not in existing_cols
+    need_flag      = "nd_ActiveFlag"        not in existing_cols
 
-    if not any([need_inc, need_extracted, need_updated, need_flag]):
-        logger.info("[%s] All audit columns present — skipping", table_name)
-        return {"success": True, "action": "skipped"}
 
     try:
         with engine.begin() as conn:
             conn.execute(text("SET sql_log_bin      = 0;"))
             conn.execute(text("SET SESSION sql_mode = '';"))
             conn.execute(text("SET sql_safe_updates = 0;"))
+
+            qualified = f"`{schema}`.`{table_name}`"
 
             # ── 1. Build ADD COLUMN clauses ───────────────────────────────
             add_clauses = []
@@ -162,26 +163,24 @@ def process_table(
                 )
 
             # ── 2. Single ALTER TABLE (INSTANT → INPLACE → default) ──────
-            alter_base = (
-                f"ALTER TABLE `{table_name}` "
-                + ", ".join(add_clauses)
-            )
-            for algo_hint in ("ALGORITHM=INSTANT", "ALGORITHM=INPLACE, LOCK=NONE", ""):
-                try:
-                    suffix = f", {algo_hint}" if algo_hint else ""
-                    conn.execute(text(f"{alter_base}{suffix}"))
-                    label = algo_hint if algo_hint else "default algorithm"
-                    logger.info("[%s] ALTER TABLE (%s)", table_name, label)
-                    break
-                except Exception:
-                    if not algo_hint:
-                        raise
+            if add_clauses:
+                alter_base = f"ALTER TABLE {qualified} " + ", ".join(add_clauses)
+                for algo_hint in ("ALGORITHM=INSTANT", "ALGORITHM=INPLACE, LOCK=NONE", ""):
+                    try:
+                        suffix = f", {algo_hint}" if algo_hint else ""
+                        conn.execute(text(f"{alter_base}{suffix}"))
+                        label = algo_hint if algo_hint else "default algorithm"
+                        logger.info("[%s] ALTER TABLE (%s)", table_name, label)
+                        break
+                    except Exception:
+                        if not algo_hint:
+                            raise
 
             # ── 3. Populate nd_auto_increment_id (single UPDATE) ─────────
             if need_inc:
                 conn.execute(text("SET @row_num = 0;"))
                 conn.execute(text(
-                    f"UPDATE `{table_name}` "
+                    f"UPDATE {qualified} "
                     f"SET `nd_auto_increment_id` = (@row_num := @row_num + 1)"
                 ))
 
@@ -189,16 +188,37 @@ def process_table(
             if need_inc:
                 try:
                     conn.execute(text(
-                        f"ALTER TABLE `{table_name}` "
+                        f"ALTER TABLE {qualified} "
                         f"ADD INDEX `idx_nd_auto_increment_id` "
                         f"(`nd_auto_increment_id`), ALGORITHM=INPLACE"
                     ))
                 except Exception:
                     conn.execute(text(
-                        f"ALTER TABLE `{table_name}` "
+                        f"ALTER TABLE {qualified} "
                         f"ADD INDEX `idx_nd_auto_increment_id` "
                         f"(`nd_auto_increment_id`)"
                     ))
+
+            # ── 5. Fill NULLs in columns that already existed ────────────
+            # (no-op for columns just added since DEFAULT already fills them)
+            if not need_extracted:
+                conn.execute(text(
+                    f"UPDATE {qualified} SET `nd_extracted_date` = '{extracted_date} 00:00:00' "
+                    f"WHERE `nd_extracted_date` IS NULL"
+                ))
+                logger.info("[%s] Filled NULL nd_extracted_date", table_name)
+            if not need_updated:
+                conn.execute(text(
+                    f"UPDATE {qualified} SET `nd_updated_at` = '{updated_at} 00:00:00' "
+                    f"WHERE `nd_updated_at` IS NULL"
+                ))
+                logger.info("[%s] Filled NULL nd_updated_at", table_name)
+            if not need_flag:
+                conn.execute(text(
+                    f"UPDATE {qualified} SET `nd_ActiveFlag` = 'Y' "
+                    f"WHERE `nd_ActiveFlag` IS NULL"
+                ))
+                logger.info("[%s] Filled NULL nd_ActiveFlag", table_name)
 
             conn.execute(text("SET sql_log_bin      = 1;"))
             conn.execute(text("SET sql_safe_updates = 1;"))
@@ -253,9 +273,10 @@ def run(
         max_overflow=max_workers,
     )
 
-    tables = get_all_tables(engine, prod_schema)
-    # df = pd.read_csv("/Users/ndaidcnd/Desktop/Air_DEID/deidentification_v2/CDC/MySQL/cdc_tables.csv")
-    # tables = df['table_name'].to_list()
+    # tables = get_all_tables(engine, prod_schema)
+    df = pd.read_csv("/Users/ndaidcnd/Desktop/Air_DEID/airflow-automation/Airflow/input/deid_runner.csv", header=None, names=['table_name'])
+    tables = df['table_name'].to_list()
+
     if not tables:
         logger.warning("No tables found in schema '%s' — nothing to do", prod_schema)
         return
@@ -274,6 +295,7 @@ def run(
                 executor.submit(
                     process_table,
                     engine,
+                    prod_schema,
                     t,
                     extracted_date,
                     updated_at,
