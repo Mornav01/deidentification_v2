@@ -9,7 +9,7 @@ from deid.config.task_models import LogLevel
 from deid.core.log_publisher import make_log_record, maybe_log, get_peak_memory_mb
 from deid.core.logger import nd_logger
 from deid.core.dbPkg import NDDBHandler
-from deid.core.dbPkg.dbhandler import stream_from_ipc_cache, stream_table_paginated
+from deid.core.dbPkg.dbhandler import stream_from_ipc_cache, stream_table_paginated, _normalize_rows
 from deid.core.ops_df.jointables import ReferenceMappingDataFrameJoiner
 from deid.core.ops_df.utility import DistinctValueFetcher, join_dataframes
 from sqlalchemy import Table, String, MetaData, select, cast
@@ -169,11 +169,9 @@ def _sql_result_to_polars(result) -> pl.DataFrame:
     if not rows:
         return pl.DataFrame(schema={c: pl.Utf8 for c in columns})
     return pl.DataFrame(
-        [list(r) for r in rows],
+        _normalize_rows(rows),
         schema=columns,
         orient="row",
-        # Scan all rows before fixing dtypes — avoids ComputeError when early
-        # rows are all-null and a later row has a typed value (e.g. a string ID).
         infer_schema_length=len(rows),
     )
 
