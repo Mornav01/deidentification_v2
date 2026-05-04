@@ -139,23 +139,31 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
     try:
         # --- Encounter mapping ---
         if key_phi_columns[0]:
+            enc_from_sql = False
             if enc_df is None and sql_obj is not None:
                 logger.warning("encounter_mapping not preloaded — using SQL fallback")
                 enc_df = sql_obj._get_encounter_mapping(sql_obj._get_distinct_encounterids())
+                enc_from_sql = True
             if enc_df is not None:
-                enrich_pat = pat_df if pat_df is not None else (
-                    sql_obj._get_patient_mapping(sql_obj._get_distinct_patientids())
-                    if sql_obj is not None else None
-                )
-                if enrich_pat is not None:
-                    enc_enriched = join_dataframes(enc_df, enrich_pat,
-                                                   left_on="patient_id", right_on="patient_id",
-                                                   how="left", right_suffix="from_encounter_mapping",
-                                                   drop_left_join_column=False)
-                    if "patient_id" in enc_enriched.columns:
-                        enc_enriched = enc_enriched.rename({"patient_id": "patient_id_from_encounter_mapping"})
-                else:
+                # SQL fallback (_get_encounter_mapping) already runs the patient join internally
+                # and renames patient_id → patient_id_from_encounter_mapping, so skip here.
+                # For the raw preloaded table, do the patient enrichment only if patient_id exists.
+                if enc_from_sql or "patient_id" not in enc_df.columns:
                     enc_enriched = enc_df
+                else:
+                    enrich_pat = pat_df if pat_df is not None else (
+                        sql_obj._get_patient_mapping(sql_obj._get_distinct_patientids())
+                        if sql_obj is not None else None
+                    )
+                    if enrich_pat is not None:
+                        enc_enriched = join_dataframes(enc_df, enrich_pat,
+                                                       left_on="patient_id", right_on="patient_id",
+                                                       how="left", right_suffix="from_encounter_mapping",
+                                                       drop_left_join_column=False)
+                        if "patient_id" in enc_enriched.columns:
+                            enc_enriched = enc_enriched.rename({"patient_id": "patient_id_from_encounter_mapping"})
+                    else:
+                        enc_enriched = enc_df
                 df = join_dataframes(df, enc_enriched, left_on=key_phi_columns[0][0],
                                      right_on="encounter_id", how="left", right_suffix="",
                                      drop_right_join_column=True)
@@ -183,23 +191,29 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
 
         # --- Appointment mapping ---
         if key_phi_columns[3]:
+            apt_from_sql = False
             if apt_df is None and sql_obj is not None:
                 logger.warning("appointment_mapping not preloaded — using SQL fallback")
                 apt_df = sql_obj._get_appointment_mapping(sql_obj._get_distinct_appointmentids())
+                apt_from_sql = True
             if apt_df is not None:
-                enrich_pat = pat_df if pat_df is not None else (
-                    sql_obj._get_patient_mapping(sql_obj._get_distinct_patientids())
-                    if sql_obj is not None else None
-                )
-                if enrich_pat is not None:
-                    apt_enriched = join_dataframes(apt_df, enrich_pat,
-                                                   left_on="patient_id", right_on="patient_id",
-                                                   how="left", right_suffix="from_appointment_mapping",
-                                                   drop_left_join_column=False)
-                    if "patient_id" in apt_enriched.columns:
-                        apt_enriched = apt_enriched.rename({"patient_id": "patient_id_from_appointment_mapping"})
-                else:
+                # SQL fallback already includes the patient join; preloaded is the raw table.
+                if apt_from_sql or "patient_id" not in apt_df.columns:
                     apt_enriched = apt_df
+                else:
+                    enrich_pat = pat_df if pat_df is not None else (
+                        sql_obj._get_patient_mapping(sql_obj._get_distinct_patientids())
+                        if sql_obj is not None else None
+                    )
+                    if enrich_pat is not None:
+                        apt_enriched = join_dataframes(apt_df, enrich_pat,
+                                                       left_on="patient_id", right_on="patient_id",
+                                                       how="left", right_suffix="from_appointment_mapping",
+                                                       drop_left_join_column=False)
+                        if "patient_id" in apt_enriched.columns:
+                            apt_enriched = apt_enriched.rename({"patient_id": "patient_id_from_appointment_mapping"})
+                    else:
+                        apt_enriched = apt_df
                 df = join_dataframes(df, apt_enriched, left_on=key_phi_columns[3][0],
                                      right_on="appointment_id", how="left",
                                      drop_right_join_column=True)
