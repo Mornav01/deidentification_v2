@@ -30,6 +30,9 @@ def _normalize_value(v):
     if isinstance(v, datetime.date):
         return v.isoformat()
     if isinstance(v, decimal.Decimal):
+        # Preserve full precision for integer-valued decimals (e.g. Numeric(20,0) encounter/patient IDs)
+        if v == v.to_integral_value():
+            return int(v)
         return float(v)
     if isinstance(v, bytes):
         try:
