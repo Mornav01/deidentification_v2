@@ -64,12 +64,17 @@ class DeIdentifier:
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def apply_rules(self) -> pl.DataFrame:
+        # Normalize column names to lowercase so config case never mismatches the DataFrame.
+        normalized = [
+            {**c, "column_name": c["column_name"].lower()} if "column_name" in c else c
+            for c in self.config
+        ]
         notes_configs = [
-            c for c in self.config
+            c for c in normalized
             if c.get("de_identification_rule") == Rules.NOTES.value and c["is_phi"]
         ]
         other_configs = [
-            c for c in self.config
+            c for c in normalized
             if c.get("de_identification_rule") != Rules.NOTES.value and c["is_phi"]
         ]
 

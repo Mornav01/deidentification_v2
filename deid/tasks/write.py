@@ -146,7 +146,7 @@ def _write_batch_inner(config: WriteTaskConfig, batch_tag: str):
 
     # 3. Create dest table if needed (using embedded schema + PHI type overrides)
     col_schema_raw = file_metadata.get(b"deid_column_schema", b"{}")
-    col_schema = json.loads(col_schema_raw)
+    col_schema = {k.lower(): v for k, v in json.loads(col_schema_raw).items()}
     _apply_phi_type_overrides(col_schema, config.table_details)
     _create_dest_table(dest, config.table_name, col_schema)
 
@@ -391,7 +391,7 @@ def _apply_phi_type_overrides(col_schema: dict, table_details: dict | None) -> N
     for col_conf in table_details.get("columns_details", []):
         if not col_conf.get("is_phi"):
             continue
-        col_name = col_conf.get("column_name")
+        col_name = (col_conf.get("column_name") or "").lower()
         rule = col_conf.get("de_identification_rule")
         if col_name and rule and col_name in col_schema:
             ddl = _PHI_RULE_TO_DDL.get(rule)

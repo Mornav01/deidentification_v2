@@ -122,7 +122,7 @@ def _fetch_batch_inner(config: FetchTaskConfig, raw_config: dict, batch_tag: str
             type_str = "VARCHAR(255)"
         else:
             type_str = str(col_type) if col_type is not None else ""
-        col_schema[c["name"]] = {
+        col_schema[c["name"].lower()] = {
             "type": type_str,
             "length": int(length) if length else None,
         }

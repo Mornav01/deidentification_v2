@@ -38,14 +38,15 @@ def get_key_phi_column_list(column_details: list) -> tuple:
     for column in column_details:
         rule = column["de_identification_rule"]
         if column["is_phi"]:
+            col_name = column["column_name"].lower()
             if rule == "PATIENT_ID":
-                patient_id_columns.append(column["column_name"])
+                patient_id_columns.append(col_name)
             elif rule == "ENCOUNTER_ID":
-                encounter_id_columns.append(column["column_name"])
+                encounter_id_columns.append(col_name)
             elif rule == "REFERENCE_PID":
-                reference_pid_column.append(column["column_name"])
+                reference_pid_column.append(col_name)
             elif rule == "APPOINTMENT_ID":
-                appointment_id_columns.append(column["column_name"])
+                appointment_id_columns.append(col_name)
 
     return encounter_id_columns, patient_id_columns, reference_pid_column, appointment_id_columns
 
@@ -421,7 +422,7 @@ def _get_columns_schema_mapping(
         if not col_conf.get("is_phi"):
             continue
 
-        col_name = col_conf["column_name"]
+        col_name = col_conf["column_name"].lower()
         rule     = Rules[col_conf["de_identification_rule"]]
 
         if rule == Rules.MASK:
