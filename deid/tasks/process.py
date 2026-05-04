@@ -93,6 +93,7 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
     arrow_table = reader.read_all()
     file_metadata = arrow_table.schema.metadata or {}
     df = pl.from_arrow(arrow_table)
+    df = df.rename({c: c.lower() for c in df.columns})
 
     if df.is_empty():
         fetched.unlink(missing_ok=True)

@@ -110,17 +110,17 @@ class ReferenceMappingDataFrameJoiner:
         # after the left-joins without relying on Pandas' integer index.
         join_result_df = self.df.with_row_index("_nd_row_idx")
 
-        destination_col = mapping["destination_column"]
+        destination_col = mapping["destination_column"].lower()
         destination_column_type = mapping["destination_column_type"].upper()
 
         for idx, condition in enumerate(mapping["conditions"]):
-            source_col = condition["source_column"]
-            join_col = condition["column_name"]
+            source_col = condition["source_column"].lower()
+            join_col = condition["column_name"].lower()
             ref_table = condition["reference_table"]
 
             # The column to carry forward to the next hop
             next_column = (
-                mapping["conditions"][idx + 1]["source_column"]
+                mapping["conditions"][idx + 1]["source_column"].lower()
                 if idx + 1 < len(mapping["conditions"])
                 else destination_col
             )
