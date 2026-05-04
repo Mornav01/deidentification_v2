@@ -25,16 +25,14 @@ Performance notes:
      be expressed as a constant DEFAULT), followed by an ADD INDEX.
 
 Usage:
-    python init_all_nd_columns.py \\
-        --prod_schema    "mobiledoc" \\
-        --extracted_date "2026-04-11" \\
-        --updated_at     "2026-04-17"
+    python init_all_nd_columns.py --prod_schema "dent" --extracted_date "2026-04-11" --updated_at "2026-04-17"
 """
 
 import os
 import sys
 import argparse
 import logging
+import pandas as pd
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -256,6 +254,8 @@ def run(
     )
 
     tables = get_all_tables(engine, prod_schema)
+    # df = pd.read_csv("/Users/ndaidcnd/Desktop/Air_DEID/deidentification_v2/CDC/MySQL/cdc_tables.csv")
+    # tables = df['table_name'].to_list()
     if not tables:
         logger.warning("No tables found in schema '%s' — nothing to do", prod_schema)
         return
