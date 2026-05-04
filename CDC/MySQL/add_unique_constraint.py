@@ -173,9 +173,9 @@ def run(schema: str, max_workers: int = 10) -> None:
         max_overflow=max_workers,
     )
 
-    tables = get_all_tables(engine, schema)
-    # df = pd.read_csv("/Users/ndaidcnd/Desktop/Air_DEID/deidentification_v2/CDC/MySQL/cdc_tables.csv")
-    # tables = df['table_name'].to_list()
+    # tables = get_all_tables(engine, schema)
+    df = pd.read_csv("/Users/ndaidcnd/Desktop/Air_DEID/airflow-automation/Airflow/input/deid_runner.csv")
+    tables = df['table_name'].to_list()
 
     if not tables:
         logger.warning("No tables found — nothing to do")
