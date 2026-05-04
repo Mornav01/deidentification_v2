@@ -1,29 +1,32 @@
 #!/usr/bin/env python
 """
-init_nd_date_flag_columns.py
------------------------------
-One-time initialisation: adds three audit columns to every BASE TABLE in the
-prod schema, then populates them via DEFAULT values (no UPDATE pass required).
+init_all_nd_columns.py
+-----------------------
+One-time initialisation: adds four audit columns to every BASE TABLE in the
+prod schema, then populates them.
 
-  nd_extracted_date  DATETIME     – fixed baseline date (--extracted_date)
-  nd_updated_at      DATETIME     – fixed update date   (--updated_at)
-  nd_ActiveFlag      VARCHAR(10)  – 'Y' for all existing rows
+  nd_auto_increment_id  BIGINT       – sequential per-table row number
+  nd_extracted_date     DATETIME     – fixed baseline date (--extracted_date)
+  nd_updated_at         DATETIME     – fixed update date   (--updated_at)
+  nd_ActiveFlag         VARCHAR(10)  – 'Y' for all existing rows
 
-Columns that already exist are skipped individually, so the script is safe
-to re-run if it was interrupted.
+Each column is checked individually — already-existing columns are skipped,
+so the script is safe to re-run if it was interrupted.
 
 Performance notes:
   1. Column existence is pre-fetched for ALL tables in a single
      INFORMATION_SCHEMA query — no per-table round-trip.
   2. All missing columns are added in ONE ALTER TABLE per table.
      ALGORITHM=INSTANT (MySQL 8.0.12+) is tried first; falls back to
-     ALGORITHM=INPLACE, then COPY if the engine doesn't support it.
-  3. All three columns are declared with DEFAULT values in the ALTER TABLE,
-     so existing rows immediately return the correct value — no UPDATE needed.
+     ALGORITHM=INPLACE, then COPY.
+  3. nd_extracted_date, nd_updated_at, and nd_ActiveFlag are declared with
+     DEFAULT values — no UPDATE required for those columns.
+     nd_auto_increment_id requires a single UPDATE (sequential IDs cannot
+     be expressed as a constant DEFAULT), followed by an ADD INDEX.
 
 Usage:
-    python init_nd_date_flag_columns.py \\
-        --prod_schema   "mobiledoc" \\
+    python init_all_nd_columns.py \\
+        --prod_schema    "mobiledoc" \\
         --extracted_date "2026-04-11" \\
         --updated_at     "2026-04-17"
 """
@@ -42,13 +45,18 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
     handlers=[
-        logging.FileHandler("init_nd_date_flag_columns.log", mode="a"),
+        logging.FileHandler("init_all_nd_columns.log", mode="a"),
         logging.StreamHandler(sys.stdout),
     ],
 )
 logger = logging.getLogger(__name__)
 
-_AUDIT_COLS = ("nd_extracted_date", "nd_updated_at", "nd_ActiveFlag")
+_AUDIT_COLS = (
+    "nd_auto_increment_id",
+    "nd_extracted_date",
+    "nd_updated_at",
+    "nd_ActiveFlag",
+)
 
 
 # ============================
@@ -90,7 +98,7 @@ def prefetch_existing_cols(engine, schema: str, tables: list) -> dict:
         1 for s in result.values() if len(s) == len(_AUDIT_COLS)
     )
     logger.info(
-        "Column prefetch complete — %d tables have all 3 audit cols already, "
+        "Column prefetch complete — %d tables have all 4 audit cols already, "
         "%d need work",
         already_done, len(tables) - already_done,
     )
@@ -108,16 +116,22 @@ def process_table(
     existing_cols: set,
 ) -> dict:
     """
-    Add audit columns that are missing.
+    Add and populate whichever audit columns are missing.
 
-    All three columns carry a constant DEFAULT, so no UPDATE pass is needed —
-    existing rows immediately reflect the correct value after the ALTER TABLE.
+    Strategy:
+      • All missing columns → single ALTER TABLE (ALGORITHM=INSTANT preferred)
+      • nd_extracted_date / nd_updated_at / nd_ActiveFlag → declared with
+        DEFAULT in the ALTER, so existing rows get the right value immediately
+        with no UPDATE pass needed
+      • nd_auto_increment_id → one UPDATE with @row_num after the ALTER,
+        then an ADD INDEX
     """
-    need_extracted = "nd_extracted_date" not in existing_cols
-    need_updated   = "nd_updated_at"     not in existing_cols
-    need_flag      = "nd_ActiveFlag"     not in existing_cols
+    need_inc      = "nd_auto_increment_id" not in existing_cols
+    need_extracted = "nd_extracted_date"   not in existing_cols
+    need_updated   = "nd_updated_at"       not in existing_cols
+    need_flag      = "nd_ActiveFlag"       not in existing_cols
 
-    if not need_extracted and not need_updated and not need_flag:
+    if not any([need_inc, need_extracted, need_updated, need_flag]):
         logger.info("[%s] All audit columns present — skipping", table_name)
         return {"success": True, "action": "skipped"}
 
@@ -129,6 +143,10 @@ def process_table(
 
             # ── 1. Build ADD COLUMN clauses ───────────────────────────────
             add_clauses = []
+            if need_inc:
+                add_clauses.append(
+                    "ADD COLUMN `nd_auto_increment_id` BIGINT NULL"
+                )
             if need_extracted:
                 add_clauses.append(
                     f"ADD COLUMN `nd_extracted_date` DATETIME "
@@ -160,6 +178,29 @@ def process_table(
                 except Exception:
                     if not algo_hint:
                         raise
+
+            # ── 3. Populate nd_auto_increment_id (single UPDATE) ─────────
+            if need_inc:
+                conn.execute(text("SET @row_num = 0;"))
+                conn.execute(text(
+                    f"UPDATE `{table_name}` "
+                    f"SET `nd_auto_increment_id` = (@row_num := @row_num + 1)"
+                ))
+
+            # ── 4. Add index for nd_auto_increment_id ─────────────────────
+            if need_inc:
+                try:
+                    conn.execute(text(
+                        f"ALTER TABLE `{table_name}` "
+                        f"ADD INDEX `idx_nd_auto_increment_id` "
+                        f"(`nd_auto_increment_id`), ALGORITHM=INPLACE"
+                    ))
+                except Exception:
+                    conn.execute(text(
+                        f"ALTER TABLE `{table_name}` "
+                        f"ADD INDEX `idx_nd_auto_increment_id` "
+                        f"(`nd_auto_increment_id`)"
+                    ))
 
             conn.execute(text("SET sql_log_bin      = 1;"))
             conn.execute(text("SET sql_safe_updates = 1;"))
@@ -283,7 +324,10 @@ def run(
 # ============================
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Add nd_extracted_date, nd_updated_at, nd_ActiveFlag to all tables"
+        description=(
+            "Add nd_auto_increment_id, nd_extracted_date, "
+            "nd_updated_at, nd_ActiveFlag to all tables"
+        )
     )
     parser.add_argument(
         "--prod_schema",
@@ -311,7 +355,10 @@ def parse_args():
 
 def main():
     args = parse_args()
-    for flag, val in [("--extracted_date", args.extracted_date), ("--updated_at", args.updated_at)]:
+    for flag, val in [
+        ("--extracted_date", args.extracted_date),
+        ("--updated_at", args.updated_at),
+    ]:
         try:
             datetime.strptime(val, "%Y-%m-%d")
         except ValueError:
@@ -319,7 +366,7 @@ def main():
             sys.exit(1)
 
     logger.info(
-        "init_nd_date_flag_columns | schema=%s | extracted_date=%s | updated_at=%s | workers=%d",
+        "init_all_nd_columns | schema=%s | extracted_date=%s | updated_at=%s | workers=%d",
         args.prod_schema, args.extracted_date, args.updated_at, args.max_workers,
     )
     run(args.prod_schema, args.extracted_date, args.updated_at, args.max_workers)
