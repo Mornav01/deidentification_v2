@@ -18,6 +18,9 @@ from typing import Iterator, List, Dict
 from pydantic import validate_call
 
 
+_MYSQL_ZERO_DATES = frozenset({"0000-00-00", "0000-00-00 00:00:00"})
+
+
 def _normalize_value(v):
     """Convert Python objects that Polars can't handle uniformly to plain scalars."""
     if v is None:
@@ -33,63 +36,17 @@ def _normalize_value(v):
             return v.decode("utf-8", errors="replace")
         except Exception:
             return str(v)
+    # MySQL returns invalid dates (e.g. 0000-00-00) as strings; treat as NULL
+    if isinstance(v, str) and v in _MYSQL_ZERO_DATES:
+        return None
     return v
 
 
-# Per-column normalizers: only convert columns that need it
-_NORMALIZERS = {
-    datetime.datetime: lambda v: v.isoformat(sep=" "),
-    datetime.date: lambda v: v.isoformat(),
-    decimal.Decimal: float,
-    bytes: lambda v: v.decode("utf-8", errors="replace"),
-}
-
-# Cache: table_name -> {col_idx: normalizer_fn}  (populated on first batch)
-_COLUMN_TYPE_CACHE: dict[str, dict[int, object]] = {}
-
-
-def _detect_column_normalizers(rows, table_name: str = "") -> dict[int, object]:
-    """Inspect first non-None value per column; return map of col_idx -> normalizer."""
-    if table_name and table_name in _COLUMN_TYPE_CACHE:
-        return _COLUMN_TYPE_CACHE[table_name]
-
-    if not rows:
-        return {}
-
-    col_normalizers: dict[int, object] = {}
-    n_cols = len(rows[0])
-    for col_idx in range(n_cols):
-        for row in rows:
-            val = row[col_idx]
-            if val is not None:
-                norm = _NORMALIZERS.get(type(val))
-                if norm is not None:
-                    col_normalizers[col_idx] = norm
-                break
-
-    if table_name:
-        _COLUMN_TYPE_CACHE[table_name] = col_normalizers
-    return col_normalizers
-
-
 def _normalize_rows(rows, table_name: str = "") -> list:
-    """Normalize only columns that need it, using per-column type detection."""
+    """Normalize every cell so Polars receives uniform, native-Python scalars."""
     if not rows:
         return []
-
-    col_normalizers = _detect_column_normalizers(rows, table_name)
-    if not col_normalizers:
-        return [list(row) for row in rows]
-
-    result = []
-    for row in rows:
-        new_row = list(row)
-        for col_idx, normalizer in col_normalizers.items():
-            val = new_row[col_idx]
-            if val is not None and not isinstance(val, str):
-                new_row[col_idx] = normalizer(val)
-        result.append(new_row)
-    return result
+    return [[_normalize_value(v) for v in row] for row in rows]
 
 
 def _parse_mssql_table_ref(table_name: str, default_schema: str = "dbo") -> tuple[str | None, str]:
@@ -256,7 +213,7 @@ def stream_table_paginated(
         chunk_end = min(chunk_start + page_size - 1, max_id)
         with handler.engine.connect() as conn:
             result = conn.execute(query, {"start": chunk_start, "end": chunk_end})
-            columns = list(result.keys())
+            columns = [c.lower() for c in result.keys()]
             rows = result.fetchall()
         if rows:
             yield pl.DataFrame(
@@ -966,7 +923,7 @@ class NDDBHandler:
                 max_row_buffer=batch_size,
             )
             result = conn.execute(query, {"start_id": start_id, "end_id": end_id})
-            columns = list(result.keys())
+            columns = [c.lower() for c in result.keys()]
             while True:
                 rows = result.fetchmany(batch_size)
                 if not rows:
@@ -1001,7 +958,7 @@ class NDDBHandler:
                 max_row_buffer=batch_size,
             )
             result = conn.execute(query)
-            columns = list(result.keys())
+            columns = [c.lower() for c in result.keys()]
             while True:
                 rows = result.fetchmany(batch_size)
                 if not rows:

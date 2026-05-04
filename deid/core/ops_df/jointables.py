@@ -1,6 +1,7 @@
 import polars as pl
 from sqlalchemy import select
 from deid.core.dbPkg import NDDBHandler
+from deid.core.dbPkg.dbhandler import _normalize_rows
 from deid.core.logger import nd_logger
 
 
@@ -72,16 +73,17 @@ class ReferenceMappingDataFrameJoiner:
                     stmt = stmt.where(active_flag_filter)
                 result = conn.execute(stmt)
                 if col_names is None:
-                    col_names = list(result.keys())
+                    col_names = [c.lower() for c in result.keys()]
                 rows.extend(result.fetchall())
 
         if not rows or col_names is None:
             return pl.DataFrame(schema={c: pl.Utf8 for c in (col_names or columns)})
 
         ref_df = pl.DataFrame(
-            [list(r) for r in rows],
+            _normalize_rows(rows),
             schema=col_names,
             orient="row",
+            infer_schema_length=len(rows),
         ).unique(subset=columns)
         return ref_df
 

@@ -102,30 +102,23 @@ def _preload_mappings(app: Celery) -> None:
                 probe = conn.execute(text(
                     f"SELECT * FROM {table_name} WHERE nd_ActiveFlag = 'Y'"
                 ))
-                return list(probe.keys()), probe.fetchall()
+                return [c.lower() for c in probe.keys()], probe.fetchall()
             except Exception:
                 _preload_logger.info(
                     "nd_ActiveFlag not found in %s — loading without filter", table_name
                 )
         result = conn.execute(text(f"SELECT * FROM {table_name}"))
-        return list(result.keys()), result.fetchall()
+        return [c.lower() for c in result.keys()], result.fetchall()
 
-    from datetime import date as _date, datetime as _datetime
+    from deid.core.dbPkg.dbhandler import _normalize_rows
 
     def _to_df(cols: list, rows: list) -> "pl.DataFrame":
-        """Build a Polars DataFrame from SQLAlchemy rows.
-
-        Column-dict construction (instead of orient="row") lets Polars process
-        each column as a whole, so it correctly resolves columns that are all-None
-        in the first N rows.  date → datetime normalisation avoids a type conflict
-        when a table mixes SQL DATE and DATETIME columns.
-        """
-        def _norm(v):
-            # MySQL DATE → Python date; Polars needs datetime for mixed columns.
-            return _datetime(v.year, v.month, v.day) if (isinstance(v, _date) and not isinstance(v, _datetime)) else v
-
-        data = {col: [_norm(row[i]) for row in rows] for i, col in enumerate(cols)}
-        return pl.DataFrame(data, infer_schema_length=None)
+        return pl.DataFrame(
+            _normalize_rows(rows),
+            schema=cols,
+            orient="row",
+            infer_schema_length=len(rows),
+        )
 
     try:
         with engine.connect() as conn:
@@ -151,7 +144,7 @@ def _preload_mappings(app: Celery) -> None:
             pii_engine = create_read_only_engine(cfg.pii_db["master_connection_str"])
             with pii_engine.connect() as conn:
                 result = conn.execute(text("SELECT * FROM pii_data_table"))
-                cols = list(result.keys())
+                cols = [c.lower() for c in result.keys()]
                 rows = result.fetchall()
                 if rows:
                     _preloaded_data["pii_data_table"] = _to_df(cols, rows)

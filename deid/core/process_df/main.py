@@ -165,7 +165,7 @@ class PatientIdentifierResolver:
 def _sql_result_to_polars(result) -> pl.DataFrame:
     """Convert a SQLAlchemy CursorResult to a Polars DataFrame."""
     rows = result.fetchall()
-    columns = list(result.keys())
+    columns = [c.lower() for c in result.keys()]
     if not rows:
         return pl.DataFrame(schema={c: pl.Utf8 for c in columns})
     return pl.DataFrame(
