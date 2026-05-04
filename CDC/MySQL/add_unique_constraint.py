@@ -3,7 +3,7 @@
 Add Unique Constraint Script
 
 This script adds UNIQUE constraint on nd_auto_increment_id column for all tables in a schema.
-If duplicates exist, it deduplicates them first (keeping the oldest record based on nd_created_at).
+If duplicates exist, it deduplicates them first (keeping the oldest record based on nd_extracted_date).
 
 Usage:
     python add_unique_constraint.py --schema "deidentified"
@@ -94,7 +94,7 @@ def check_unique_exists(conn, schema: str, table_name: str) -> bool:
 
 def deduplicate_keep_one(conn, schema: str, table_name: str) -> int:
     """
-    Deduplicate rows by keeping the oldest record (based on nd_created_at) for each nd_auto_increment_id.
+    Deduplicate rows by keeping the oldest record (based on nd_extracted_date) for each nd_auto_increment_id.
     
     Args:
         conn: Database connection
@@ -107,42 +107,42 @@ def deduplicate_keep_one(conn, schema: str, table_name: str) -> int:
     try:
         logger.info(f"🧹 Deduplicating `{schema}`.`{table_name}`")
         
-        # Check if nd_created_at column exists
+        # Check if nd_extracted_date column exists
         has_created_at = conn.execute(
             text("""
                 SELECT 1
                 FROM information_schema.COLUMNS
                 WHERE TABLE_SCHEMA = :schema
                   AND TABLE_NAME = :table
-                  AND COLUMN_NAME = 'nd_created_at'
+                  AND COLUMN_NAME = 'nd_extracted_date'
                 LIMIT 1
             """),
             {"schema": schema, "table": table_name}
         ).fetchone()
         
         if not has_created_at:
-            logger.warning(f"⚠️ Table `{schema}`.`{table_name}`: 'nd_created_at' column not found. Skipping deduplication.")
+            logger.warning(f"⚠️ Table `{schema}`.`{table_name}`: 'nd_extracted_date' column not found. Skipping deduplication.")
             return 0
         
         # Disable safe updates for deletion
         conn.execute(text("SET sql_safe_updates = 0"))
         
-        # Delete duplicates, keeping the oldest record (lowest nd_created_at)
+        # Delete duplicates, keeping the oldest record (lowest nd_extracted_date)
         sql = text(f"""
             DELETE t
             FROM `{schema}`.`{table_name}` t
             JOIN (
                 SELECT
                     nd_auto_increment_id,
-                    nd_created_at,
+                    nd_extracted_date,
                     ROW_NUMBER() OVER (
                         PARTITION BY nd_auto_increment_id
-                        ORDER BY nd_created_at
+                        ORDER BY nd_extracted_date
                     ) AS rn
                 FROM `{schema}`.`{table_name}`
             ) d
             ON t.nd_auto_increment_id = d.nd_auto_increment_id
-            AND t.nd_created_at = d.nd_created_at
+            AND t.nd_extracted_date = d.nd_extracted_date
             WHERE d.rn > 1
         """)
         
