@@ -253,7 +253,9 @@ def worker_parse(binlog_path, p0_tables_set, queue, run_date, end_date=None):
     current_schema = None
     current_op = None
     current_row_based_table = None
-    current_data = {}
+    current_where = {}   # before-image: UPDATE WHERE columns
+    current_set   = {}   # after-image:  INSERT/UPDATE SET columns
+    row_section   = None # "WHERE" | "SET" | None
     current_pos = 0
  
     matched_events = 0
@@ -379,7 +381,20 @@ def worker_parse(binlog_path, p0_tables_set, queue, run_date, end_date=None):
         # ------------------------------
         m_insert = RE_ROW_INSERT.match(line)
         if m_insert:
+            # Flush any pending row before starting the next one (multi-row events)
+            if current_op and current_set and current_row_based_table:
+                if p0_tables_set is None or current_row_based_table in p0_tables_set:
+                    matched_events += 1
+                    if current_op == "UPDATE":
+                        record = {"format": "row_update", "where": current_where, "set": current_set}
+                    else:
+                        record = {"format": "row", "data": current_set}
+                    queue.put((current_row_based_table, current_op, json_dumps(record), binlog_basename, current_pos))
+
             current_op = "INSERT"
+            current_where = {}
+            current_set   = {}
+            row_section   = None
             # Extract schema and table - handle both backtick and non-backtick formats
             groups = m_insert.groups()
             if groups[0] and groups[1]:  # Backtick format: `schema`.`table`
@@ -391,7 +406,7 @@ def worker_parse(binlog_path, p0_tables_set, queue, run_date, end_date=None):
             else:
                 schema_from_line = None
                 current_row_based_table = None
-                
+
             # If we don't have a current_schema yet, use the one from the line
             if schema_from_line and current_schema is None:
                 current_schema = schema_from_line
@@ -399,7 +414,20 @@ def worker_parse(binlog_path, p0_tables_set, queue, run_date, end_date=None):
  
         m_update = RE_ROW_UPDATE.match(line)
         if m_update:
+            # Flush any pending row before starting the next one (multi-row events)
+            if current_op and current_set and current_row_based_table:
+                if p0_tables_set is None or current_row_based_table in p0_tables_set:
+                    matched_events += 1
+                    if current_op == "UPDATE":
+                        record = {"format": "row_update", "where": current_where, "set": current_set}
+                    else:
+                        record = {"format": "row", "data": current_set}
+                    queue.put((current_row_based_table, current_op, json_dumps(record), binlog_basename, current_pos))
+
             current_op = "UPDATE"
+            current_where = {}
+            current_set   = {}
+            row_section   = None
             # Extract schema and table - handle both backtick and non-backtick formats
             groups = m_update.groups()
             if groups[0] and groups[1]:  # Backtick format: `schema`.`table`
@@ -411,7 +439,7 @@ def worker_parse(binlog_path, p0_tables_set, queue, run_date, end_date=None):
             else:
                 schema_from_line = None
                 current_row_based_table = None
-                
+
             # If we don't have a current_schema yet, use the one from the line
             if schema_from_line and current_schema is None:
                 current_schema = schema_from_line
@@ -422,36 +450,46 @@ def worker_parse(binlog_path, p0_tables_set, queue, run_date, end_date=None):
             current_row_based_table = t_match.group(1)
             continue
  
-        # Column lines: ### @1=...
+        # Row section headers — set routing flag for subsequent @N=val lines
+        if line.startswith("### WHERE"):
+            row_section = "WHERE"
+            continue
+        if line.startswith("### SET"):
+            row_section = "SET"
+            continue
+
+        # Column lines: ###   @1=...
         if line.startswith("###   @"):
             kv = line[7:].split("=", 1)
             if len(kv) == 2:
-                current_data[kv[0]] = kv[1].strip()
+                if row_section == "WHERE":
+                    current_where[kv[0]] = kv[1].strip()
+                else:  # "SET" or None (INSERT before SET header seen)
+                    current_set[kv[0]] = kv[1].strip()
             continue
  
         # Event boundary → commit row event
         if line.startswith("### COMMIT") or line.startswith("# at "):
-            if current_schema in whitelist and current_op and current_data:
-                # Check P0 tables for row-based events too if table name is available
-                # Note: current_row_based_table might be just table name or schema.table
-                # Assuming simple table name for now based on regex
-                
-                # If we have a table name, check it
-                if current_row_based_table:
-                    # None means no filter (all tables); otherwise enforce the set
-                    if p0_tables_set is None or current_row_based_table in p0_tables_set:
-                        matched_events += 1
-                        queue.put((
-                            current_row_based_table,
-                            current_op,
-                            json_dumps(current_data),
-                            binlog_basename,
-                            current_pos
-                        ))
- 
+            if current_schema in whitelist and current_op and current_set and current_row_based_table:
+                if p0_tables_set is None or current_row_based_table in p0_tables_set:
+                    matched_events += 1
+                    if current_op == "UPDATE":
+                        record = {"format": "row_update", "where": current_where, "set": current_set}
+                    else:
+                        record = {"format": "row", "data": current_set}
+                    queue.put((
+                        current_row_based_table,
+                        current_op,
+                        json_dumps(record),
+                        binlog_basename,
+                        current_pos,
+                    ))
+
             current_op = None
             current_row_based_table = None
-            current_data = {}
+            current_where = {}
+            current_set   = {}
+            row_section   = None
  
     # Wait for mysqlbinlog to finish
     _, stderr = proc.communicate()

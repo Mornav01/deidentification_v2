@@ -21,7 +21,63 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Compiled once — avoids redundant recompilation for every CDC row
-_RE_VALUES = re.compile(r"\)\s*VALUES\s*\(", re.IGNORECASE)
+_RE_VALUES   = re.compile(r"\)\s*VALUES\s*\(", re.IGNORECASE)
+def _strip_binlog_meta(val: str) -> str:
+    """
+    Strip the mysqlbinlog inline type comment from a raw column value.
+    Uses rfind so that /* ... */ sequences inside string values are preserved.
+    e.g. '123 /* INT meta=0 */' → '123'
+         "'SELECT /* hint */ FROM t' /* VARSTRING */" → "'SELECT /* hint */ FROM t'"
+    """
+    idx = val.rfind(" /*")
+    if idx != -1 and val.rstrip().endswith("*/"):
+        return val[:idx].strip()
+    return val.strip()
+
+
+def _map_ordinals(ordinal_dict: dict, cols: list) -> list[tuple[str, str]]:
+    """Convert {'1': raw_val, '2': raw_val, ...} → [(col_name, clean_val), ...]."""
+    result = []
+    for str_idx, raw_val in sorted(
+        ((k, v) for k, v in ordinal_dict.items() if k.isdigit()),
+        key=lambda x: int(x[0]),
+    ):
+        idx = int(str_idx)
+        if 1 <= idx <= len(cols):
+            result.append((cols[idx - 1], _strip_binlog_meta(raw_val)))
+    return result
+
+
+def _reconstruct_row_insert(table_name: str, data: dict, table_columns: dict) -> str | None:
+    """
+    Build an INSERT SQL from row-based CDC data {"1": val, "2": val, ...}.
+    Output is compatible with detect_insert_format / parse_values_format.
+    """
+    cols = table_columns.get(table_name.lower(), [])
+    if not cols:
+        return None
+    col_vals = _map_ordinals(data, cols)
+    if not col_vals:
+        return None
+    col_list = ", ".join(f"`{c}`" for c, _ in col_vals)
+    val_list = ", ".join(v for _, v in col_vals)
+    return f"INSERT INTO `{table_name}` ({col_list}) VALUES ({val_list})"
+
+
+def _reconstruct_row_update(table_name: str, where_data: dict, set_data: dict, table_columns: dict) -> str | None:
+    """
+    Build an UPDATE SQL from row-based CDC data with separate WHERE/SET images.
+    """
+    cols = table_columns.get(table_name.lower(), [])
+    if not cols:
+        return None
+    set_pairs   = _map_ordinals(set_data,   cols)
+    where_pairs = _map_ordinals(where_data, cols)
+    if not set_pairs or not where_pairs:
+        return None
+    set_clause   = ", ".join(f"`{c}` = {v}" for c, v in set_pairs)
+    where_clause = " AND ".join(f"`{c}` = {v}" for c, v in where_pairs)
+    return f"UPDATE `{table_name}` SET {set_clause} WHERE {where_clause}"
 
 # All audit columns added/ensured on every CDC-touched staging table
 _ALTER_COLS = [
@@ -790,7 +846,34 @@ def process_table(
         ):
             row_table = row[1]
             op        = row[2]
-            sql       = json.loads(row[3])["raw_sql"]
+            _row_data = json.loads(row[3])
+            _fmt      = _row_data.get("format")
+
+            if "raw_sql" in _row_data:
+                # Statement-based event — existing path
+                sql = _row_data["raw_sql"]
+            elif _fmt == "row":
+                # Row-based INSERT (new parser format)
+                sql = _reconstruct_row_insert(row_table, _row_data["data"], table_columns)
+                if sql is None:
+                    stats["errors_row_based_skip"] += 1
+                    continue
+            elif _fmt == "row_update":
+                # Row-based UPDATE with separate WHERE/SET images (new parser format)
+                sql = _reconstruct_row_update(row_table, _row_data["where"], _row_data["set"], table_columns)
+                if sql is None:
+                    stats["errors_row_based_skip"] += 1
+                    continue
+            elif op == "INSERT":
+                # Old-format row-based INSERT: flat {"1": val, "2": val, ...}
+                sql = _reconstruct_row_insert(row_table, _row_data, table_columns)
+                if sql is None:
+                    stats["errors_row_based_skip"] += 1
+                    continue
+            else:
+                # Old-format row-based UPDATE — WHERE image lost, cannot safely reconstruct
+                stats["errors_row_based_skip"] += 1
+                continue
 
             try:
                 if row_table not in nd_counter:
@@ -963,6 +1046,7 @@ def _empty_stats():
         "errors_insert": 0, "errors_insert_select": 0,
         "errors_insert_select_select": 0, "insert_select_no_rows": 0,
         "errors_insert_select_insert": 0, "errors_insert_mismatch": 0,
+        "errors_row_based_skip": 0,
     }
 
 
