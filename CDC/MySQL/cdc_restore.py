@@ -118,10 +118,9 @@ def parse_args():
     )
     parser.add_argument(
         "--source_schema",
-        default=None,
+        default="mobiledoc",
         help=(
-            "Original MySQL schema name used in dump_metadata "
-            "(e.g. 'mobiledoc'). Defaults to prod_schema if not set."
+            "Original MySQL schema name used in dump_metadata (e.g. 'mobiledoc')."
         ),
     )
     return parser.parse_args()
