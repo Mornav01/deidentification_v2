@@ -137,8 +137,10 @@ def _fetch_batch_inner(config: FetchTaskConfig, raw_config: dict, batch_tag: str
 
     # Extract actual ID range for idempotent write DELETE
     if id_col in df.columns:
-        actual_start_id = int(df[id_col].min())
-        actual_end_id = int(df[id_col].max())
+        _min = df[id_col].min()
+        _max = df[id_col].max()
+        actual_start_id = int(_min) if _min is not None else config.start_id
+        actual_end_id = int(_max) if _max is not None else config.end_id
     else:
         actual_start_id = config.start_id
         actual_end_id = config.end_id

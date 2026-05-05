@@ -29,6 +29,7 @@ RULE_DISPATCHER: Dict[str, RuleBase] = {
     Rules.DATE_OFFSET.value: DateOffsetRule,
     Rules.STATIC_OFFSET.value: StaticDateOffsetRule,
     Rules.ZIP_CODE.value: ZIPCodeRule,
+    Rules.DOB.value: PatientDOBRule,
     Rules.PATIENT_DOB.value: PatientDOBRule,
     Rules.GENERIC_NOTES.value: GenericNotesRule,
 }

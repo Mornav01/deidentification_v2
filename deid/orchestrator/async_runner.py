@@ -68,6 +68,56 @@ async def run(config: DeidConfig, config_path: str):
                 "Run `deid mapping --config <config.yaml>` first."
             )
 
+    # ── Validate identifier_columns exist in patient_mapping_table (case-sensitive) ──
+    _pat_cfg = config.mapping_tables.get("patient")
+    _identifier_cols = _pat_cfg.identifier_columns if _pat_cfg else []
+    if _identifier_cols:
+        from sqlalchemy import inspect as _insp_m
+        _mapping_insp = _insp_m(mappings_engine)
+        _actual_mapping_cols = [c["name"] for c in _mapping_insp.get_columns("patient_mapping_table")]
+        _missing_id_cols = [c for c in _identifier_cols if c not in _actual_mapping_cols]
+        if _missing_id_cols:
+            raise SystemExit(
+                f"identifier_columns {_missing_id_cols} not found in patient_mapping_table "
+                f"(case-sensitive). Available columns: {_actual_mapping_cols}. "
+                "Update 'mapping_tables.patient.identifier_columns' in your config to match exactly."
+            )
+
+    # ── Validate PATIENT_* rules in rules CSV match identifier_columns ────────
+    if _identifier_cols:
+        _valid_patient_rules = {f"PATIENT_{c.upper()}" for c in _identifier_cols}
+
+        if config.tables:
+            _invalid_rules = [
+                (t.name, col, rule)
+                for t in config.tables
+                for col, rule in t.rules.items()
+                if rule.startswith("PATIENT_") and rule not in _valid_patient_rules
+            ]
+            if _invalid_rules:
+                raise SystemExit(
+                    f"Rules CSV contains PATIENT_* rules that don't match identifier_columns "
+                    f"{_identifier_cols}.\n"
+                    f"Invalid entries (table, column, rule): {_invalid_rules}\n"
+                    f"Valid PATIENT_* rules are: {sorted(_valid_patient_rules)}"
+                )
+
+        if config.reference_mappings:
+            _invalid_ref = [
+                (tbl, cfg.get("destination_column_type"))
+                for tbl, cfg in config.reference_mappings.items()
+                if isinstance(cfg, dict)
+                and cfg.get("destination_column_type", "").startswith("PATIENT_")
+                and cfg["destination_column_type"] not in _valid_patient_rules
+            ]
+            if _invalid_ref:
+                raise SystemExit(
+                    f"reference_mappings contain destination_column_type values that don't match "
+                    f"identifier_columns {_identifier_cols}.\n"
+                    f"Invalid entries (table, destination_column_type): {_invalid_ref}\n"
+                    f"Valid PATIENT_* values are: {sorted(_valid_patient_rules)}"
+                )
+
     if config.pii_db:
         if not config.pii_config:
             raise SystemExit(
@@ -329,7 +379,11 @@ async def _deidentify_phase(config, state_engine):
     with Session(state_engine) as session:
         table_names_pending = [
             r[0] for r in session.query(BatchState.table_name)
-            .filter_by(status="pending", config_key=config.config_key).distinct().all()
+            .filter(
+                BatchState.status == "pending",
+                BatchState.config_key == config.config_key,
+                BatchState.table_name.in_(configured_table_names),
+            ).distinct().all()
         ]
     for tname in table_names_pending:
         with Session(state_engine) as session:
@@ -353,10 +407,18 @@ async def _deidentify_phase(config, state_engine):
 
     # Resume in-progress batches (fetched -> process, processed -> write)
     with Session(state_engine) as session:
-        for batch in session.query(BatchState).filter_by(status="fetched", config_key=config.config_key).all():
+        for batch in session.query(BatchState).filter(
+            BatchState.status == "fetched",
+            BatchState.config_key == config.config_key,
+            BatchState.table_name.in_(configured_table_names),
+        ).all():
             cfg = _build_process_config(config, batch, staging_root, mappings_conn_str)
             process_batch.apply_async(args=[cfg], queue=f"deid-process-{config.config_key}")
-        for batch in session.query(BatchState).filter_by(status="processed", config_key=config.config_key).all():
+        for batch in session.query(BatchState).filter(
+            BatchState.status == "processed",
+            BatchState.config_key == config.config_key,
+            BatchState.table_name.in_(configured_table_names),
+        ).all():
             cfg = _build_write_config(config, batch, staging_root)
             write_batch.apply_async(args=[cfg], queue=f"deid-write-{config.config_key}-{batch.table_name}")
 
