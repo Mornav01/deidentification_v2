@@ -104,6 +104,43 @@ def prefetch_existing_cols(engine, schema: str, tables: list) -> dict:
 
 
 # ============================
+# ON UPDATE CURRENT_TIMESTAMP removal
+# ============================
+def drop_on_update_constraints(conn, schema: str, table_name: str) -> int:
+    """
+    For every column carrying ON UPDATE CURRENT_TIMESTAMP, redefine it as
+    simply `{type} NULL` — no DEFAULT, no ON UPDATE — so subsequent UPDATEs
+    (e.g. populating nd_auto_increment_id) don't silently overwrite date columns.
+    Returns the number of columns modified.
+    """
+    rows = conn.execute(
+        text("""
+            SELECT COLUMN_NAME, COLUMN_TYPE
+            FROM   INFORMATION_SCHEMA.COLUMNS
+            WHERE  TABLE_SCHEMA = :schema
+              AND  TABLE_NAME   = :table
+              AND  EXTRA        LIKE '%on update%'
+        """),
+        {"schema": schema, "table": table_name},
+    ).fetchall()
+
+    if not rows:
+        return 0
+
+    qualified = f"`{schema}`.`{table_name}`"
+    for col_name, col_type in rows:
+        conn.execute(text(
+            f"ALTER TABLE {qualified} MODIFY COLUMN `{col_name}` {col_type} NULL"
+        ))
+        logger.info(
+            "[%s] Stripped DEFAULT / ON UPDATE CURRENT_TIMESTAMP from `%s` → %s NULL",
+            table_name, col_name, col_type,
+        )
+
+    return len(rows)
+
+
+# ============================
 # Per-table worker
 # ============================
 def process_table(
@@ -139,6 +176,11 @@ def process_table(
             conn.execute(text("SET sql_safe_updates = 0;"))
 
             qualified = f"`{schema}`.`{table_name}`"
+
+            # ── 0. Drop ON UPDATE CURRENT_TIMESTAMP so UPDATEs below don't mutate dates ──
+            n = drop_on_update_constraints(conn, schema, table_name)
+            if n:
+                logger.info("[%s] Cleared ON UPDATE CURRENT_TIMESTAMP from %d column(s)", table_name, n)
 
             # ── 1. Build ADD COLUMN clauses ───────────────────────────────
             add_clauses = []
@@ -256,6 +298,21 @@ def get_all_tables(engine, schema: str) -> list:
     return tables
 
 
+def get_tables_from_cdc(cdc_schema: str, cdc_table: str) -> list:
+    """Return distinct table names that appear in today's CDC change log."""
+    engine = create_engine(_db_url(cdc_schema), pool_recycle=3600, pool_pre_ping=True)
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(f"SELECT DISTINCT table_name FROM `{cdc_schema}`.`{cdc_table}`")
+        ).fetchall()
+    tables = [r[0] for r in rows]
+    logger.info(
+        "Found %d distinct tables in CDC log `%s`.`%s`",
+        len(tables), cdc_schema, cdc_table,
+    )
+    return tables
+
+
 # ============================
 # Core
 # ============================
@@ -263,6 +320,7 @@ def run(
     prod_schema: str,
     extracted_date: str,
     updated_at: str,
+    tables: list,
     max_workers: int = 10,
 ) -> None:
     engine = create_engine(
@@ -273,12 +331,8 @@ def run(
         max_overflow=max_workers,
     )
 
-    # tables = get_all_tables(engine, prod_schema)
-    df = pd.read_csv("/Users/ndaidcnd/Desktop/Air_DEID/airflow-automation/Airflow/input/deid_runner.csv", header=None, names=['table_name'])
-    tables = df['table_name'].to_list()
-
     if not tables:
-        logger.warning("No tables found in schema '%s' — nothing to do", prod_schema)
+        logger.warning("No tables provided — nothing to do")
         return
 
     existing_map = prefetch_existing_cols(engine, prod_schema, tables)
@@ -363,8 +417,19 @@ def parse_args():
     )
     parser.add_argument(
         "--updated_at",
-        default="2026-04-17",
-        help="Value for nd_updated_at YYYY-MM-DD (default: 2026-04-17)",
+        required=True,
+        help="Value for nd_updated_at YYYY-MM-DD (e.g. today's run_date)",
+    )
+    parser.add_argument(
+        "--cdc_schema",
+        default="cdc",
+        help="CDC schema (e.g. 'cdc'). When provided with --cdc_table, tables are "
+             "sourced from the change log instead of INFORMATION_SCHEMA.",
+    )
+    parser.add_argument(
+        "--cdc_table",
+        default=None,
+        help="CDC change log table name (e.g. 'change_log_05052026').",
     )
     parser.add_argument(
         "--max_workers",
@@ -391,7 +456,16 @@ def main():
         "init_all_nd_columns | schema=%s | extracted_date=%s | updated_at=%s | workers=%d",
         args.prod_schema, args.extracted_date, args.updated_at, args.max_workers,
     )
-    run(args.prod_schema, args.extracted_date, args.updated_at, args.max_workers)
+
+    if args.cdc_schema and args.cdc_table:
+        logger.info("Table source: CDC log `%s`.`%s`", args.cdc_schema, args.cdc_table)
+        tables = get_tables_from_cdc(args.cdc_schema, args.cdc_table)
+    else:
+        logger.info("Table source: INFORMATION_SCHEMA (all base tables in '%s')", args.prod_schema)
+        engine = create_engine(_db_url(args.prod_schema), pool_recycle=3600, pool_pre_ping=True)
+        tables = get_all_tables(engine, args.prod_schema)
+
+    run(args.prod_schema, args.extracted_date, args.updated_at, tables, args.max_workers)
 
 
 if __name__ == "__main__":
