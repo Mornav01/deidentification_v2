@@ -1179,6 +1179,8 @@ def run_restore(run_date, cdc_table, staging_schema, prod_schema, output_dir, ma
     # Parallel dispatch — one worker per table, up to max_workers at once
     # ------------------------------------------------------------------
     all_tables    = [row[0] for row in tables_statements if row[0].lower() not in new_tables_set]
+    # df = pd.read_csv("/Users/ndaidcnd/Desktop/Air_DEID/airflow-automation/Airflow/input/deid_runner.csv", header=None, names=['table_name'])
+    # all_tables = df['table_name'].to_list()
     combined_stats = _empty_stats()
     all_failed_cases = []
 

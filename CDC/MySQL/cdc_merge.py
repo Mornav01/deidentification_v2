@@ -59,7 +59,7 @@ def parse_args():
     parser.add_argument(
         "--max_workers",
         type=int,
-        default=None,
+        default=10,
         help="Number of merge worker processes (default: auto-detected)",
     )
     return parser.parse_args()
@@ -308,7 +308,8 @@ def main():
 
     # Discover tables
     tables = discover_staging_tables(staging_engine)
-    # tables = ['ccmr_visits_addldata']
+    # df = pd.read_csv("/Users/ndaidcnd/Desktop/Air_DEID/airflow-automation/Airflow/input/deid_runner.csv", header=None, names=['table_name'])
+    # tables = df['table_name'].to_list()
 
     if not tables:
         logger.info("No staging tables found")

@@ -171,7 +171,6 @@ def process_table(
 
     try:
         with engine.begin() as conn:
-            conn.execute(text("SET sql_log_bin      = 0;"))
             conn.execute(text("SET SESSION sql_mode = '';"))
             conn.execute(text("SET sql_safe_updates = 0;"))
 
@@ -262,7 +261,6 @@ def process_table(
                 ))
                 logger.info("[%s] Filled NULL nd_ActiveFlag", table_name)
 
-            conn.execute(text("SET sql_log_bin      = 1;"))
             conn.execute(text("SET sql_safe_updates = 1;"))
 
         logger.info("[%s] Done", table_name)
@@ -270,11 +268,6 @@ def process_table(
 
     except Exception as e:
         logger.error("[%s] Error: %s", table_name, e)
-        try:
-            with engine.connect() as conn:
-                conn.execute(text("SET sql_log_bin = 1;"))
-        except Exception:
-            pass
         return {"success": False, "action": "error"}
 
 
@@ -464,6 +457,8 @@ def main():
         logger.info("Table source: INFORMATION_SCHEMA (all base tables in '%s')", args.prod_schema)
         engine = create_engine(_db_url(args.prod_schema), pool_recycle=3600, pool_pre_ping=True)
         tables = get_all_tables(engine, args.prod_schema)
+    # df = pd.read_csv("/Users/ndaidcnd/Desktop/Air_DEID/airflow-automation/Airflow/input/deid_runner.csv", header=None, names=['table_name'])
+    # tables = df['table_name'].to_list()
 
     run(args.prod_schema, args.extracted_date, args.updated_at, tables, args.max_workers)
 
