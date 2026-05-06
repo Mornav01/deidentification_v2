@@ -1,0 +1,848 @@
+import os
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import SQLAlchemyError
+import pandas as pd
+from datetime import datetime
+from collections import defaultdict
+import json
+try:
+    import regex as re  # type: ignore[no-redef]
+except ImportError:
+    pass  # stdlib re already available
+import argparse
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pydantic import validate_call
+
+# ============================
+# Logging
+# ============================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
+# Compiled once — avoids redundant recompilation for every CDC row
+_RE_VALUES = re.compile(r"(?i)\)\s*VALUES\s*\(")
+
+# All audit columns added/ensured on every CDC-touched staging table
+_ALTER_COLS = [
+    ("nd_auto_increment_id", "BIGINT DEFAULT NULL"),
+    ("nd_created_at",        "DATETIME DEFAULT NULL"),
+    ("nd_updated_at",        "DATETIME DEFAULT NULL"),
+    ("nd_operation",         "VARCHAR(100)"),
+]
+
+
+# ============================
+# CLI
+# ============================
+@validate_call(config=dict(arbitrary_types_allowed=True))
+def parse_args():
+    """
+    Parse command-line arguments for CDC restore.
+
+    Example:
+        python cdc_restore.py --run_date "2025-10-12" --table_name "change_log" \
+            --staging_schema "mobiledoc_staging" --prod_schema "mobiledoc_oct"
+    """
+    parser = argparse.ArgumentParser(description="CDC restore: apply CDC change log into staging schema")
+    parser.add_argument("--run_date",       required=True, help="Run date in YYYY-MM-DD format")
+    parser.add_argument("--table_name",     required=True, help='CDC change-log table name (e.g. "change_log")')
+    parser.add_argument("--staging_schema", required=True, help='Target staging schema (e.g. "mobiledoc_staging")')
+    parser.add_argument("--prod_schema",    required=True, help='Source prod schema (e.g. "mobiledoc_oct")')
+    parser.add_argument(
+        "--output_dir",
+        default=os.path.dirname(os.path.abspath(__file__)),
+        help="Directory for the failed_cases CSV (default: script directory)",
+    )
+    parser.add_argument(
+        "--max_workers",
+        type=int,
+        default=10,
+        help="Number of tables to process in parallel (default: 5)",
+    )
+    return parser.parse_args()
+
+
+# ============================
+# DB helpers
+# ============================
+@validate_call(config=dict(arbitrary_types_allowed=True))
+def _db_url(schema: str) -> str:
+    """Build a MySQL connection URL. Override via DB_USER / DB_PASS / DB_HOST / DB_PORT env vars."""
+    user     = os.environ.get("DB_USER", "ndadmin")
+    password = os.environ.get("DB_PASS")
+    if not password:
+        raise ValueError("DB_PASS environment variable is required and must not be empty")
+    host     = os.environ.get("DB_HOST", "localhost")
+    port     = os.environ.get("DB_PORT", "3306")
+    return f"mysql+pymysql://{user}:{password}@{host}:{port}/{schema}"
+
+
+@validate_call(config=dict(arbitrary_types_allowed=True))
+def stream_cdc_data(engine, table_name, batch_size=10000):
+    """
+    Yield rows from the CDC table in ID-ordered chunks.
+    Prevents memory exhaustion and long-running transaction timeouts.
+    """
+    with engine.connect() as conn:
+        total_rows = conn.execute(text(f"SELECT COUNT(*) FROM {table_name}")).scalar()
+    logger.info("Starting stream: %s rows from CDC table %s", f"{total_rows:,}", table_name)
+
+    last_id = 0
+    query = text(f"""
+        SELECT * FROM {table_name}
+        WHERE id > :last_id
+        ORDER BY id ASC
+        LIMIT :limit
+    """)
+
+    while True:
+        with engine.connect() as conn:
+            result = conn.execute(query, {"last_id": last_id, "limit": batch_size}).fetchall()
+
+        if not result:
+            break
+
+        for row in result:
+            yield row
+            last_id = row.id
+
+        logger.info("Progress: %s rows streamed", f"{last_id:,}")
+
+
+@validate_call(config=dict(arbitrary_types_allowed=True))
+def stream_cdc_data_for_table(engine, cdc_table, target_table, batch_size=10000):
+    """
+    Yield CDC rows for a single target_table in ID-ordered chunks.
+    Used by parallel workers so each thread only pulls its own table's events.
+    """
+    with engine.connect() as conn:
+        total_rows = conn.execute(
+            text(f"SELECT COUNT(*) FROM {cdc_table} WHERE table_name = :tname"),
+            {"tname": target_table},
+        ).scalar()
+    logger.info("[%s] %s CDC rows to process", target_table, f"{total_rows:,}")
+
+    last_id = 0
+    query = text(f"""
+        SELECT * FROM {cdc_table}
+        WHERE id > :last_id
+          AND table_name = :tname
+        ORDER BY id ASC
+        LIMIT :limit
+    """)
+
+    while True:
+        with engine.connect() as conn:
+            result = conn.execute(
+                query, {"last_id": last_id, "limit": batch_size, "tname": target_table}
+            ).fetchall()
+
+        if not result:
+            break
+
+        for row in result:
+            yield row
+            last_id = row.id
+
+        logger.info("[%s] Progress: %s rows streamed", target_table, f"{last_id:,}")
+
+
+# ============================
+# SQL parsing
+# ============================
+@validate_call(config=dict(arbitrary_types_allowed=True))
+def detect_insert_format(sql: str):
+    s = sql.upper()
+    if _RE_VALUES.search(s):
+        return "VALUES"
+    if " SET " in s:
+        return "SET"
+    if "INSERT INTO" in s and "SELECT" in s and "VALUES" not in s and " SET " not in s:
+        return "INSERT_SELECT"
+    return None
+
+
+@validate_call(config=dict(arbitrary_types_allowed=True))
+def find_matching_paren(s, start_index):
+    """
+    Return the index of the closing parenthesis that matches s[start_index],
+    skipping parentheses inside single-quoted strings.
+    """
+    depth = 0
+    inside_quotes = False
+    escaped = False
+
+    for i in range(start_index, len(s)):
+        ch = s[i]
+
+        if ch == "\\" and not escaped:
+            escaped = True
+            continue
+
+        if ch == "'" and not escaped:
+            inside_quotes = not inside_quotes
+
+        if inside_quotes:
+            escaped = False
+            continue
+
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+
+        escaped = False
+
+    raise ValueError("Unbalanced parentheses")
+
+
+@validate_call(config=dict(arbitrary_types_allowed=True))
+def parse_values_format(sql):
+    sql = sql.strip().rstrip(";")
+    upper = sql.upper()
+
+    col_start   = upper.find("(")
+    col_end     = find_matching_paren(sql, col_start)
+    columns_raw = sql[col_start + 1:col_end].strip()
+
+    val_start  = upper.find("VALUES")
+    val_start  = upper.find("(", val_start)
+    val_end    = find_matching_paren(sql, val_start)
+    values_raw = sql[val_start + 1:val_end].strip()
+
+    columns = [c.strip().strip("`") for c in columns_raw.split(",")]
+
+    values = []
+    current = ""
+    depth = 0
+    inside_quotes = False
+    escaped = False
+
+    for ch in values_raw:
+        if ch == "\\" and not escaped:
+            escaped = True
+            current += ch
+            continue
+
+        if ch == "'" and not escaped:
+            inside_quotes = not inside_quotes
+            current += ch
+            continue
+
+        if ch == "(" and not inside_quotes:
+            depth += 1
+            current += ch
+            continue
+
+        if ch == ")" and not inside_quotes:
+            depth -= 1
+            current += ch
+            continue
+
+        if ch == "," and depth == 0 and not inside_quotes:
+            values.append(current.strip())
+            current = ""
+            escaped = False
+            continue
+
+        current += ch
+        escaped = False
+
+    if current:
+        values.append(current.strip())
+
+    return columns, values
+
+
+@validate_call(config=dict(arbitrary_types_allowed=True))
+def parse_set_format(sql):
+    upper = sql.upper()
+    set_pos = upper.find(" SET ")
+    if set_pos == -1:
+        raise ValueError("SET keyword not found")
+
+    segment = sql[set_pos + len(" SET "):].strip()
+
+    tokens = []
+    current = ""
+    inside_quotes = False
+    escaped = False
+
+    for ch in segment:
+        if ch == "\\" and not escaped:
+            escaped = True
+            current += ch
+            continue
+
+        if ch == "'" and not escaped:
+            inside_quotes = not inside_quotes
+            current += ch
+            continue
+
+        if ch == "," and not inside_quotes:
+            tokens.append(current.strip())
+            current = ""
+        else:
+            current += ch
+
+        escaped = False
+
+    if current:
+        tokens.append(current.strip())
+
+    columns, values = [], []
+    for tok in tokens:
+        if "=" in tok:
+            key, val = tok.split("=", 1)
+        elif ":" in tok:
+            key, val = tok.split(":", 1)
+        else:
+            continue
+
+        key = key.strip()
+        val = val.strip()
+
+        if val.lower() == "null":
+            val = "NULL"
+        if val.startswith("\\'") and val.endswith("\\'"):
+            val = "'" + val[2:-2] + "'"
+
+        columns.append(key)
+        values.append(val)
+
+    return columns, values
+
+
+@validate_call(config=dict(arbitrary_types_allowed=True))
+def remove_generated_columns(table_name, columns, values, generated_cols):
+    gen_set = generated_cols.get(table_name.lower())
+    if not gen_set:
+        return columns, values
+
+    cleaned_cols, cleaned_vals = [], []
+    for c, v in zip(columns, values):
+        if c not in gen_set:
+            cleaned_cols.append(c)
+            cleaned_vals.append(v)
+
+    return cleaned_cols, cleaned_vals
+
+
+@validate_call(config=dict(arbitrary_types_allowed=True))
+def convert_update_join_to_select(sql):
+    lower = sql.lower()
+
+    update_pos   = lower.find("update")
+    set_pos      = lower.find(" set ")
+    update_block = sql[update_pos + len("update"):set_pos].strip()
+    tokens       = update_block.split()
+    base_table   = tokens[0]
+
+    if len(tokens) > 1 and tokens[1].lower() not in ("left", "right", "inner", "join"):
+        alias = tokens[1]
+    else:
+        alias = base_table
+
+    where_pos    = lower.rfind(" where ")
+    where_clause = sql[where_pos:] if where_pos != -1 else ""
+
+    return f"SELECT {alias}.* FROM {update_block} {where_clause}".strip()
+
+
+@validate_call(config=dict(arbitrary_types_allowed=True))
+def parse_insert_select(sql: str):
+    sql = sql.strip().rstrip(";")
+    lower = sql.lower()
+
+    insert_pos = lower.find("insert into")
+    if insert_pos == -1:
+        raise ValueError("Not an INSERT INTO statement")
+
+    col_start = sql.find("(", insert_pos)
+    if col_start == -1:
+        raise ValueError("Column list not found")
+
+    col_end = find_matching_paren(sql, col_start)
+
+    header      = sql[insert_pos + len("insert into"):col_start].strip()
+    table_name  = header.split()[0]
+    insert_cols = [c.strip(" `") for c in sql[col_start + 1:col_end].split(",")]
+    select_sql  = sql[col_end + 1:].strip()
+
+    return table_name, insert_cols, select_sql
+
+
+# ============================
+# Enrichment helpers
+# ============================
+@validate_call(config=dict(arbitrary_types_allowed=True))
+def _build_enriched_insert(table_name, prod_data, table_columns, generated_cols, op):
+    """
+    Strip generated columns from prod rows and append audit fields.
+    Returns (insert_sql, enriched_rows, insert_columns).
+    Called by both JOIN and non-JOIN UPDATE paths — no duplication.
+    """
+    all_cols = list(table_columns[table_name.lower()])
+    gen_cols = generated_cols.get(table_name.lower(), set())
+    drop_idx = {i for i, col in enumerate(all_cols) if col in gen_cols}
+
+    insert_columns = [col for i, col in enumerate(all_cols) if i not in drop_idx]
+    add_audit = "nd_created_at" not in insert_columns
+
+    if add_audit:
+        insert_columns.extend(["nd_created_at", "nd_updated_at", "nd_operation"])
+        idx_created = idx_updated = idx_op = None
+    else:
+        idx_created = insert_columns.index("nd_created_at")
+        idx_updated = insert_columns.index("nd_updated_at")
+        idx_op      = insert_columns.index("nd_operation")
+
+    now = datetime.now()
+    enriched_data = []
+
+    for row_data in prod_data:
+        cleaned = [v for i, v in enumerate(row_data) if i not in drop_idx]
+
+        if add_audit:
+            cleaned.extend([now, now, op])
+        else:
+            try:
+                if cleaned[idx_created] is None:
+                    cleaned[idx_created] = now
+                    cleaned[idx_updated] = now
+                    cleaned[idx_op]      = op
+                else:
+                    cleaned[idx_updated] = now
+            except IndexError:
+                cleaned.extend([now, now, op])
+
+        enriched_data.append(tuple(cleaned))
+
+    placeholders = ", ".join(["%s"] * len(insert_columns))
+    insert_sql = (
+        f"INSERT IGNORE INTO `{table_name}` "
+        f"({', '.join('`' + c + '`' for c in insert_columns)}) "
+        f"VALUES ({placeholders})"
+    )
+    return insert_sql, enriched_data, insert_columns
+
+
+@validate_call(config=dict(arbitrary_types_allowed=True))
+def append_audit(columns, values, next_id, op):
+    columns.extend(["nd_auto_increment_id", "nd_created_at", "nd_updated_at", "nd_operation"])
+    values.extend([str(next_id), "NOW()", "NOW()", f"'{op}'"])
+    return columns, values
+
+
+@validate_call(config=dict(arbitrary_types_allowed=True))
+def build_final_insert(table_name, columns, values, staging_schema):
+    col_str = ", ".join(f"`{c}`" for c in columns)
+    val_str = ", ".join(values)
+    return f"INSERT INTO {staging_schema}.`{table_name}` ({col_str}) VALUES ({val_str})"
+
+
+@validate_call(config=dict(arbitrary_types_allowed=True))
+def handle_insert_select(sql, staging_conn, prod_conn, table_columns, generated_cols, stats, nd_counter, table_name_override=None):
+    table_name, _insert_cols, select_sql = parse_insert_select(sql)
+
+    if table_name_override:
+        table_name = table_name_override
+
+    try:
+        prod_rows = prod_conn.execute(text(select_sql)).fetchall()
+    except Exception:
+        stats["errors_insert_select_select"] += 1
+        return
+
+    if not prod_rows:
+        stats["insert_select_no_rows"] += 1
+        return
+
+    all_cols = list(table_columns[table_name.lower()])
+    gen_cols = generated_cols.get(table_name.lower(), set())
+    drop_idx = {i for i, col in enumerate(all_cols) if col in gen_cols}
+
+    next_id = nd_counter[table_name] + 1
+    enriched_rows = []
+    for row in prod_rows:
+        cleaned = [v for i, v in enumerate(row) if i not in drop_idx]
+        cleaned.extend([next_id, datetime.now(), datetime.now(), "INSERT_SELECT"])
+        enriched_rows.append(tuple(cleaned))
+        next_id += 1
+
+    insert_cols_cleaned = [c for c in all_cols if c not in gen_cols]
+    insert_cols_cleaned.extend(["nd_auto_increment_id", "nd_created_at", "nd_updated_at", "nd_operation"])
+
+    placeholders = ", ".join(["%s"] * len(enriched_rows[0]))
+    insert_sql = (
+        f"INSERT IGNORE INTO `{table_name}` "
+        f"({', '.join('`' + c + '`' for c in insert_cols_cleaned)}) "
+        f"VALUES ({placeholders})"
+    )
+
+    try:
+        cursor = staging_conn.connection.cursor()
+        cursor.executemany(insert_sql, enriched_rows)
+        cursor.close()
+        nd_counter[table_name] = next_id
+        stats["insert_select"] += len(enriched_rows)
+    except Exception:
+        stats["errors_insert_select_insert"] += 1
+
+
+# ============================
+# Per-table worker
+# ============================
+@validate_call(config=dict(arbitrary_types_allowed=True))
+def process_table(
+    table_name,
+    cdc_table,
+    staging_schema,
+    cdc_engine,
+    staging_engine,
+    prod_engine,
+    table_columns,
+    generated_cols,
+    new_tables,
+):
+    """
+    Process all CDC events for a single table.
+    Each call opens its own DB connections, making it fully thread-safe.
+    Returns (stats_dict, failed_cases_list).
+    """
+    if table_name.lower() in new_tables:
+        logger.info("[%s] Skipping — new table with no staging counterpart", table_name)
+        return _empty_stats(), []
+
+    stats = _empty_stats()
+    failed_cases = []
+    nd_counter = {}
+    BATCH_SIZE = 1000
+
+    with prod_engine.connect() as prod_conn, staging_engine.connect() as staging_conn:
+        staging_conn.execute(text("SET FOREIGN_KEY_CHECKS=0;"))
+        cursor = staging_conn.connection.cursor()
+
+        for i, row in enumerate(
+            stream_cdc_data_for_table(cdc_engine, cdc_table, table_name, batch_size=10000), 1
+        ):
+            row_table = row[1]
+            op        = row[2]
+            sql       = json.loads(row[3])["raw_sql"]
+
+            try:
+                if row_table not in nd_counter:
+                    max_nd = prod_conn.execute(
+                        text(f"SELECT COALESCE(MAX(nd_auto_increment_id), 0) FROM `{row_table}`")
+                    ).scalar() or 0
+                    nd_counter[row_table] = int(max_nd)
+
+                # ----------------------------------------------------------
+                # UPDATE
+                # ----------------------------------------------------------
+                if op == "UPDATE":
+                    is_join_update = " join " in sql.lower()
+
+                    if is_join_update:
+                        select_sql   = convert_update_join_to_select(sql)
+                        staging_rows = staging_conn.execute(text(select_sql)).fetchall()
+
+                        if staging_rows:
+                            try:
+                                cursor._defer_warnings = True
+                                cursor.execute(sql)
+                                stats["updated"] += 1
+                            except Exception as e:
+                                failed_cases.append({"type": "errors_update", "table_name": row_table, "operation": op, "sql": sql, "error": str(e)})
+                                stats["errors_update"] += 1
+                            continue
+
+                        prod_data = prod_conn.execute(text(select_sql)).fetchall()
+                        if not prod_data:
+                            failed_cases.append({"type": "errors_update_prod", "table_name": row_table, "operation": op, "sql": sql, "error": "no data found in prod"})
+                            stats["errors_update_prod"] += 1
+                            continue
+
+                    else:
+                        where_index = sql.lower().rfind("where")
+                        condition   = sql[where_index + 5:].strip() if where_index != -1 else None
+
+                        if condition is None:
+                            stats["update_where_none"] += 1
+
+                        staging_query = f"SELECT COUNT(*) FROM `{row_table}`" + (f" WHERE {condition}" if condition else "")
+                        prod_query    = f"SELECT * FROM `{row_table}`"          + (f" WHERE {condition}" if condition else "")
+
+                        staging_count = staging_conn.execute(text(staging_query)).scalar()
+                        if staging_count > 0:
+                            try:
+                                cursor._defer_warnings = True
+                                cursor.execute(sql)
+                                stats["updated"] += 1
+                            except Exception as e:
+                                failed_cases.append({"type": "errors_update", "table_name": row_table, "operation": op, "sql": sql, "error": str(e)})
+                                stats["errors_update"] += 1
+                            continue
+
+                        prod_data = prod_conn.execute(text(prod_query)).fetchall()
+                        if not prod_data:
+                            failed_cases.append({"type": "errors_update_prod", "table_name": row_table, "operation": op, "sql": sql, "error": "no data found in prod"})
+                            stats["errors_update_prod"] += 1
+                            continue
+
+                    insert_sql, enriched_data, _ = _build_enriched_insert(
+                        row_table, prod_data, table_columns, generated_cols, op
+                    )
+                    try:
+                        cursor.executemany(insert_sql, enriched_data)
+                        cursor._defer_warnings = True
+                        cursor.execute(sql)
+                        stats["updated"] += 1
+                    except Exception as e:
+                        failed_cases.append({"type": "errors_update", "table_name": row_table, "operation": op, "sql": sql, "error": str(e)})
+                        stats["errors_update"] += 1
+
+                # ----------------------------------------------------------
+                # INSERT
+                # ----------------------------------------------------------
+                elif op == "INSERT":
+                    fmt     = detect_insert_format(sql)
+                    next_id = nd_counter[row_table] + 1
+
+                    if fmt is None:
+                        failed_cases.append({"type": "errors_insert_none_fmt", "table_name": row_table, "operation": op, "sql": sql, "error": "unknown format"})
+                        stats["errors_insert_none_fmt"] += 1
+                        continue
+                    elif fmt == "VALUES":
+                        try:
+                            columns, values = parse_values_format(sql)
+                        except ValueError:
+                            stats["errors_insert"] += 1
+                            continue
+                    elif fmt == "SET":
+                        try:
+                            columns, values = parse_set_format(sql)
+                        except ValueError:
+                            stats["errors_insert"] += 1
+                            continue
+                    elif fmt == "INSERT_SELECT":
+                        failed_cases.append({"type": "errors_insert_select", "table_name": row_table, "operation": op, "sql": sql, "error": "insert_select"})
+                        stats["errors_insert_select"] += 1
+                        continue
+
+                    columns, values = remove_generated_columns(row_table, columns, values, generated_cols)
+
+                    if len(columns) != len(values):
+                        stats["errors_insert_mismatch"] += 1
+                        continue
+
+                    columns, values = append_audit(columns, values, next_id, op)
+                    nd_counter[row_table] = next_id
+
+                    final_sql = build_final_insert(row_table, columns, values, staging_schema)
+                    final_sql = final_sql.replace("INSERT INTO", "INSERT IGNORE INTO", 1)
+
+                    try:
+                        cursor._defer_warnings = True
+                        cursor.execute(final_sql)
+                        stats["inserted"] += 1
+                    except Exception as e:
+                        failed_cases.append({"type": "errors_insert", "table_name": row_table, "operation": op, "sql": sql, "error": str(e)})
+                        stats["errors_insert"] += 1
+
+            except SQLAlchemyError as e:
+                failed_cases.append({"type": "errors", "table_name": row_table, "operation": op, "sql": sql, "error": str(e)})
+                stats["errors"] += 1
+
+            if i % BATCH_SIZE == 0:
+                staging_conn.commit()
+                cursor.close()
+                cursor = staging_conn.connection.cursor()
+                logger.info("[%s] Batch %s: %s", table_name, f"{i:,}", stats)
+
+        staging_conn.commit()
+        cursor.close()
+        staging_conn.execute(text("SET FOREIGN_KEY_CHECKS=1;"))
+
+    logger.info("[%s] Done: %s", table_name, stats)
+    return stats, failed_cases
+
+
+@validate_call(config=dict(arbitrary_types_allowed=True))
+def _empty_stats():
+    return {
+        "inserted": 0, "updated": 0, "update_where_none": 0,
+        "insert_select": 0, "errors": 0, "errors_update": 0,
+        "errors_update_prod": 0, "errors_insert_none_fmt": 0,
+        "errors_insert": 0, "errors_insert_select": 0,
+        "errors_insert_select_select": 0, "insert_select_no_rows": 0,
+        "errors_insert_select_insert": 0, "errors_insert_mismatch": 0,
+    }
+
+
+# ============================
+# Core restore
+# ============================
+@validate_call(config=dict(arbitrary_types_allowed=True))
+def run_restore(run_date, cdc_table, staging_schema, prod_schema, output_dir, max_workers=5):
+    """
+    Read every event from the CDC change-log table and apply it into the staging schema.
+    Tables are processed in parallel (up to max_workers at a time); events within
+    each table are always applied in their original CDC order.
+    """
+    start_time = datetime.utcnow()
+
+    cdc_engine     = create_engine(_db_url("cdc"),     pool_size=max_workers + 2, max_overflow=max_workers)
+    staging_engine = create_engine(_db_url(staging_schema), pool_size=max_workers + 2, max_overflow=max_workers)
+    prod_engine    = create_engine(_db_url(prod_schema),    pool_size=max_workers + 2, max_overflow=max_workers)
+
+    # Discover tables referenced in the CDC log
+    with cdc_engine.connect() as conn:
+        tables_statements = conn.execute(
+            text(f"SELECT DISTINCT table_name FROM {cdc_table}")
+        ).fetchall()
+    logger.info("Total tables in CDC: %d", len(tables_statements))
+
+    # Generated column metadata (VIRTUAL / STORED — cannot be inserted directly)
+    generated_cols = defaultdict(set)
+    with staging_engine.connect() as conn:
+        logger.info("Loading generated column metadata...")
+        gen_rows = conn.execute(text(f"""
+            SELECT TABLE_NAME, COLUMN_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = '{staging_schema}'
+            AND (EXTRA LIKE '%VIRTUAL%' OR EXTRA LIKE '%STORED%')
+        """)).fetchall()
+
+    for table, col in gen_rows:
+        generated_cols[table.lower()].add(col)
+    logger.info("Tables with generated columns: %d", len(generated_cols))
+
+    # Ordered column list per table (order matters for positional row alignment)
+    table_columns = defaultdict(list)
+    with staging_engine.connect() as conn:
+        logger.info("Loading column metadata...")
+        existing_cols = conn.execute(text(f"""
+            SELECT TABLE_NAME, COLUMN_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = '{staging_schema}'
+            ORDER BY ORDINAL_POSITION
+        """)).fetchall()
+
+    for tname, cname in existing_cols:
+        table_columns[tname.lower()].append(cname)
+    logger.info("Cached column metadata for %d tables", len(table_columns))
+
+    # Relax MySQL strict mode before any DDL / DML
+    with staging_engine.connect() as conn:
+        conn.execute(text("SET FOREIGN_KEY_CHECKS=0;"))
+        conn.execute(text("SET GLOBAL sql_mode = REPLACE(@@GLOBAL.sql_mode, 'NO_ZERO_DATE', '');"))
+        conn.execute(text("SET GLOBAL sql_mode = REPLACE(@@GLOBAL.sql_mode, 'STRICT_TRANS_TABLES', '');"))
+        conn.execute(text("""
+            SET SESSION sql_mode = (SELECT REPLACE(REPLACE(REPLACE(@@SESSION.sql_mode,
+                'STRICT_TRANS_TABLES', ''),
+                'NO_ZERO_DATE', ''),
+                'NO_ZERO_IN_DATE', ''));
+        """))
+    logger.info("MySQL config updated")
+
+    # Ensure all audit columns exist in every CDC-touched table
+    new_tables = []
+    with staging_engine.begin() as conn:
+        for (tname,) in tables_statements:
+            if tname.lower() not in table_columns:
+                logger.warning("Found new table: %s", tname)
+                new_tables.append(tname.lower())
+                continue
+
+            for col_name, col_def in _ALTER_COLS:
+                if col_name in table_columns[tname.lower()]:
+                    continue
+
+                alter_sql = f"ALTER TABLE `{tname}` ADD COLUMN `{col_name}` {col_def}"
+                try:
+                    conn.execute(text(alter_sql))
+                    table_columns[tname.lower()].append(col_name)
+                except Exception as e:
+                    logger.warning("Skipped %s.%s: %s", tname, col_name, e)
+
+    new_tables_set = set(new_tables)
+    logger.warning("Found %d new tables in this batch: %s", len(new_tables), new_tables)
+
+    # ------------------------------------------------------------------
+    # Parallel dispatch — one worker per table, up to max_workers at once
+    # ------------------------------------------------------------------
+    all_tables    = [row[0] for row in tables_statements if row[0].lower() not in new_tables_set]
+    combined_stats = _empty_stats()
+    all_failed_cases = []
+
+    logger.info(
+        "Dispatching %d tables across %d parallel workers",
+        len(all_tables), max_workers,
+    )
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                process_table,
+                tname,
+                cdc_table,
+                staging_schema,
+                cdc_engine,
+                staging_engine,
+                prod_engine,
+                table_columns,
+                generated_cols,
+                new_tables_set,
+            ): tname
+            for tname in all_tables
+        }
+
+        for future in as_completed(futures):
+            tname = futures[future]
+            try:
+                table_stats, table_failed = future.result()
+                for k, v in table_stats.items():
+                    combined_stats[k] += v
+                all_failed_cases.extend(table_failed)
+            except Exception as e:
+                logger.error("[%s] Worker raised an unexpected exception: %s", tname, e, exc_info=True)
+
+    end_time = datetime.utcnow()
+    runtime  = (end_time - start_time).total_seconds()
+
+    logger.info("CDC sync complete")
+    logger.info("Final Stats: %s", combined_stats)
+    logger.info("Total run time: %.2f seconds", runtime)
+
+    output_path = os.path.join(output_dir, f"failed_cases_{run_date}.csv")
+    pd.DataFrame(all_failed_cases).to_csv(output_path, index=False)
+    logger.info("Failed cases written to %s", output_path)
+
+
+@validate_call(config=dict(arbitrary_types_allowed=True))
+def main():
+    args = parse_args()
+    logger.info(
+        "CDC restore | run_date=%s | staging=%s | prod=%s | max_workers=%d",
+        args.run_date, args.staging_schema, args.prod_schema, args.max_workers,
+    )
+    run_restore(
+        args.run_date,
+        args.table_name,
+        args.staging_schema,
+        args.prod_schema,
+        args.output_dir,
+        args.max_workers,
+    )
+
+
+if __name__ == "__main__":
+    main()

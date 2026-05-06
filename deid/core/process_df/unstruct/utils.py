@@ -1,0 +1,150 @@
+DRIVER_LICENSE_PATTERNS = [
+    # Context-based matches (e.g., "DL:", "License No:", etc.)
+    r"(?i)\b(?:DL|DL#|DL No\.?|License No\.?|Driver'?s License)\s*[:#]?\s*[A-Z]?\d{5,13}\b",
+
+    # State-specific patterns (approximate formats)
+    r"\b[A-Z]\d{7}\b",              # California (e.g., A1234567)
+    r"\b[A-Z]\d{11}\b",             # Illinois (e.g., A12345678901)
+    r"\b[A-Z]\d{12}\b",             # Florida (e.g., F123456789012)
+
+    # Optional: compound alphanumeric (some states use longer strings)
+    r"\b[A-Z]{1,2}\d{6,12}[A-Z]?\b"
+]
+
+
+GENERIC_REGEX_DICT = {
+    "ip": {
+        "masking_value": "((IPADDRESS))",
+        "regex": [
+            r"\b((25[0-5]|2[0-4][0-9]|[0-1]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[0-1]?[0-9][0-9]?)\b"  # IPv4 pattern
+        ],
+        "processing_func": None,
+    },
+    "url": {
+        "masking_value": "((URL))",
+        "regex": [
+            r'\b(?:https?:/+[\w-]+\.[^\s<>"\']+|w{3,4}\.?\S+)'
+        ],
+        "processing_func": None,
+    },
+    "phone_number": {
+        "masking_value": "((PHONE_NUMBER))",
+        "regex": [
+            # Requires at least one separator (space / dash / dot) between EVERY
+            # pair of digit groups so that plain numeric IDs (encounter IDs,
+            # patient IDs) are never matched.
+            #
+            # Matches  : (123) 456-7890  123-456-7890  123.456.7890  123 456 7890
+            #            +1-123-456-7890  +1 (123) 456-7890  123-4567 (local 7-digit)
+            # Rejects  : 1234567  1234567890  any run of digits without separators
+            #
+            # Pattern breakdown:
+            #   (?:\+?1[\s.-]?)?          – optional country code  (+1, 1-, 1 )
+            #   (?:\(\d{3}\)[\s.-]        – area code in parens: (123) or (123)-
+            #    |\d{3}[\s.-])            – OR plain 3-digit area code WITH separator
+            #   \d{3}[\s.-]\d{4}         – middle-3 + last-4 WITH separator between them
+            r"(?:\+?1[\s.-]?)?(?:\(\d{3}\)[\s.-]|\d{3}[\s.-])\d{3}[\s.-]\d{4}\b"
+        ],
+        "processing_func": None,
+    },
+    "date": {
+        "masking_value": None,
+        # (?!\w) replaced with \b throughout — all patterns end on \w chars so the
+        # assertions are equivalent, but \b is re2-compatible (no lookahead needed).
+        "regex": r"""
+    (?:
+        # ISO Format (YYYY-MM-DD)
+        \b\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\b|
+
+        # ISO-like Format (YYYY/MM/DD)
+        \b\d{4}/(?:0[1-9]|1[0-2])/(?:0[1-9]|[12]\d|3[01])\b|
+
+        # Common American Format (MM/DD/YYYY or MM-DD-YYYY)
+        \b(?:0[1-9]|1[0-2])[/-](?:0[1-9]|[12]\d|3[01])[/-]\d{4}\b|
+
+        # European Format (DD/MM/YYYY or DD-MM-YYYY)
+        \b(?:0[1-9]|[12]\d|3[01])[/-](?:0[1-9]|1[0-2])[/-]\d{4}\b|
+
+        # Short Year Formats (MM/DD/YY or DD/MM/YY)
+        \b(?:0[1-9]|1[0-2])[/-](?:0[1-9]|[12]\d|3[01])[/-]\d{2}\b|
+        \b(?:0[1-9]|[12]\d|3[01])[/-](?:0[1-9]|1[0-2])[/-]\d{2}\b|
+
+        # Textual Formats with Full Year
+        # DD Month YYYY
+        \b(?:0[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?\s+
+        (?:January|February|March|April|May|June|July|August|September|October|November|December|
+        Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)
+        (?:,?\s+)\d{4}\b|
+
+        # Month DD, YYYY
+        \b(?:January|February|March|April|May|June|July|August|September|October|November|December|
+        Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)
+        \s+(?:0[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?(?:,?\s+)\d{4}\b|
+
+        # Month YYYY
+        \b(?:January|February|March|April|May|June|July|August|September|October|November|December|
+        Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)
+        \s+\d{4}\b|
+
+        # YYYY Month
+        \b\d{4}\s+
+        (?:January|February|March|April|May|June|July|August|September|October|November|December|
+        Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\b|
+
+        # Abbreviated Formats (without year)
+        # Month DD
+        \b(?:January|February|March|April|May|June|July|August|September|October|November|December|
+        Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)
+        \s+(?:0[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?\b|
+
+        # MM DD YYYY
+        \b(?:0?[1-9]|1[0-2])/(?:0?[1-9]|[12]\d|3[01])/\d{4}\b|
+
+        # MM-DD-YYYY
+        \b(?:0?[1-9]|1[0-2])-(?:0?[1-9]|[12]\d|3[01])-\d{4}\b|
+
+        # MM.DD.YYYY
+        \b(?:0?[1-9]|1[0-2])\.(?:0?[1-9]|[12]\d|3[01])\.\d{4}\b|
+
+        # DD.MM.YYYY
+        \b(?:0?[1-9]|[12]\d|3[01])\.(?:0?[1-9]|1[0-2])\.\d{4}\b|
+
+        # YYYY.MM.DD
+        \b\d{4}\.(?:0?[1-9]|1[0-2])\.(?:0?[1-9]|[12]\d|3[01])\b|
+
+        # Short Format (M/D/YY or MM/DD/YY)
+        \b(?:0?[1-9]|1[0-2])[/-](?:0?[1-9]|[12]\d|3[01])[/-]\d{2}\b|
+
+        # "%m.%d.%y"
+        \b(?:0?[1-9]|1[0-2])\.(?:0?[1-9]|[12]\d|3[01])\.\d{2}\b|
+
+        # DD Month
+        \b(?:0[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?\s+
+        (?:January|February|March|April|May|June|July|August|September|October|November|December|
+        Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\b
+
+    )
+""",
+        "processing_func": None
+    },
+    "driver_license": {
+        "masking_value": "((DRIVERSLICENSE))",
+        "regex": DRIVER_LICENSE_PATTERNS,
+        "processing_func": None,
+    },
+    "address": {
+        "masking_value": "((Address))",
+        # Temporarily disabled generic address regex because it was too aggressive
+        # and caused false positives (e.g., masking non-address text like filenames).
+        # Structured PII configs (pii_config['regex']) still handle address masking.
+        "regex": [],
+        "processing_func": None,
+    },
+    "facility_location": {
+        "masking_value": "((FacilityLocation))",
+        # Facility names should be configured per-deployment in config.yaml,
+        # not hardcoded here. This is left empty by default.
+        "regex": [],
+        "processing_func": None,
+    }
+}

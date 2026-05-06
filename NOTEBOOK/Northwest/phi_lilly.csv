@@ -1,5 +1,0 @@
-TABLE_NAME,COLUMN_NAME,IS_PHI,DE_IDENTIFICATION_RULE,MASK_VALUE,REFERENCE_PATIENT_ID,REFERENCE_ENCOUNTER_ID
-lilly,id,No,,,,
-lilly,patientid,Yes,PATIENT_ID,,,
-lilly,filename,No,,,,
-lilly,content,Yes,NOTES,,,

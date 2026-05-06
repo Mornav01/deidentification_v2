@@ -1,0 +1,100 @@
+"""Tests for orchestrator async_runner."""
+import pytest
+
+
+def _make_config(**overrides):
+    from deid.config.schema import (
+        DeidConfig, DbConfig, DeidentificationSettings,
+        TableConfig, WorkerSettings, QCSettings,
+    )
+    defaults = dict(
+        source_db=DbConfig(type="mysql", host="localhost", port=3306, database="src", username="u", password="p"),
+        destination_db=DbConfig(type="postgresql", host="localhost", port=5432, database="dest", username="u", password="p"),
+        tables=[TableConfig(name="small_table", rules={"col1": "MASK"})],
+        mapping_tables={},
+        workers=WorkerSettings(),
+        qc=QCSettings(),
+    )
+    defaults.update(overrides)
+    return DeidConfig(**defaults)
+
+
+@pytest.fixture(autouse=True)
+def _setup_celery():
+    """Ensure a Celery app exists so shared_task can bind."""
+    from deid.tasks.celery_app import create_celery_app
+    app = create_celery_app(broker_url="memory://", result_backend="cache+memory://")
+    app.conf.update(task_always_eager=True, task_eager_propagates=True)
+    app.finalize()
+    app.loader.import_default_modules()
+    return app
+
+
+def test_setup_phase_creates_batch_states(tmp_path):
+    """_setup_phase should create BatchState rows for all tables."""
+    import asyncio
+    from unittest.mock import patch, MagicMock
+    from deid.config.schema import TableConfig
+
+    config = _make_config(
+        state_db_path=str(tmp_path / "state.db"),
+        mappings_db_path=str(tmp_path / "mappings.db"),
+        tables=[TableConfig(name="patients", rules={"PID": "PATIENT_ID"})],
+    )
+
+    mock_handler = MagicMock()
+    mock_handler.get_exact_row_count.return_value = 50000
+    mock_handler.get_min_max_id.return_value = (1, 50000)
+
+    from deid.models.base import create_state_engine, create_all_state_tables
+    state_engine = create_state_engine(str(tmp_path / "state.db"))
+    create_all_state_tables(state_engine)
+
+    with patch("deid.core.dbPkg.dbhandler.NDDBHandler", return_value=mock_handler):
+        from deid.orchestrator.async_runner import _setup_phase
+        asyncio.run(_setup_phase(config, state_engine))
+
+    from deid.models.state import BatchState
+    from sqlalchemy.orm import Session
+    with Session(state_engine) as s:
+        batches = s.query(BatchState).filter_by(table_name="patients").order_by(BatchState.start_id).all()
+        # 50000 rows / 10000 batch_size = 5 batches
+        assert len(batches) == 5
+        assert all(b.status == "pending" for b in batches)
+        assert batches[0].start_id == 0
+        assert batches[0].end_id == 9999
+        assert batches[-1].start_id == 40000
+        assert batches[-1].end_id == 49999
+
+
+def test_setup_phase_small_table(tmp_path):
+    """Tables smaller than batch_size get a single BatchState row."""
+    import asyncio
+    from unittest.mock import patch, MagicMock
+    from deid.config.schema import TableConfig
+
+    config = _make_config(
+        state_db_path=str(tmp_path / "state.db"),
+        mappings_db_path=str(tmp_path / "mappings.db"),
+        tables=[TableConfig(name="small_table", rules={"col": "MASK"})],
+    )
+
+    mock_handler = MagicMock()
+    mock_handler.get_exact_row_count.return_value = 100  # less than batch_size=10000
+
+    from deid.models.base import create_state_engine, create_all_state_tables
+    state_engine = create_state_engine(str(tmp_path / "state.db"))
+    create_all_state_tables(state_engine)
+
+    with patch("deid.core.dbPkg.dbhandler.NDDBHandler", return_value=mock_handler):
+        from deid.orchestrator.async_runner import _setup_phase
+        asyncio.run(_setup_phase(config, state_engine))
+
+    from deid.models.state import BatchState
+    from sqlalchemy.orm import Session
+    with Session(state_engine) as s:
+        batches = s.query(BatchState).filter_by(table_name="small_table").all()
+        # 100 rows < batch_size=10000 → one batch covering offset 0..9999
+        assert len(batches) == 1
+        assert batches[0].start_id == 0
+        assert batches[0].end_id == 9999

@@ -1,0 +1,135 @@
+"""Pydantic models for task/orchestrator/QC function boundaries."""
+from __future__ import annotations
+
+from enum import Enum
+
+from pydantic import BaseModel
+
+
+class LogLevel(str, Enum):
+    DEBUG = "DEBUG"
+    INFO = "INFO"
+    WARNING = "WARNING"
+    ERROR = "ERROR"
+
+
+class LogRecord(BaseModel):
+    timestamp: str
+    level: LogLevel
+    table: str
+    phase: str
+    batch: int | None = None
+    row_id: str | None = None
+    column: str | None = None
+    message: str
+    error: str | None = None
+    rows_in_batch: int | None = None
+    rows_succeeded: int | None = None
+    rows_failed: int | None = None
+    duration_ms: int | None = None
+    start_id: int | None = None
+    end_id: int | None = None
+    peak_memory_mb: int | None = None
+    worker_pid: int | None = None
+
+
+class BatchFailure(BaseModel):
+    table: str
+    start_id: int | None = None
+    end_id: int | None = None
+    batch: int | None = None
+    error: str
+    timestamp: str
+    task_type: str
+
+
+class FetchTaskConfig(BaseModel):
+    table_name: str
+    start_id: int
+    end_id: int
+    source_conn_str: str
+    state_db_path: str
+    staging_root: str
+    config_key: str = "default"
+    batch_size: int = 1000
+    id_column: str = "nd_auto_increment_id"
+    last_fetched_id: int | None = None
+    redis_url: str = ""
+    run_config: dict | None = None
+
+
+class ProcessTaskConfig(BaseModel):
+    table_name: str
+    start_id: int
+    end_id: int
+    staging_root: str
+    state_db_path: str
+    mapping_db_config: dict
+    table_details: dict
+    source_conn_str: str
+    config_key: str = "default"
+    join_db_conn_str: str | None = None
+    offset_days: int = 34
+    pii_config: dict | None = None
+    pii_db_conn_str: dict | None = None
+    secondary_pii_configs: list | None = None
+    failed_rows_db_path: str | None = None
+    redis_url: str = ""
+    run_config: dict | None = None
+
+
+class WriteTaskConfig(BaseModel):
+    table_name: str
+    start_id: int
+    end_id: int
+    staging_root: str
+    state_db_path: str
+    dest_conn_str: str
+    config_key: str = "default"
+    id_column: str = "nd_auto_increment_id"
+    redis_url: str = ""
+    run_config: dict | None = None
+    table_details: dict | None = None
+
+
+class DeidentifyTaskConfig(BaseModel):
+    """Config for the legacy deidentify_table / deidentify_table_range Celery tasks."""
+    table_name: str
+    source_conn_str: str
+    dest_conn_str: str
+    mappings_db_path: str
+    batch_size: int = 10000
+    offset_days: int = 34
+    redis_url: str = ""
+    table_details_for_ui: dict = {}
+    mapping_db_config: dict = {}
+    universal_tables_config: dict | None = None
+    pii_config: dict | None = None
+    pii_db_conn_str: dict | None = None
+    secondary_pii_configs: list | None = None
+    run_config: dict | None = None
+    cache_dir: str | None = None
+
+
+class QCTaskConfig(BaseModel):
+    table_name: str
+    source_conn_str: str
+    dest_conn_str: str
+    table_config: dict
+    mapping_db_config: dict = {}
+    qc_settings: dict = {}
+    offset_days: int = 34
+    sample_size: int = 100
+    qc_results_db_path: str = ""
+
+
+class ProgressEvent(BaseModel):
+    table: str
+    status: str
+    detail: str = ""
+
+
+class DataCountResult(BaseModel):
+    source_rows_count: int
+    dest_rows_count: int
+    ignore_rows_count: int = 0
