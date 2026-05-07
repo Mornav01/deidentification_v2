@@ -274,6 +274,38 @@ def process_table(
 # ============================
 # Table discovery
 # ============================
+def resolve_table_names(engine, schema: str, tables: list) -> list:
+    """
+    Given a list of table names (possibly wrong case), return the exact-case
+    names as stored in INFORMATION_SCHEMA. Unrecognised names are logged and dropped.
+    Needed when running against a case-sensitive MySQL instance (GCP default:
+    lower_case_table_names=0) where `ALTER TABLE wrong_case` raises 1146.
+    """
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT TABLE_NAME
+                FROM   INFORMATION_SCHEMA.TABLES
+                WHERE  TABLE_SCHEMA = :schema
+                  AND  TABLE_TYPE   = 'BASE TABLE'
+            """),
+            {"schema": schema},
+        ).fetchall()
+
+    db_lookup = {r[0].lower(): r[0] for r in rows}
+
+    resolved = []
+    for t in tables:
+        exact = db_lookup.get(t.lower())
+        if exact is None:
+            logger.warning("Table '%s' not found in schema '%s' — skipping", t, schema)
+        else:
+            if exact != t:
+                logger.info("Case corrected: '%s' → '%s'", t, exact)
+            resolved.append(exact)
+    return resolved
+
+
 def get_all_tables(engine, schema: str) -> list:
     with engine.connect() as conn:
         rows = conn.execute(
@@ -459,6 +491,10 @@ def main():
         tables = get_all_tables(engine, args.prod_schema)
     # df = pd.read_csv("/Users/ndaidcnd/Desktop/Air_DEID/airflow-automation/Airflow/input/deid_runner.csv", header=None, names=['table_name'])
     # tables = df['table_name'].to_list()
+
+    # Resolve to exact DB case before any DDL/DML (required for case-sensitive GCP MySQL)
+    engine = create_engine(_db_url(args.prod_schema), pool_recycle=3600, pool_pre_ping=True)
+    tables = resolve_table_names(engine, args.prod_schema, tables)
 
     run(args.prod_schema, args.extracted_date, args.updated_at, tables, args.max_workers)
 

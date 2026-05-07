@@ -43,7 +43,7 @@ def parse_args():
     Parse command-line arguments for CDC merge.
 
     Example:
-        python cdc_merge.py --staging_schema "mobiledoc_apr26_staging" --prod_schema "mobiledoc_apr26"
+        python cdc_merge.py --staging_schema "dent_staging" --prod_schema "dent"
     """
     parser = argparse.ArgumentParser(description="CDC merge: upsert from staging schema into prod schema")
     parser.add_argument(
@@ -59,7 +59,7 @@ def parse_args():
     parser.add_argument(
         "--max_workers",
         type=int,
-        default=10,
+        default=4,
         help="Number of merge worker processes (default: auto-detected)",
     )
     return parser.parse_args()
@@ -77,9 +77,9 @@ def init_databases(staging_schema_arg: str, prod_schema_arg: str):
 
     logger.info(f"Using staging_schema={staging_schema}, prod_schema={prod_schema}")
 
-    _db_user = os.environ.get("DB_USER", "")
-    _db_pass = os.environ.get("DB_PASS", "")
-    _db_host = os.environ.get("DB_HOST", "localhost")
+    _db_user = os.environ.get("DB_USER", "ndadmin")
+    _db_pass = os.environ.get("DB_PASS", "ndADMIN%402025")
+    _db_host = os.environ.get("DB_HOST", "172.16.2.42")
     _db_port = os.environ.get("DB_PORT", "3306")
 
     staging_engine = create_engine(
