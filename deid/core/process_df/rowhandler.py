@@ -1,7 +1,12 @@
-import polars as pl
-from deid.core.logger import nd_logger
 import json
+import random
+import time
+
+import polars as pl
 from pydantic import validate_call
+from sqlalchemy.exc import OperationalError
+
+from deid.core.logger import nd_logger
 
 
 class InvalidRowHandler:
@@ -37,6 +42,8 @@ class InvalidRowHandler:
             f"[InvalidRowHandler] Initialized for db: '{db_name}', table: '{table_name}'"
         )
 
+    _MAX_WRITE_RETRIES = 5
+
     def _write_to_failed_rows_db(self, rows: list[dict], check_col: str) -> None:
         """Persist failed rows to a per-schema table in the audit SQLite database."""
         if not self.db_path:
@@ -45,33 +52,53 @@ class InvalidRowHandler:
                 f"{self.db_name}.{self.table_name} but failed_rows_db_path is not "
                 f"configured — refusing to silently discard rows."
             )
-        try:
-            from datetime import datetime, timezone
-            from deid.models.base import create_failed_rows_engine
-            from deid.models.failed_rows import ensure_schema_table
+        from datetime import datetime, timezone
+        from deid.models.base import get_cached_failed_rows_engine
+        from deid.models.failed_rows import ensure_schema_table
 
-            engine = create_failed_rows_engine(self.db_path)
-            table = ensure_schema_table(engine, self.db_name)
-            with engine.begin() as conn:
-                for row_dict in rows:
-                    reason = f"unresolved_id:{check_col}"
-                    row_str = {k: "None" if v is None else str(v) for k, v in row_dict.items()}
-                    conn.execute(table.insert().values(
-                        source_db=self.db_name,
-                        table_name=self.table_name,
-                        config_key=self.config_key,
-                        reason=reason,
-                        row_data=json.dumps(row_str, default=str),
-                        failed_at=datetime.now(timezone.utc),
-                    ))
-            engine.dispose()
-            nd_logger.info(
-                f"[InvalidRowHandler] Wrote {len(rows)} failed rows to '{self.db_path}' "
-                f"(table: failed_rows_{self.db_name})."
-            )
-        except Exception as e:
-            nd_logger.error(f"[InvalidRowHandler] Failed to write to failed_rows DB: {e}")
-            raise
+        reason = f"unresolved_id:{check_col}"
+        now = datetime.now(timezone.utc)
+        records = [
+            {
+                "source_db": self.db_name,
+                "table_name": self.table_name,
+                "config_key": self.config_key,
+                "reason": reason,
+                "row_data": json.dumps(
+                    {k: "None" if v is None else str(v) for k, v in row_dict.items()},
+                    default=str,
+                ),
+                "failed_at": now,
+            }
+            for row_dict in rows
+        ]
+
+        engine = get_cached_failed_rows_engine(self.db_path)
+        table = ensure_schema_table(engine, self.db_name)
+
+        for attempt in range(self._MAX_WRITE_RETRIES):
+            try:
+                with engine.begin() as conn:
+                    conn.execute(table.insert(), records)
+                nd_logger.info(
+                    f"[InvalidRowHandler] Wrote {len(rows)} failed rows to '{self.db_path}' "
+                    f"(table: failed_rows_{self.db_name})."
+                )
+                return
+            except OperationalError as e:
+                if "database is locked" in str(e) and attempt < self._MAX_WRITE_RETRIES - 1:
+                    delay = (2 ** attempt) + random.uniform(0, 1)
+                    nd_logger.warning(
+                        f"[InvalidRowHandler] SQLite locked, retrying in {delay:.1f}s "
+                        f"(attempt {attempt + 1}/{self._MAX_WRITE_RETRIES})"
+                    )
+                    time.sleep(delay)
+                else:
+                    nd_logger.error(f"[InvalidRowHandler] Failed to write to failed_rows DB: {e}")
+                    raise
+            except Exception as e:
+                nd_logger.error(f"[InvalidRowHandler] Failed to write to failed_rows DB: {e}")
+                raise
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def handle(self, df: pl.DataFrame) -> pl.DataFrame:

@@ -20,7 +20,7 @@ class MappingsBase(DeclarativeBase):
 def _enable_wal(dbapi_conn, connection_record):
     cursor = dbapi_conn.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA busy_timeout=30000")
+    cursor.execute("PRAGMA busy_timeout=120000")  # 2 min — allows contention across parallel batches
     cursor.close()
 
 
@@ -132,6 +132,26 @@ def create_all_failed_rows_tables(engine):
     from deid.models.failed_rows import FailedRowsBase
     import deid.models.failed_rows  # noqa: F401 — ensure models are registered
     FailedRowsBase.metadata.create_all(engine)
+
+
+# Module-level failed-rows engine cache — one engine per db_path, per process.
+# Mirrors get_cached_state_engine: prefork workers get an empty cache after fork
+# and populate it lazily, so there are no stale-connection issues.
+_failed_rows_engine_cache: dict = {}
+
+
+def get_cached_failed_rows_engine(db_path: str):
+    """Return a cached failed-rows engine for ``db_path``.
+
+    Creates the engine and ensures tables exist on first call per process.
+    Subsequent calls return the same engine, eliminating the create/dispose
+    overhead that caused writer contention across parallel batch tasks.
+    """
+    if db_path not in _failed_rows_engine_cache:
+        engine = create_failed_rows_engine(db_path)
+        create_all_failed_rows_tables(engine)
+        _failed_rows_engine_cache[db_path] = engine
+    return _failed_rows_engine_cache[db_path]
 
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
