@@ -264,10 +264,12 @@ def stream_cdc_data_for_table(
 
 
 def load_binlog_checkpoint(
-    cdc_engine, schema_name: str, run_date: str
+    cdc_engine, schema_name: str, run_date: str, max_lookback: int = 30
 ) -> tuple:
     """
-    Try to load yesterday's dump_metadata_{mmddyyyy} as a rolling checkpoint.
+    Try to load the most recent dump_metadata_{mmddyyyy} within the past
+    max_lookback days as a rolling checkpoint (mirrors _find_latest_snapshot
+    in create_dump_metadata_snapshot.py).
 
     Returns (metadata_dict, found) where:
       found=True  → checkpoint loaded; use strict_after=True in
@@ -276,23 +278,26 @@ def load_binlog_checkpoint(
                     first post-dump event, so we must exclude it on the next run)
       found=False → no checkpoint; caller should fall back to load_dump_metadata()
     """
-    yesterday_fmt = (
-        datetime.strptime(run_date, "%Y-%m-%d") - timedelta(days=1)
-    ).strftime("%m%d%Y")
-    checkpoint_table = f"dump_metadata_{yesterday_fmt}"
-
     try:
         with cdc_engine.connect() as conn:
-            exists = conn.execute(
-                text(
-                    "SELECT COUNT(*) FROM information_schema.TABLES "
-                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :t"
-                ),
-                {"t": checkpoint_table},
-            ).scalar()
+            checkpoint_table = None
+            current = datetime.strptime(run_date, "%Y-%m-%d") - timedelta(days=1)
+            for _ in range(max_lookback):
+                candidate = f"dump_metadata_{current.strftime('%m%d%Y')}"
+                exists = conn.execute(
+                    text(
+                        "SELECT COUNT(*) FROM information_schema.TABLES "
+                        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :t"
+                    ),
+                    {"t": candidate},
+                ).scalar()
+                if exists:
+                    checkpoint_table = candidate
+                    break
+                current -= timedelta(days=1)
 
-            if not exists:
-                logger.info("No checkpoint table found: %s", checkpoint_table)
+            if checkpoint_table is None:
+                logger.info("No checkpoint table found within %d days of %s", max_lookback, run_date)
                 return {}, False
 
             rows = conn.execute(
