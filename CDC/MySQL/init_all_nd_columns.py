@@ -141,6 +141,36 @@ def drop_on_update_constraints(conn, schema: str, table_name: str) -> int:
 
 
 # ============================
+# Chunked NULL-fill helper
+# ============================
+def _chunked_update_nulls(
+    conn,
+    qualified: str,
+    col_name: str,
+    value_expr: str,
+    batch_size: int = 10_000,
+) -> int:
+    """
+    UPDATE qualified SET col = value WHERE col IS NULL LIMIT batch_size
+    in a loop until no rows remain.  Each batch is its own round-trip so
+    InnoDB row-locks are held only for that slice, avoiding lock-wait
+    timeouts on large tables (error 1205).
+    Returns total rows updated.
+    """
+    total = 0
+    sql = text(
+        f"UPDATE {qualified} SET `{col_name}` = {value_expr} "
+        f"WHERE `{col_name}` IS NULL LIMIT {batch_size}"
+    )
+    while True:
+        result = conn.execute(sql)
+        total += result.rowcount
+        if result.rowcount == 0:
+            break
+    return total
+
+
+# ============================
 # Per-table worker
 # ============================
 def process_table(
@@ -243,22 +273,13 @@ def process_table(
             # ── 5. Fill NULLs in columns that already existed ────────────
             # (no-op for columns just added since DEFAULT already fills them)
             if not need_extracted:
-                conn.execute(text(
-                    f"UPDATE {qualified} SET `nd_extracted_date` = '{extracted_date} 00:00:00' "
-                    f"WHERE `nd_extracted_date` IS NULL"
-                ))
+                _chunked_update_nulls(conn, qualified, "nd_extracted_date", f"'{extracted_date} 00:00:00'")
                 logger.info("[%s] Filled NULL nd_extracted_date", table_name)
             if not need_updated:
-                conn.execute(text(
-                    f"UPDATE {qualified} SET `nd_updated_at` = '{updated_at} 00:00:00' "
-                    f"WHERE `nd_updated_at` IS NULL"
-                ))
+                _chunked_update_nulls(conn, qualified, "nd_updated_at", f"'{updated_at} 00:00:00'")
                 logger.info("[%s] Filled NULL nd_updated_at", table_name)
             if not need_flag:
-                conn.execute(text(
-                    f"UPDATE {qualified} SET `nd_ActiveFlag` = 'Y' "
-                    f"WHERE `nd_ActiveFlag` IS NULL"
-                ))
+                _chunked_update_nulls(conn, qualified, "nd_ActiveFlag", "'Y'")
                 logger.info("[%s] Filled NULL nd_ActiveFlag", table_name)
 
             conn.execute(text("SET sql_safe_updates = 1;"))
