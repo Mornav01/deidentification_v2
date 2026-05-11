@@ -203,8 +203,8 @@ def process_and_insert_data(connection, new_table, rows, max_workers=20, batch_s
         decryptor = ProgressNoteDecryptor()
         insert_stmt = text(f"""
             INSERT INTO {new_table.name}
-            (encounterID, summary, xslId, unlocked, ModifyDate, ModifyDate2, regionName, nd_auto_increment_id, nd_extracted_at, nd_updated_at, nd_operation, nd_is_active)
-            VALUES (:encounterID, :summary, :xslId, :unlocked, :ModifyDate, :ModifyDate2, :regionName, :nd_auto_increment_id, :nd_extracted_at, :nd_updated_at, :nd_operation, :nd_is_active)
+            (encounterID, summary, xslId, unlocked, ModifyDate, ModifyDate2, regionName, nd_auto_increment_id, nd_extracted_date, nd_updated_at, nd_operation, nd_is_active)
+            VALUES (:encounterID, :summary, :xslId, :unlocked, :ModifyDate, :ModifyDate2, :regionName, :nd_auto_increment_id, :nd_extracted_date, :nd_updated_at, :nd_operation, :nd_is_active)
         """)
 
         def process_row_batch(row_batch):
