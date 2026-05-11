@@ -77,9 +77,9 @@ def init_databases(staging_schema_arg: str, prod_schema_arg: str):
 
     logger.info(f"Using staging_schema={staging_schema}, prod_schema={prod_schema}")
 
-    _db_user = os.environ.get("DB_USER", "ndadmin")
-    _db_pass = os.environ.get("DB_PASS", "ndADMIN%402025")
-    _db_host = os.environ.get("DB_HOST", "172.16.2.42")
+    _db_user = os.environ.get("DB_USER", "")
+    _db_pass = os.environ.get("DB_PASS", "")
+    _db_host = os.environ.get("DB_HOST", "localhost")
     _db_port = os.environ.get("DB_PORT", "3306")
 
     staging_engine = create_engine(
