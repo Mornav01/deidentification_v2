@@ -156,14 +156,23 @@ async def _setup_phase(config: DeidConfig, state_engine):
 
     from deid.core.dbPkg.dbhandler import NDDBHandler
 
-    source = NDDBHandler(config.source_db.connection_string(), read_only=True)
+    # Use read_only=False for setup so we get pool_size=5+max_overflow=5 (10 total).
+    # read_only=True gives only pool_size=1+max_overflow=2 (3 total) which is too
+    # small when many tables fire COUNT(*) queries concurrently during setup.
+    source = NDDBHandler(config.source_db.connection_string(), read_only=False)
 
     loop = asyncio.get_event_loop()
 
     # ── 1. Gather exact row counts for all tables in parallel ─────────────
+    # Semaphore matches pool_size (5) — prevents more concurrent queries than
+    # the pool can serve, which previously caused pool_timeout and all tables
+    # being marked failed when a large tables list was used.
+    _sem = asyncio.Semaphore(5)
+
     @validate_call(config=dict(arbitrary_types_allowed=True))
     async def _get_count(table_name: str) -> tuple[str, int]:
-        count = await loop.run_in_executor(None, source.get_exact_row_count, table_name)
+        async with _sem:
+            count = await loop.run_in_executor(None, source.get_exact_row_count, table_name)
         logger.info("  %s: %s rows", table_name, f"{count:,}")
         return table_name, count
 
