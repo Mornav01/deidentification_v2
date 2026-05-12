@@ -503,15 +503,15 @@ def main():
         args.prod_schema, args.extracted_date, args.updated_at, args.max_workers,
     )
 
-    if args.cdc_schema and args.cdc_table:
-        logger.info("Table source: CDC log `%s`.`%s`", args.cdc_schema, args.cdc_table)
-        tables = get_tables_from_cdc(args.cdc_schema, args.cdc_table)
-    else:
-        logger.info("Table source: INFORMATION_SCHEMA (all base tables in '%s')", args.prod_schema)
-        engine = create_engine(_db_url(args.prod_schema), pool_recycle=3600, pool_pre_ping=True)
-        tables = get_all_tables(engine, args.prod_schema)
-    # df = pd.read_csv("/Users/ndaidcnd/Desktop/Air_DEID/airflow-automation/Airflow/input/deid_runner.csv", header=None, names=['table_name'])
-    # tables = df['table_name'].to_list()
+    # if args.cdc_schema and args.cdc_table:
+    #     logger.info("Table source: CDC log `%s`.`%s`", args.cdc_schema, args.cdc_table)
+    #     tables = get_tables_from_cdc(args.cdc_schema, args.cdc_table)
+    # else:
+    #     logger.info("Table source: INFORMATION_SCHEMA (all base tables in '%s')", args.prod_schema)
+    #     engine = create_engine(_db_url(args.prod_schema), pool_recycle=3600, pool_pre_ping=True)
+    #     tables = get_all_tables(engine, args.prod_schema)
+    df = pd.read_csv("/Users/ndaidcnd/Desktop/Air_DEID/airflow-automation/Airflow/input/deid_runner.csv", header=None, names=['table_name'])
+    tables = df['table_name'].to_list()
 
     # Resolve to exact DB case before any DDL/DML (required for case-sensitive GCP MySQL)
     engine = create_engine(_db_url(args.prod_schema), pool_recycle=3600, pool_pre_ping=True)
