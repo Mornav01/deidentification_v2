@@ -304,7 +304,9 @@ def run_master_pii_delta(master_schema: str, staging_schema: str):
 
     if data_for_update:
         set_clauses = [
-            f"`{k}` = :{k}" for k in data_for_update[0].keys() if k != "patient_id"
+            f"`{k}` = COALESCE(:{k}, `{k}`)"
+            for k in data_for_update[0].keys()
+            if k != "patient_id"
         ]
         set_clause_str = ", ".join(set_clauses)
 
