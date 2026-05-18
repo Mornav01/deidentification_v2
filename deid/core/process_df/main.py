@@ -249,6 +249,7 @@ class JoinMapping:
         )
         with self.engine.connect() as conn:
             df = _sql_result_to_polars(conn.execute(stmt))
+        df = df.unique(subset=["patient_id"], keep="first")
         nd_logger.info(
             f"[{self.__class__.__name__}] Retrieved {df.height} rows from patient_mapping_table."
         )
@@ -281,9 +282,14 @@ class JoinMapping:
             )
             .where(mapping_table.c[id_column].in_(ids))
         )
+        col_map = {c.name.lower(): c for c in mapping_table.columns}
+        active_col = col_map.get("nd_activeflag")
+        if active_col is not None:
+            stmt = stmt.where(active_col == "Y")
         with self.engine.connect() as conn:
             df_mapping = _sql_result_to_polars(conn.execute(stmt))
             # Keep nd_id_column as Utf8 (cast already happened in SQL).
+        df_mapping = df_mapping.unique(subset=[id_column], keep="first")
 
         nd_logger.info(
             f"[{self.__class__.__name__}] Retrieved {df_mapping.height} rows from {table_name}."
@@ -368,6 +374,7 @@ class JoinMapping:
         )
         with self.engine.connect() as conn:
             df = _sql_result_to_polars(conn.execute(stmt))
+        df = df.unique(subset=["reference_mapping"], keep="first")
         nd_logger.info(
             f"[{self.__class__.__name__}] Retrieved {df.height} rows via reference_mapping."
         )
