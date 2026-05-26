@@ -46,7 +46,7 @@ def test_write_batch_inserts_and_updates_state(tmp_path, state_engine):
     from deid.config.task_models import WriteTaskConfig
 
     staging_root = str(tmp_path / ".deid_staging")
-    state_db_path = str(tmp_path / "state.db")
+    state_db_url = f"sqlite:///{tmp_path / 'state.db'}"
 
     with Session(state_engine) as s:
         s.add(BatchState(table_name="t1", start_id=1, end_id=5, status="processed"))
@@ -60,7 +60,7 @@ def test_write_batch_inserts_and_updates_state(tmp_path, state_engine):
         start_id=1,
         end_id=5,
         staging_root=staging_root,
-        state_db_path=state_db_path,
+        state_db_url=state_db_url,
         dest_conn_str="sqlite:///dest.db",
     )
 
@@ -85,3 +85,39 @@ def test_write_batch_inserts_and_updates_state(tmp_path, state_engine):
 
     # Verify dest DB handler was called
     mock_handler.engine.begin.assert_called()
+
+
+def test_write_batch_failure_resets_batch_via_reset_or_fail(tmp_path, state_engine):
+    from deid.models.state import BatchState
+    from deid.config.task_models import WriteTaskConfig
+
+    staging_root = str(tmp_path / ".deid_staging")
+    state_db_url = f"sqlite:///{tmp_path / 'state.db'}"
+
+    with Session(state_engine) as s:
+        s.add(BatchState(table_name="wfail", start_id=1, end_id=5, status="processed"))
+        s.commit()
+
+    df = pl.DataFrame({"nd_auto_increment_id": [1, 2, 3, 4, 5], "col1": ["a", "b", "c", "d", "e"]})
+    _write_processed_arrow(staging_root, "wfail", 1, 5, df)
+
+    config = WriteTaskConfig(
+        table_name="wfail",
+        start_id=1,
+        end_id=5,
+        staging_root=staging_root,
+        state_db_url=state_db_url,
+        dest_conn_str="sqlite:///dest.db",
+        run_config={"max_batch_retries": 1},
+    )
+
+    with patch("deid.tasks.write._write_batch_inner", side_effect=RuntimeError("simulated write failure")):
+        from deid.tasks.write import write_batch
+        with pytest.raises(RuntimeError, match="simulated write failure"):
+            write_batch(config.model_dump())
+
+    with Session(state_engine) as s:
+        batch = s.query(BatchState).filter_by(table_name="wfail").first()
+        assert batch.status == "failed"
+        assert batch.retry_count == 1
+        assert "simulated write failure" in (batch.last_failed_reason or "")

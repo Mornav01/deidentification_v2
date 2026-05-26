@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from deid.models.base import StateBase
@@ -17,9 +17,9 @@ class DbConfig(StateBase):
     __tablename__ = "db_configs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String, unique=True)
-    source_conn_str: Mapped[str] = mapped_column(String)
-    dest_conn_str: Mapped[str] = mapped_column(String)
+    name: Mapped[str] = mapped_column(String(255), unique=True)
+    source_conn_str: Mapped[str] = mapped_column(String(512))
+    dest_conn_str: Mapped[str] = mapped_column(String(512))
     run_config: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
@@ -33,13 +33,13 @@ class TableState(StateBase):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     db_config_id: Mapped[int] = mapped_column(ForeignKey("db_configs.id"))
-    table_name: Mapped[str] = mapped_column(String)
-    config_key: Mapped[str] = mapped_column(String, default="default", index=True)
-    status: Mapped[str] = mapped_column(String, default="pending")
+    table_name: Mapped[str] = mapped_column(String(255))
+    config_key: Mapped[str] = mapped_column(String(100), default="default", index=True)
+    status: Mapped[str] = mapped_column(String(50), default="pending")
     row_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     rules_config: Mapped[dict] = mapped_column(JSON, default=dict)
-    failure_remarks: Mapped[str | None] = mapped_column(String, nullable=True)
-    qc_status: Mapped[str | None] = mapped_column(String, nullable=True)
+    failure_remarks: Mapped[str | None] = mapped_column(Text, nullable=True)
+    qc_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
     qc_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -53,9 +53,9 @@ class RunLog(StateBase):
     __tablename__ = "run_logs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    config_hash: Mapped[str] = mapped_column(String)
+    config_hash: Mapped[str] = mapped_column(String(64))
     phases: Mapped[list] = mapped_column(JSON, default=list)
-    status: Mapped[str] = mapped_column(String, default="running")
+    status: Mapped[str] = mapped_column(String(50), default="running")
     started_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     stats: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -70,11 +70,13 @@ class BatchState(StateBase):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    table_name: Mapped[str] = mapped_column(String)
-    config_key: Mapped[str] = mapped_column(String, default="default")
+    table_name: Mapped[str] = mapped_column(String(255))
+    config_key: Mapped[str] = mapped_column(String(100), default="default")
     start_id: Mapped[int] = mapped_column(Integer)
     end_id: Mapped[int] = mapped_column(Integer)
     actual_end_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    status: Mapped[str] = mapped_column(String, default="pending")
+    status: Mapped[str] = mapped_column(String(50), default="pending")
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    last_failed_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)

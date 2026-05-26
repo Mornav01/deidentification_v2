@@ -32,10 +32,10 @@ class FailedRow(FailedRowsBase):
     __tablename__ = "failed_rows"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    source_db: Mapped[str] = mapped_column(String, index=True)
-    table_name: Mapped[str] = mapped_column(String, index=True)
-    reason: Mapped[str] = mapped_column(String)
-    row_data: Mapped[str] = mapped_column(Text)
+    source_db: Mapped[str] = mapped_column(String(255), index=True)
+    table_name: Mapped[str] = mapped_column(String(255), index=True)
+    reason: Mapped[str] = mapped_column(String(255))
+    row_data: Mapped[str] = mapped_column(Text(4294967295))
     failed_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 
@@ -55,11 +55,11 @@ def _get_schema_table(schema_name: str) -> Table:
         safe_name,
         _metadata,
         Column("id", Integer, primary_key=True, autoincrement=True),
-        Column("source_db", String, index=True),
-        Column("table_name", String, index=True),
-        Column("config_key", String, index=True, default="default"),
-        Column("reason", String),
-        Column("row_data", Text),
+        Column("source_db", String(255), index=True),
+        Column("table_name", String(255), index=True),
+        Column("config_key", String(100), index=True, default="default"),
+        Column("reason", String(255)),
+        Column("row_data", Text(4294967295)),
         Column("failed_at", DateTime, default=_utcnow),
         extend_existing=True,
     )

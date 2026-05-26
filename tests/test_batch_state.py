@@ -76,3 +76,33 @@ def test_batch_state_sentinel_for_no_id_tables(state_engine):
         row = session.query(BatchState).filter_by(table_name="no_id_table").first()
         assert row.start_id == -1
         assert row.end_id == -1
+
+
+def test_batch_state_new_columns_defaults(state_engine):
+    from deid.models.state import BatchState
+
+    with Session(state_engine) as session:
+        session.add(BatchState(table_name="t_defaults", start_id=1, end_id=100, status="pending"))
+        session.commit()
+
+    with Session(state_engine) as session:
+        row = session.query(BatchState).filter_by(table_name="t_defaults").first()
+        assert row.retry_count == 0
+        assert row.last_failed_reason is None
+
+
+def test_batch_state_retry_fields_roundtrip(state_engine):
+    from deid.models.state import BatchState
+
+    with Session(state_engine) as session:
+        session.add(BatchState(
+            table_name="t_retry", start_id=1, end_id=100,
+            status="failed", retry_count=2, last_failed_reason="oops",
+        ))
+        session.commit()
+
+    with Session(state_engine) as session:
+        row = session.query(BatchState).filter_by(table_name="t_retry").first()
+        assert row.retry_count == 2
+        assert row.last_failed_reason == "oops"
+        assert row.status == "failed"

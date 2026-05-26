@@ -57,6 +57,6 @@ def run_qc(self, raw_config: dict):
         table_config=config.table_config,
     )
 
-    _persist_qc_result(config.qc_results_db_path, result)
+    _persist_qc_result(config.qc_results_db_url, result)
 
     return {"table": config.table_name, "status": "completed", "result": result}

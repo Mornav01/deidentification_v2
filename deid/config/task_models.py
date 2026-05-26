@@ -48,7 +48,7 @@ class FetchTaskConfig(BaseModel):
     start_id: int
     end_id: int
     source_conn_str: str
-    state_db_path: str
+    state_db_url: str
     staging_root: str
     config_key: str = "default"
     batch_size: int = 1000
@@ -63,7 +63,7 @@ class ProcessTaskConfig(BaseModel):
     start_id: int
     end_id: int
     staging_root: str
-    state_db_path: str
+    state_db_url: str
     mapping_db_config: dict
     table_details: dict
     source_conn_str: str
@@ -73,7 +73,7 @@ class ProcessTaskConfig(BaseModel):
     pii_config: dict | None = None
     pii_db_conn_str: dict | None = None
     secondary_pii_configs: list | None = None
-    failed_rows_db_path: str | None = None
+    failed_rows_db_url: str | None = None
     redis_url: str = ""
     run_config: dict | None = None
 
@@ -83,7 +83,7 @@ class WriteTaskConfig(BaseModel):
     start_id: int
     end_id: int
     staging_root: str
-    state_db_path: str
+    state_db_url: str
     dest_conn_str: str
     config_key: str = "default"
     id_column: str = "nd_auto_increment_id"
@@ -101,7 +101,7 @@ class QCTaskConfig(BaseModel):
     qc_settings: dict = {}
     offset_days: int = 34
     sample_size: int = 100
-    qc_results_db_path: str = ""
+    qc_results_db_url: str = ""
 
 
 class ProgressEvent(BaseModel):

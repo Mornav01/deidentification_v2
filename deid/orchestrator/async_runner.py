@@ -33,10 +33,20 @@ async def run(config: DeidConfig, config_path: str):
     run_start = datetime.now(timezone.utc)
     run_timestamp = run_start.strftime("%Y-%m-%d_%H-%M-%S")
 
-    state_engine = create_state_engine(config.state_db_path)
+    if config.state_db_url:
+        logger.info("State DB: using MySQL at %s", config.state_db_url)
+    else:
+        logger.info("State DB: using SQLite at %s", config.state_db_path)
+
+    if config.failed_rows_db_url:
+        logger.info("Failed-rows DB: using MySQL at %s", config.failed_rows_db_url)
+    else:
+        logger.info("Failed-rows DB: using SQLite at %s", config.failed_rows_db_path)
+
+    state_engine = create_state_engine(config.resolved_state_db_url)
     create_all_state_tables(state_engine)
     mappings_engine = create_read_only_mappings_engine(config.mappings_connection_string)
-    failed_rows_engine = create_failed_rows_engine(config.failed_rows_db_path)
+    failed_rows_engine = create_failed_rows_engine(config.resolved_failed_rows_db_url)
     create_all_failed_rows_tables(failed_rows_engine)
     failed_rows_engine.dispose()
 
@@ -50,6 +60,11 @@ async def run(config: DeidConfig, config_path: str):
         import yaml as _yaml
         with open(config.secondary_pii_config_path) as f:
             config.secondary_pii_configs = _yaml.safe_load(f)
+
+    if config.table_overrides_path and not config.table_overrides:
+        import yaml as _yaml
+        with open(config.table_overrides_path) as f:
+            config.table_overrides = _yaml.safe_load(f) or {}
 
     # ── Validate prerequisites ────────────────────────────────────────────
     from deid.models.mappings import PatientMapping
@@ -257,12 +272,15 @@ async def _setup_phase(config: DeidConfig, state_engine):
     from deid.models.state import BatchState
     from deid.staging import get_staging_root, cleanup_tmp_files
 
-    batch_size = config.deidentification.batch_size
     staging_root = get_staging_root(config.state_db_path)
 
     with Session(state_engine) as session:
         for table_cfg in config.tables:
             tname = table_cfg.name
+            # Per-table batch_size override from table_overrides YAML; falls back to global.
+            overrides = (config.table_overrides or {}).get(tname, {})
+            batch_size = overrides.get("batch_size") or config.deidentification.batch_size
+
             row_count = table_row_counts.get(tname, 0)
             if row_count == 0:
                 # Mark 0-row tables as completed immediately — nothing to process.
@@ -285,6 +303,8 @@ async def _setup_phase(config: DeidConfig, state_engine):
                     # Always reset to pending during setup — stale "done" rows from
                     # a previously interrupted run must not count toward this run's total.
                     existing.status = "pending"
+                    existing.retry_count = 0
+                    existing.last_failed_reason = None
                 else:
                     session.add(BatchState(
                         table_name=tname, start_id=offset, end_id=end,
@@ -333,11 +353,17 @@ async def _deidentify_phase(config, state_engine):
             return
 
     # Initial dispatch: atomically claim and dispatch the FIRST pending batch per table.
+    # Scoped to configured_table_names so that pending batches left over from a previous
+    # run (tables not in the current run) are not accidentally re-dispatched.
     from deid.tasks.fetch import _claim_next_pending_batch
     with Session(state_engine) as session:
         table_names_pending = [
             r[0] for r in session.query(BatchState.table_name)
-            .filter_by(status="pending", config_key=config.config_key).distinct().all()
+            .filter(
+                BatchState.status == "pending",
+                BatchState.config_key == config.config_key,
+                BatchState.table_name.in_(configured_table_names),
+            ).distinct().all()
         ]
     for tname in table_names_pending:
         with Session(state_engine) as session:
@@ -386,20 +412,57 @@ async def _deidentify_phase(config, state_engine):
                 )
                 .count()
             )
+            failed_count = (
+                session.query(BatchState)
+                .filter(
+                    BatchState.config_key == config.config_key,
+                    BatchState.status == "failed",
+                    BatchState.table_name.in_(configured_table_names),
+                )
+                .count()
+            )
 
-        if done_count == total:
-            logger.info("All %d batches complete.", total)
+        if done_count + failed_count == total:
+            if failed_count:
+                logger.warning(
+                    "Pipeline complete: %d/%d batches done, %d permanently failed.",
+                    done_count, total, failed_count,
+                )
+            else:
+                logger.info("All %d batches complete.", total)
             break
 
         if done_count > last_done_count:
             last_done_count = done_count
             last_progress_time = time.monotonic()
-            logger.info("Progress: %d/%d batches done.", done_count, total)
+            suffix = f", {failed_count} permanently failed" if failed_count else ""
+            logger.info("Progress: %d/%d batches done%s.", done_count, total, suffix)
         elif time.monotonic() - last_progress_time > stuck_timeout:
             logger.error(
                 "Pipeline stuck: no progress for %ds. %d/%d batches done.",
                 stuck_timeout, done_count, total,
             )
+            with Session(state_engine) as session:
+                stuck_batches = (
+                    session.query(BatchState)
+                    .filter(
+                        BatchState.config_key == config.config_key,
+                        BatchState.table_name.in_(configured_table_names),
+                        BatchState.status != "done",
+                    )
+                    .order_by(BatchState.table_name, BatchState.start_id)
+                    .all()
+                )
+            if stuck_batches:
+                from collections import defaultdict
+                by_table: dict = defaultdict(lambda: defaultdict(list))
+                for b in stuck_batches:
+                    by_table[b.table_name][b.status].append(f"{b.start_id}-{b.end_id}")
+                lines = ["Stuck at timeout — non-done batches:"]
+                for tname, statuses in sorted(by_table.items()):
+                    for status, ranges in sorted(statuses.items()):
+                        lines.append(f"  {tname}: {len(ranges)} '{status}' — {ranges[:3]}")
+                logger.error("\n".join(lines))
             break
 
         # Watchdog: re-dispatch stalled table chains (pending with no in-flight work).
@@ -408,14 +471,46 @@ async def _deidentify_phase(config, state_engine):
         # failed batch (reset to 'pending') is re-dispatched even while other batches
         # for the same table are still in-flight — previously the guard blocked the
         # watchdog until ALL in-flight work finished, causing the pipeline to stall.
-        if done_count < total:
+        if done_count + failed_count < total:
             from deid.tasks.fetch import _claim_next_pending_batch
+            from deid.staging import batch_fetched_path, batch_processed_path
             with Session(state_engine) as session:
+                # Mid-run reconciliation: reset stuck fetched/processed batches whose
+                # Arrow files have disappeared (worker crash between file write and state
+                # update, or disk issue), so the watchdog can re-dispatch them.
+                stuck_mid = session.query(BatchState).filter(
+                    BatchState.config_key == config.config_key,
+                    BatchState.table_name.in_(configured_table_names),
+                    BatchState.status.in_(["fetched", "processed"]),
+                ).all()
+                reconciled = 0
+                for _b in stuck_mid:
+                    _fetched_p = batch_fetched_path(
+                        staging_root, _b.table_name, _b.start_id, _b.end_id, config.config_key
+                    )
+                    _proc_p = batch_processed_path(
+                        staging_root, _b.table_name, _b.start_id, _b.end_id, config.config_key
+                    )
+                    if _b.status == "fetched" and not _fetched_p.exists() and not _proc_p.exists():
+                        _b.status = "pending"
+                        reconciled += 1
+                    elif _b.status == "processed" and not _proc_p.exists():
+                        _b.status = "pending"
+                        reconciled += 1
+                if reconciled:
+                    session.commit()
+                    logger.warning(
+                        "Mid-run reconciliation: reset %d stuck batch(es) to pending",
+                        reconciled,
+                    )
+
                 table_names_with_pending = [
                     r[0] for r in session.query(BatchState.table_name)
-                    .filter_by(status="pending", config_key=config.config_key)
-                    .distinct()
-                    .all()
+                    .filter(
+                        BatchState.status == "pending",
+                        BatchState.config_key == config.config_key,
+                        BatchState.table_name.in_(configured_table_names),
+                    ).distinct().all()
                 ]
                 stalled = [
                     tname for tname in table_names_with_pending
@@ -492,11 +587,12 @@ def _build_fetch_config(config, batch, staging_root, mappings_conn_str):
         start_id=batch.start_id,
         end_id=batch.end_id,
         source_conn_str=config.source_db.connection_string(),
-        state_db_path=config.state_db_path,
+        state_db_url=config.resolved_state_db_url,
         staging_root=str(staging_root),
         config_key=config.config_key,
         batch_size=config.deidentification.batch_size,
         redis_url=config.redis_url,
+        run_config={"max_batch_retries": config.workers.max_batch_retries},
     ).model_dump()
     # Extra fields forwarded by fetch_batch to process_batch and write_batch
     base["mapping_db_config"] = {"connection_str": mappings_conn_str}
@@ -509,7 +605,7 @@ def _build_fetch_config(config, batch, staging_root, mappings_conn_str):
         base["pii_db_conn_str"] = config.pii_db
     if config.secondary_pii_configs:
         base["secondary_pii_configs"] = config.secondary_pii_configs
-    base["failed_rows_db_path"] = config.failed_rows_db_path
+    base["failed_rows_db_url"] = config.resolved_failed_rows_db_url
     return base
 
 
@@ -520,7 +616,7 @@ def _build_process_config(config, batch, staging_root, mappings_conn_str):
         start_id=batch.start_id,
         end_id=batch.end_id,
         staging_root=str(staging_root),
-        state_db_path=config.state_db_path,
+        state_db_url=config.resolved_state_db_url,
         mapping_db_config={"connection_str": mappings_conn_str},
         table_details=_get_table_details(config, batch.table_name),
         source_conn_str=config.source_db.connection_string(),
@@ -530,8 +626,9 @@ def _build_process_config(config, batch, staging_root, mappings_conn_str):
         pii_config=config.pii_config,
         pii_db_conn_str=config.pii_db,
         secondary_pii_configs=config.secondary_pii_configs,
-        failed_rows_db_path=config.failed_rows_db_path,
+        failed_rows_db_url=config.resolved_failed_rows_db_url,
         redis_url=config.redis_url,
+        run_config={"max_batch_retries": config.workers.max_batch_retries},
     ).model_dump()
     # Extra field forwarded by process_batch to write_batch
     base["dest_conn_str"] = config.destination_db.connection_string()
@@ -545,11 +642,12 @@ def _build_write_config(config, batch, staging_root):
         start_id=batch.start_id,
         end_id=batch.end_id,
         staging_root=str(staging_root),
-        state_db_path=config.state_db_path,
+        state_db_url=config.resolved_state_db_url,
         dest_conn_str=config.destination_db.connection_string(),
         config_key=config.config_key,
         redis_url=config.redis_url,
         table_details=_get_table_details(config, batch.table_name),
+        run_config={"max_batch_retries": config.workers.max_batch_retries},
     ).model_dump()
 
 
@@ -579,7 +677,7 @@ async def _qc_phase(config, state_engine):
             offset_days=config.deidentification.date_offset_days,
             sample_size=config.qc.sample_size,
             table_config=_get_table_details(config, tname),
-            qc_results_db_path=config.qc_results_db_path,
+            qc_results_db_url=config.resolved_qc_results_db_url,
         )
         r = run_qc.apply_async(args=[qc_config.model_dump()], queue=f"deid-process-{config.config_key}")
         logger.info("Dispatched QC task for table '%s'", tname)

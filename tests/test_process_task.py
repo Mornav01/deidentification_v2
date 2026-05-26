@@ -45,7 +45,7 @@ def test_process_batch_deidentifies_and_writes_proc_arrow(tmp_path, state_engine
     from deid.config.task_models import ProcessTaskConfig
 
     staging_root = str(tmp_path / ".deid_staging")
-    state_db_path = str(tmp_path / "state.db")
+    state_db_url = f"sqlite:///{tmp_path / 'state.db'}"
 
     with Session(state_engine) as s:
         s.add(BatchState(table_name="t1", start_id=1, end_id=5, status="fetched"))
@@ -59,7 +59,7 @@ def test_process_batch_deidentifies_and_writes_proc_arrow(tmp_path, state_engine
         start_id=1,
         end_id=5,
         staging_root=staging_root,
-        state_db_path=state_db_path,
+        state_db_url=state_db_url,
         mapping_db_config={"connection_str": "sqlite:///mappings.db"},
         table_details={"columns_details": []},
         source_conn_str="sqlite:///src.db",

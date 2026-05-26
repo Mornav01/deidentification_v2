@@ -57,11 +57,25 @@ def fetch_batch(self, raw_config: dict):
                  duration_ms=duration_ms, peak_memory_mb=get_peak_memory_mb())
         return result
     except Exception as exc:
-        # Mark batch as failed so the watchdog doesn't treat it as in-flight
+        # Reset batch to pending or mark permanently failed after max retries
         try:
-            _update_batch_status(config, "pending")
+            from deid.tasks.batch_utils import reset_or_fail_batch, _is_connection_error
+            max_retries = (config.run_config or {}).get("max_batch_retries", 3)
+            if _is_connection_error(exc):
+                # Source DB connection drops are transient — give more attempts
+                max_retries = max(max_retries, 10)
+            new_status = reset_or_fail_batch(
+                get_cached_state_engine(config.state_db_url),
+                config.table_name, config.start_id, config.end_id,
+                config.config_key, max_retries, f"{type(exc).__name__}: {exc}",
+            )
+            if new_status == "failed":
+                logger.error(
+                    "Batch %s permanently failed after %d retries: %s",
+                    batch_tag, max_retries, exc,
+                )
         except Exception:
-            logger.warning("Could not reset batch %s to pending after failure", batch_tag)
+            logger.warning("Could not reset batch %s after failure", batch_tag)
         _publish(config, LogLevel.ERROR, "fetch",
                  f"batch {batch_tag} failed: {exc}",
                  start_id=config.start_id, end_id=config.end_id,
@@ -71,7 +85,7 @@ def fetch_batch(self, raw_config: dict):
 
 def _fetch_batch_inner(config: FetchTaskConfig, raw_config: dict, batch_tag: str, root):
     # Idempotency guard: handle re-delivery from task_acks_late after worker kill.
-    engine = get_cached_state_engine(config.state_db_path)
+    engine = get_cached_state_engine(config.state_db_url)
     with Session(engine) as session:
         batch = session.query(BatchState).filter_by(
             table_name=config.table_name,
@@ -96,14 +110,14 @@ def _fetch_batch_inner(config: FetchTaskConfig, raw_config: dict, batch_tag: str
                 "start_id": config.start_id,
                 "end_id": config.end_id,
                 "staging_root": str(root),
-                "state_db_path": config.state_db_path,
+                "state_db_url": config.state_db_url,
                 "config_key": config.config_key,
                 "redis_url": config.redis_url,
                 "run_config": config.run_config,
                 **{k: raw_config[k] for k in (
                     "mapping_db_config", "table_details", "source_conn_str",
                     "offset_days", "pii_config", "pii_db_conn_str",
-                    "secondary_pii_configs", "dest_conn_str", "failed_rows_db_path",
+                    "secondary_pii_configs", "dest_conn_str", "failed_rows_db_url",
                 ) if k in raw_config},
             }
             process_batch.apply_async(args=[process_config], queue=f"deid-process-{config.config_key}")
@@ -181,14 +195,14 @@ def _fetch_batch_inner(config: FetchTaskConfig, raw_config: dict, batch_tag: str
         "start_id": config.start_id,
         "end_id": config.end_id,
         "staging_root": str(root),
-        "state_db_path": config.state_db_path,
+        "state_db_url": config.state_db_url,
         "config_key": config.config_key,
         "redis_url": config.redis_url,
         "run_config": config.run_config,
         **{k: raw_config[k] for k in (
             "mapping_db_config", "table_details", "source_conn_str",
             "offset_days", "pii_config", "pii_db_conn_str",
-            "secondary_pii_configs", "dest_conn_str", "failed_rows_db_path",
+            "secondary_pii_configs", "dest_conn_str", "failed_rows_db_url",
         ) if k in raw_config},
     }
     process_batch.apply_async(args=[process_config], queue=f"deid-process-{config.config_key}")
@@ -227,7 +241,7 @@ def _claim_next_pending_batch(session: Session, table_name: str, config_key: str
 
 def _dispatch_next_fetch(config: FetchTaskConfig, raw_config: dict, last_fetched_id: int):
     """Atomically claim and dispatch the next pending batch for this table."""
-    engine = get_cached_state_engine(config.state_db_path)
+    engine = get_cached_state_engine(config.state_db_url)
     with Session(engine) as session:
         next_batch = _claim_next_pending_batch(session, config.table_name, config.config_key)
         if next_batch:
@@ -244,7 +258,7 @@ def _staging_root(config: FetchTaskConfig):
 
 
 def _update_batch_status(config: FetchTaskConfig, status: str, actual_end_id: int | None = None):
-    engine = get_cached_state_engine(config.state_db_path)
+    engine = get_cached_state_engine(config.state_db_url)
     with Session(engine) as session:
         batch = session.query(BatchState).filter_by(
             table_name=config.table_name,

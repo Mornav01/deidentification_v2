@@ -25,9 +25,21 @@ def _enable_wal(dbapi_conn, connection_record):
 
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
-def create_state_engine(db_path: str):
-    engine = create_engine(f"sqlite:///{db_path}", echo=False)
-    event.listen(engine, "connect", _enable_wal)
+def create_state_engine(db_url: str):
+    """Create an engine for the state database.
+
+    Accepts either a full SQLAlchemy URL (``mysql+pymysql://...``,
+    ``sqlite:///path``) or a bare file path (treated as SQLite for
+    backward compatibility).  WAL mode is only enabled for SQLite.
+    """
+    if "://" not in db_url:
+        db_url = f"sqlite:///{db_url}"
+    kwargs = {"echo": False}
+    if not db_url.startswith("sqlite"):
+        kwargs.update(pool_size=10, max_overflow=20, pool_pre_ping=True)
+    engine = create_engine(db_url, **kwargs)
+    if engine.dialect.name == "sqlite":
+        event.listen(engine, "connect", _enable_wal)
     return engine
 
 
@@ -87,10 +99,29 @@ def create_read_only_mappings_engine(conn_str: str):
     return engine
 
 
+def _migrate_batch_state_columns(engine) -> None:
+    """Additive migration: add retry_count / last_failed_reason if missing."""
+    from sqlalchemy import inspect as _inspect, text
+    insp = _inspect(engine)
+    if "batch_states" not in insp.get_table_names():
+        return
+    existing = {c["name"] for c in insp.get_columns("batch_states")}
+    with engine.begin() as conn:
+        if "retry_count" not in existing:
+            conn.execute(text(
+                "ALTER TABLE batch_states ADD COLUMN retry_count INTEGER DEFAULT 0 NOT NULL"
+            ))
+        if "last_failed_reason" not in existing:
+            conn.execute(text(
+                "ALTER TABLE batch_states ADD COLUMN last_failed_reason TEXT"
+            ))
+
+
 @validate_call(config=dict(arbitrary_types_allowed=True))
 def create_all_state_tables(engine):
     import deid.models.state  # noqa: F401 — ensure models are registered
     StateBase.metadata.create_all(engine)
+    _migrate_batch_state_columns(engine)
 
 
 # Module-level state engine cache — one engine per state_db_path, per process.
@@ -99,19 +130,17 @@ def create_all_state_tables(engine):
 _state_engine_cache: dict = {}
 
 
-def get_cached_state_engine(db_path: str):
-    """Return a cached state engine for ``db_path``.
+def get_cached_state_engine(db_url: str):
+    """Return a cached state engine for ``db_url``.
 
+    Accepts a full SQLAlchemy URL or a bare file path (SQLite).
     Creates the engine and initialises tables on first call per process.
-    Subsequent calls return the same engine, eliminating the overhead of
-    engine create/dispose cycles on every batch status update in the hot
-    task path.
     """
-    if db_path not in _state_engine_cache:
-        engine = create_state_engine(db_path)
+    if db_url not in _state_engine_cache:
+        engine = create_state_engine(db_url)
         create_all_state_tables(engine)
-        _state_engine_cache[db_path] = engine
-    return _state_engine_cache[db_path]
+        _state_engine_cache[db_url] = engine
+    return _state_engine_cache[db_url]
 
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
@@ -121,9 +150,20 @@ def create_all_mappings_tables(engine):
 
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
-def create_failed_rows_engine(db_path: str):
-    engine = create_engine(f"sqlite:///{db_path}", echo=False)
-    event.listen(engine, "connect", _enable_wal)
+def create_failed_rows_engine(db_url: str):
+    """Create an engine for the failed-rows audit database.
+
+    Accepts either a full SQLAlchemy URL or a bare file path (SQLite).
+    WAL mode is only enabled for SQLite.
+    """
+    if "://" not in db_url:
+        db_url = f"sqlite:///{db_url}"
+    kwargs = {"echo": False}
+    if not db_url.startswith("sqlite"):
+        kwargs.update(pool_size=10, max_overflow=20, pool_pre_ping=True)
+    engine = create_engine(db_url, **kwargs)
+    if engine.dialect.name == "sqlite":
+        event.listen(engine, "connect", _enable_wal)
     return engine
 
 
@@ -140,24 +180,34 @@ def create_all_failed_rows_tables(engine):
 _failed_rows_engine_cache: dict = {}
 
 
-def get_cached_failed_rows_engine(db_path: str):
-    """Return a cached failed-rows engine for ``db_path``.
+def get_cached_failed_rows_engine(db_url: str):
+    """Return a cached failed-rows engine for ``db_url``.
 
+    Accepts a full SQLAlchemy URL or a bare file path (SQLite).
     Creates the engine and ensures tables exist on first call per process.
-    Subsequent calls return the same engine, eliminating the create/dispose
-    overhead that caused writer contention across parallel batch tasks.
     """
-    if db_path not in _failed_rows_engine_cache:
-        engine = create_failed_rows_engine(db_path)
+    if db_url not in _failed_rows_engine_cache:
+        engine = create_failed_rows_engine(db_url)
         create_all_failed_rows_tables(engine)
-        _failed_rows_engine_cache[db_path] = engine
-    return _failed_rows_engine_cache[db_path]
+        _failed_rows_engine_cache[db_url] = engine
+    return _failed_rows_engine_cache[db_url]
 
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
-def create_qc_results_engine(db_path: str):
-    engine = create_engine(f"sqlite:///{db_path}", echo=False)
-    event.listen(engine, "connect", _enable_wal)
+def create_qc_results_engine(db_url: str):
+    """Create an engine for the QC results database.
+
+    Accepts either a full SQLAlchemy URL or a bare file path (SQLite).
+    WAL mode is only enabled for SQLite.
+    """
+    if "://" not in db_url:
+        db_url = f"sqlite:///{db_url}"
+    kwargs = {"echo": False}
+    if not db_url.startswith("sqlite"):
+        kwargs.update(pool_size=5, max_overflow=10, pool_pre_ping=True)
+    engine = create_engine(db_url, **kwargs)
+    if engine.dialect.name == "sqlite":
+        event.listen(engine, "connect", _enable_wal)
     return engine
 
 

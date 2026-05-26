@@ -73,22 +73,43 @@ def run_command(
     create_celery_app(broker_url=cfg.redis_url, result_backend=cfg.redis_url)
     get_celery_app().conf.deid_config_path = str(config_path)
 
-    # Queue hygiene: drop stale messages from prior aborted runs for this config_key.
-    # State DB idempotency guards + watchdog re-dispatch cover correctness; this
-    # prevents stale tasks from running against renamed/removed state.
-    _purge_run_queues(cfg)
+    from deid.orchestrator.async_runner import run
 
-    worker_procs = _start_workers(cfg, str(config_path))
+    all_tables = cfg.tables[:]
+    batch_size = cfg.workers.table_batch_size
+    batches = (
+        [all_tables[i:i + batch_size] for i in range(0, len(all_tables), batch_size)]
+        if batch_size > 0 else [all_tables]
+    )
+    n = len(batches)
+    if n > 1:
+        logger.info(
+            "Processing %d tables in %d batch(es) of up to %d.",
+            len(all_tables), n, batch_size,
+        )
 
-    try:
-        from deid.orchestrator.async_runner import run
+    interrupted = False
+    for idx, batch in enumerate(batches):
+        if interrupted:
+            break
+        cfg.tables = batch
+        if n > 1:
+            logger.info("Table batch %d/%d: %s", idx + 1, n, [t.name for t in batch])
+        # Queue hygiene: drop stale messages for this batch's queues.
+        _purge_run_queues(cfg)
+        worker_procs = _start_workers(cfg, str(config_path))
+        try:
+            asyncio.run(run(cfg, str(config_path)))
+            if n > 1:
+                typer.echo(f"Batch {idx + 1}/{n} complete.")
+        except KeyboardInterrupt:
+            typer.echo("\nInterrupted — shutting down...")
+            interrupted = True
+        finally:
+            _stop_workers(worker_procs)
 
-        asyncio.run(run(cfg, str(config_path)))
+    if not interrupted:
         typer.echo("De-identification completed successfully.")
-    except KeyboardInterrupt:
-        typer.echo("\nInterrupted — shutting down...")
-    finally:
-        _stop_workers(worker_procs)
 
 
 def _rerun_cleanup(cfg):
@@ -118,11 +139,12 @@ def _rerun_cleanup(cfg):
     #    Also delete any prior state for unmatched tables so _record_unmatched_tables
     #    writes a clean fresh row rather than updating a stale one.
     all_names_to_clear = table_names + list(cfg.unmatched_tables or [])
-    state_path = Path(cfg.state_db_path)
-    if state_path.exists() and all_names_to_clear:
+    _state_is_sqlite = cfg.resolved_state_db_url.startswith("sqlite:///")
+    _state_db_ready = (not _state_is_sqlite) or Path(cfg.state_db_path).exists()
+    if _state_db_ready and all_names_to_clear:
         from sqlalchemy import text as sa_text
         from deid.models.base import create_state_engine, create_all_state_tables
-        st_engine = create_state_engine(cfg.state_db_path)
+        st_engine = create_state_engine(cfg.resolved_state_db_url)
         create_all_state_tables(st_engine)
         try:
             from sqlalchemy import bindparam
@@ -143,14 +165,15 @@ def _rerun_cleanup(cfg):
             st_engine.dispose()
 
     # 3. Delete failed rows only for the tables being rerun
-    failed_path = Path(cfg.failed_rows_db_path)
-    if failed_path.exists() and table_names:
+    _fr_is_sqlite = cfg.resolved_failed_rows_db_url.startswith("sqlite:///")
+    _fr_db_ready = (not _fr_is_sqlite) or Path(cfg.failed_rows_db_path).exists()
+    if _fr_db_ready and table_names:
         from sqlalchemy import text as sa_text, inspect as sa_inspect
         from deid.models.base import create_failed_rows_engine
         from deid.models.failed_rows import get_schema_table_name
         schema_name = cfg.source_db.database
         fr_table = get_schema_table_name(schema_name)
-        fr_engine = create_failed_rows_engine(cfg.failed_rows_db_path)
+        fr_engine = create_failed_rows_engine(cfg.resolved_failed_rows_db_url)
         try:
             existing = set(sa_inspect(fr_engine).get_table_names())
             if fr_table in existing:
@@ -188,7 +211,7 @@ def _record_unmatched_tables(cfg):
     from deid.models.base import create_state_engine, create_all_state_tables
     from deid.models.state import DbConfig as StateDbConfig, TableState
 
-    engine = create_state_engine(cfg.state_db_path)
+    engine = create_state_engine(cfg.resolved_state_db_url)
     create_all_state_tables(engine)
     try:
         with Session(engine) as session:

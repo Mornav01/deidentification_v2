@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Float, Integer, String, Text, Boolean
+from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -22,9 +22,9 @@ class QCTableResult(QCResultsBase):
     __tablename__ = "qc_table_results"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    table_name: Mapped[str] = mapped_column(String, index=True)
+    table_name: Mapped[str] = mapped_column(String(255), index=True)
     is_qc_passed: Mapped[bool] = mapped_column(Boolean)
-    reason: Mapped[str] = mapped_column(String, default="")
+    reason: Mapped[str] = mapped_column(Text, default="")
     source_rows_count: Mapped[int] = mapped_column(Integer)
     dest_rows_count: Mapped[int] = mapped_column(Integer)
     sample_size: Mapped[int] = mapped_column(Integer, default=0)

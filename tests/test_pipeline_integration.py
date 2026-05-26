@@ -60,7 +60,7 @@ def test_fetch_process_write_chain(pipeline_env):
         "start_id": 1,
         "end_id": 3,
         "source_conn_str": "sqlite:///s.db",
-        "state_db_path": state_db,
+        "state_db_url": f"sqlite:///{state_db}",
         "staging_root": staging_root,
         # Extra keys forwarded to process_batch:
         "mapping_db_config": {"connection_str": "sqlite:///m.db"},

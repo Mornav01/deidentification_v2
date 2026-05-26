@@ -717,7 +717,7 @@ def start_de_identification_for_table(
             row_handler = InvalidRowHandler(
                 db_name=db_name,
                 table_name=table_name,
-                db_path=_run_config.get("failed_rows_db_path"),
+                db_path=_run_config.get("failed_rows_db_url") or _run_config.get("failed_rows_db_path"),
             )
             df = row_handler.handle(df)
 

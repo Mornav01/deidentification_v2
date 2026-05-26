@@ -22,7 +22,7 @@ class TestFetchTaskConfig:
             start_id=1,
             end_id=1000,
             source_conn_str="sqlite:///src.db",
-            state_db_path="./state.db",
+            state_db_url="sqlite:///state.db",
             staging_root="/tmp/.deid_staging",
         )
         assert config.table_name == "patients"
@@ -35,7 +35,7 @@ class TestFetchTaskConfig:
             start_id=1,
             end_id=100,
             source_conn_str="sqlite:///s.db",
-            state_db_path="./state.db",
+            state_db_url="sqlite:///state.db",
             staging_root="/tmp/staging",
         )
         dumped = config.model_dump()
@@ -50,7 +50,7 @@ class TestProcessTaskConfig:
             start_id=1,
             end_id=1000,
             staging_root="/tmp/.deid_staging",
-            state_db_path="./state.db",
+            state_db_url="sqlite:///state.db",
             mapping_db_config={"connection_str": "sqlite:///mappings.db"},
             table_details={"columns_details": []},
             source_conn_str="sqlite:///src.db",
@@ -64,7 +64,7 @@ class TestProcessTaskConfig:
             start_id=1,
             end_id=100,
             staging_root="/tmp/staging",
-            state_db_path="./state.db",
+            state_db_url="sqlite:///state.db",
             mapping_db_config={"connection_str": "sqlite:///m.db"},
             table_details={"columns_details": []},
             source_conn_str="sqlite:///s.db",
@@ -81,7 +81,7 @@ class TestWriteTaskConfig:
             start_id=1,
             end_id=1000,
             staging_root="/tmp/.deid_staging",
-            state_db_path="./state.db",
+            state_db_url="sqlite:///state.db",
             dest_conn_str="sqlite:///dest.db",
         )
         assert config.id_column == "nd_auto_increment_id"
@@ -93,7 +93,7 @@ class TestWriteTaskConfig:
             start_id=1,
             end_id=100,
             staging_root="/tmp/staging",
-            state_db_path="./state.db",
+            state_db_url="sqlite:///state.db",
             dest_conn_str="sqlite:///d.db",
         )
         dumped = config.model_dump()

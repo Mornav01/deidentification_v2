@@ -68,10 +68,12 @@ class WorkerSettings(BaseModel):
     fetchers: int = 2
     processors: int = 16
     max_retries: int = 1
+    max_batch_retries: int = 3
     task_timeout: int = 3600
     max_tasks_per_child: int = 1
     max_tasks_per_child_fetch: int | None = None
     max_tasks_per_child_process: int | None = None
+    table_batch_size: int = 0  # process N tables per batch; 0 = all at once
 
 
 class QCSettings(BaseModel):
@@ -100,10 +102,13 @@ class DeidConfig(BaseModel):
     join_db: Optional[DbConfig] = None
     config_key: str = "default"
     state_db_path: str = "./state.db"
+    state_db_url: Optional[str] = None
     mappings_db: Optional[DbConfig] = None
     mappings_db_path: str = ""
     failed_rows_db_path: str = "./failed_rows.db"
+    failed_rows_db_url: Optional[str] = None
     qc_results_db_path: str = "./qc_results.db"
+    qc_results_db_url: Optional[str] = None
     redis_url: str = "redis://localhost:6379/0"
     deidentification: DeidentificationSettings = DeidentificationSettings()
     tables: Optional[list[TableConfig]] = None
@@ -123,6 +128,8 @@ class DeidConfig(BaseModel):
     secondary_pii_configs: Optional[list] = None
     secondary_pii_config_path: Optional[str] = None
     pii_config_path: Optional[str] = None
+    table_overrides_path: Optional[str] = None
+    table_overrides: Optional[dict] = Field(default=None, exclude=True)
     reference_mappings_path: Optional[str] = None
     reference_mappings: dict[str, str] = Field(default_factory=dict, exclude=True)
 
@@ -169,6 +176,33 @@ class DeidConfig(BaseModel):
         if self.mappings_db:
             return self.mappings_db.connection_string()
         return f"sqlite:///{self.mappings_db_path}"
+
+    @property
+    def resolved_state_db_url(self) -> str:
+        """Full SQLAlchemy URL for the state database.
+
+        Uses ``state_db_url`` when set (e.g. ``mysql+pymysql://...``),
+        otherwise falls back to SQLite at ``state_db_path``.
+        """
+        return self.state_db_url or f"sqlite:///{self.state_db_path}"
+
+    @property
+    def resolved_failed_rows_db_url(self) -> str:
+        """Full SQLAlchemy URL for the failed-rows audit database.
+
+        Uses ``failed_rows_db_url`` when set, otherwise falls back to
+        SQLite at ``failed_rows_db_path``.
+        """
+        return self.failed_rows_db_url or f"sqlite:///{self.failed_rows_db_path}"
+
+    @property
+    def resolved_qc_results_db_url(self) -> str:
+        """Full SQLAlchemy URL for the QC results database.
+
+        Uses ``qc_results_db_url`` when set, otherwise falls back to
+        SQLite at ``qc_results_db_path``.
+        """
+        return self.qc_results_db_url or f"sqlite:///{self.qc_results_db_path}"
 
     @model_validator(mode="after")
     def require_tables_or_csv(self) -> "DeidConfig":

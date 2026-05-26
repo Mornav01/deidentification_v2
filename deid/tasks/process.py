@@ -55,11 +55,22 @@ def process_batch(self, raw_config: dict):
                  duration_ms=duration_ms, peak_memory_mb=get_peak_memory_mb())
         return result
     except Exception as exc:
-        # Reset batch to pending so the watchdog can re-dispatch it
+        # Reset batch to pending or mark permanently failed after max retries
         try:
-            _update_batch_status(config, "pending")
+            from deid.tasks.batch_utils import reset_or_fail_batch
+            max_retries = (config.run_config or {}).get("max_batch_retries", 3)
+            new_status = reset_or_fail_batch(
+                get_cached_state_engine(config.state_db_url),
+                config.table_name, config.start_id, config.end_id,
+                config.config_key, max_retries, f"{type(exc).__name__}: {exc}",
+            )
+            if new_status == "failed":
+                logger.error(
+                    "Batch %s permanently failed after %d retries: %s",
+                    batch_tag, max_retries, exc,
+                )
         except Exception:
-            logger.warning("Could not reset batch %s to pending after failure", batch_tag)
+            logger.warning("Could not reset batch %s after failure", batch_tag)
         _publish(config, LogLevel.ERROR, "process",
                  f"batch {batch_tag} failed: {exc}",
                  start_id=config.start_id, end_id=config.end_id,
@@ -69,7 +80,7 @@ def process_batch(self, raw_config: dict):
 
 def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
     # Idempotency guard: skip if already processed or beyond
-    engine = get_cached_state_engine(config.state_db_path)
+    engine = get_cached_state_engine(config.state_db_url)
     with Session(engine) as session:
         batch = session.query(BatchState).filter_by(
             table_name=config.table_name,
@@ -236,7 +247,7 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
     row_handler = InvalidRowHandler(
         db_name=config.source_conn_str.split("/")[-1] if "/" in config.source_conn_str else "",
         table_name=config.table_name,
-        db_path=config.failed_rows_db_path,
+        db_path=config.failed_rows_db_url,
         config_key=config.config_key,
     )
     df = row_handler.handle(df)
@@ -288,7 +299,7 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
         "start_id": config.start_id,
         "end_id": config.end_id,
         "staging_root": config.staging_root,
-        "state_db_path": config.state_db_path,
+        "state_db_url": config.state_db_url,
         "config_key": config.config_key,
         "redis_url": config.redis_url,
         "run_config": config.run_config,
@@ -305,7 +316,7 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
 
 
 def _update_batch_status(config: ProcessTaskConfig, status: str):
-    engine = get_cached_state_engine(config.state_db_path)
+    engine = get_cached_state_engine(config.state_db_url)
     with Session(engine) as session:
         batch = session.query(BatchState).filter_by(
             table_name=config.table_name,

@@ -96,7 +96,7 @@ async def _run_qc(config, table_filter: str | None = None):
     from deid.orchestrator.async_runner import _get_table_details
     from deid.tasks.qc import run_qc
 
-    state_engine = create_state_engine(config.state_db_path)
+    state_engine = create_state_engine(config.resolved_state_db_url)
 
     configured_tables = {t.name for t in config.tables}
     with Session(state_engine) as session:
@@ -121,7 +121,7 @@ async def _run_qc(config, table_filter: str | None = None):
             offset_days=config.deidentification.date_offset_days,
             sample_size=config.qc.sample_size,
             table_config=_get_table_details(config, tname),
-            qc_results_db_path=config.qc_results_db_path,
+            qc_results_db_url=config.resolved_qc_results_db_url,
         )
         r = run_qc.apply_async(args=[qc_config.model_dump()], queue=f"deid-process-{config.config_key}")
         logger.info("Dispatched QC task for table '%s'", tname)

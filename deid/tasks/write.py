@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
 try:
     import regex as re  # type: ignore[no-redef]
@@ -21,6 +22,7 @@ from deid.core.log_publisher import get_peak_memory_mb, make_log_record, publish
 from deid.models.base import get_cached_state_engine
 from deid.models.state import BatchState, TableState
 from deid.staging import batch_processed_path
+from deid.tasks.batch_utils import _is_lock_error, reset_or_fail_batch
 
 logger = logging.getLogger("deid.tasks.write")
 
@@ -43,20 +45,11 @@ def _get_cached_handler(conn_str: str) -> NDDBHandler:
     return _handler_cache[conn_str]
 
 
-_LOCK_WAIT_ERRORS = ("lock wait timeout", "deadlock found", "1205", "1213")
-
-
-def _is_lock_error(exc: Exception) -> bool:
-    msg = str(exc).lower()
-    return any(s in msg for s in _LOCK_WAIT_ERRORS)
-
-
 @shared_task(bind=True, name="deid.tasks.write.write_batch", max_retries=5)
 def write_batch(self, raw_config: dict):
     """Read processed Arrow file, insert to dest DB in a single transaction."""
     config = WriteTaskConfig(**raw_config)
     batch_tag = f"{config.start_id}-{config.end_id}"
-    import time
     t0 = time.monotonic()
     try:
         result = _write_batch_inner(config, batch_tag)
@@ -77,11 +70,21 @@ def write_batch(self, raw_config: dict):
                 self.max_retries, countdown,
             )
             raise self.retry(exc=exc, countdown=countdown)
-        # Reset batch to pending so the watchdog can re-dispatch it
+        # Reset batch to pending or mark permanently failed after max retries
         try:
-            _reset_batch_to_pending(config)
+            max_retries = (config.run_config or {}).get("max_batch_retries", 3)
+            new_status = reset_or_fail_batch(
+                get_cached_state_engine(config.state_db_url),
+                config.table_name, config.start_id, config.end_id,
+                config.config_key, max_retries, f"{type(exc).__name__}: {exc}",
+            )
+            if new_status == "failed":
+                logger.error(
+                    "Batch %s permanently failed after %d retries: %s",
+                    batch_tag, max_retries, exc,
+                )
         except Exception:
-            logger.warning("Could not reset batch %s to pending after failure", batch_tag)
+            logger.warning("Could not reset batch %s after failure", batch_tag)
         _publish(config, LogLevel.ERROR, "write",
                  f"batch {batch_tag} failed: {exc}",
                  start_id=config.start_id, end_id=config.end_id,
@@ -89,24 +92,9 @@ def write_batch(self, raw_config: dict):
         raise
 
 
-def _reset_batch_to_pending(config: WriteTaskConfig):
-    """Reset a failed batch to pending so the watchdog can re-dispatch it."""
-    engine = get_cached_state_engine(config.state_db_path)
-    with Session(engine) as session:
-        batch = session.query(BatchState).filter_by(
-            table_name=config.table_name,
-            start_id=config.start_id,
-            end_id=config.end_id,
-            config_key=config.config_key,
-        ).first()
-        if batch:
-            batch.status = "pending"
-            session.commit()
-
-
 def _write_batch_inner(config: WriteTaskConfig, batch_tag: str):
     # Idempotency guard: skip if already done
-    engine = get_cached_state_engine(config.state_db_path)
+    engine = get_cached_state_engine(config.state_db_url)
     with Session(engine) as session:
         batch = session.query(BatchState).filter_by(
             table_name=config.table_name,
@@ -136,8 +124,8 @@ def _write_batch_inner(config: WriteTaskConfig, batch_tag: str):
     delete_end = int(actual_end) if actual_end else config.end_id
 
     if df.is_empty():
-        proc_path.unlink(missing_ok=True)
         _update_batch_status_and_check_table(config)
+        proc_path.unlink(missing_ok=True)
         return {"table": config.table_name, "start_id": config.start_id,
                 "end_id": config.end_id, "status": "done", "rows": 0}
 
@@ -190,11 +178,13 @@ def _write_batch_inner(config: WriteTaskConfig, batch_tag: str):
             insert_sql = text(f"INSERT INTO {qi(config.table_name)} ({col_str}) VALUES ({val_str})")
             conn.execute(insert_sql, rows)
 
-    # 5. Delete processed file
-    proc_path.unlink(missing_ok=True)
-
-    # 6. Update BatchState and check table completion
+    # 5. Update BatchState and check table completion — must happen BEFORE
+    #    deleting the Arrow file so that a failure here leaves the file intact
+    #    and reconciliation can re-process the batch cleanly.
     _update_batch_status_and_check_table(config)
+
+    # 6. Delete processed file (only after state is safely committed)
+    proc_path.unlink(missing_ok=True)
 
     logger.info("Wrote %s batch %s (%d rows)", config.table_name, batch_tag, df.height)
 
@@ -203,32 +193,50 @@ def _write_batch_inner(config: WriteTaskConfig, batch_tag: str):
 
 
 def _update_batch_status_and_check_table(config: WriteTaskConfig):
-    """Mark batch as done; if all batches for table are done, mark table completed."""
-    engine = get_cached_state_engine(config.state_db_path)
-    with Session(engine) as session:
-        batch = session.query(BatchState).filter_by(
-            table_name=config.table_name,
-            start_id=config.start_id,
-            end_id=config.end_id,
-            config_key=config.config_key,
-        ).first()
-        if batch:
-            batch.status = "done"
-            session.commit()
+    """Mark batch as done; if all batches for table are done, mark table completed.
 
-        remaining = session.query(BatchState).filter(
-            BatchState.table_name == config.table_name,
-            BatchState.config_key == config.config_key,
-            BatchState.status != "done",
-        ).count()
-        if remaining == 0:
-            table_state = session.query(TableState).filter_by(
-                table_name=config.table_name,
-                config_key=config.config_key,
-            ).first()
-            if table_state:
-                table_state.status = "completed"
+    Uses a single commit to avoid a partial-update window where the batch is
+    marked done but the table is not.  Retries up to 5 times on SQLite BUSY so
+    that high-concurrency runs (many tables simultaneously) don't orphan batches.
+    """
+    engine = get_cached_state_engine(config.state_db_url)
+    for attempt in range(5):
+        try:
+            with Session(engine) as session:
+                batch = session.query(BatchState).filter_by(
+                    table_name=config.table_name,
+                    start_id=config.start_id,
+                    end_id=config.end_id,
+                    config_key=config.config_key,
+                ).first()
+                if batch:
+                    batch.status = "done"
+
+                remaining = session.query(BatchState).filter(
+                    BatchState.table_name == config.table_name,
+                    BatchState.config_key == config.config_key,
+                    BatchState.status != "done",
+                ).count()
+                if remaining == 0:
+                    table_state = session.query(TableState).filter_by(
+                        table_name=config.table_name,
+                        config_key=config.config_key,
+                    ).first()
+                    if table_state:
+                        table_state.status = "completed"
+
                 session.commit()
+            return
+        except Exception as exc:
+            if _is_lock_error(exc) and attempt < 4:
+                wait = 0.5 * (2 ** attempt)  # 0.5s, 1s, 2s, 4s
+                logger.warning(
+                    "state.db locked updating batch %s-%s for %s (attempt %d/5, retrying in %.1fs)",
+                    config.start_id, config.end_id, config.table_name, attempt + 1, wait,
+                )
+                time.sleep(wait)
+            else:
+                raise
 
 
 def _clean_type_str(raw: str) -> str:
