@@ -31,6 +31,7 @@ class InvalidRowHandler:
         ("_resolved_nd_patient_id", "no_resolved_patient_id"),
         ("nd_encounter_id", "no_resolved_encounter_id"),
         ("nd_appointment_id", "no_resolved_appointment_id"),
+        ("nd_chart_id", "no_resolved_chart_id"),
     ]
 
     def __init__(self, db_name: str, table_name: str, db_path: str | None = None, config_key: str = "default"):

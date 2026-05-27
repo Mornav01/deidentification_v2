@@ -203,8 +203,9 @@ class ReferenceMappingDataFrameJoiner:
         # Register the resolved column with the appropriate PHI-column list.
         if destination_column_type == "ENCOUNTER_ID":
             self.key_phi_columns[0].insert(0, destination_col_ref)
-        elif destination_column_type == "PATIENT_ID":
-            self.key_phi_columns[1].insert(0, destination_col_ref)
+        elif destination_column_type.startswith("PATIENT_"):
+            # key_phi_columns[1] is a dict; insert under the matching rule (or create entry).
+            self.key_phi_columns[1].setdefault(destination_column_type, []).insert(0, destination_col_ref)
         elif destination_column_type == "REFERENCE_PID":
             self.key_phi_columns[2].insert(0, destination_col_ref)
 

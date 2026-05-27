@@ -76,6 +76,7 @@ class ProcessTaskConfig(BaseModel):
     failed_rows_db_url: str | None = None
     redis_url: str = ""
     run_config: dict | None = None
+    patient_identifier_columns: list[str] | None = None
 
 
 class WriteTaskConfig(BaseModel):
@@ -90,6 +91,25 @@ class WriteTaskConfig(BaseModel):
     redis_url: str = ""
     run_config: dict | None = None
     table_details: dict | None = None
+
+
+class DeidentifyTaskConfig(BaseModel):
+    """Config for the legacy deidentify_table / deidentify_table_range Celery tasks."""
+    table_name: str
+    source_conn_str: str
+    dest_conn_str: str
+    mappings_db_path: str
+    batch_size: int = 10000
+    offset_days: int = 34
+    redis_url: str = ""
+    table_details_for_ui: dict = {}
+    mapping_db_config: dict = {}
+    universal_tables_config: dict | None = None
+    pii_config: dict | None = None
+    pii_db_conn_str: dict | None = None
+    secondary_pii_configs: list | None = None
+    run_config: dict | None = None
+    cache_dir: str | None = None
 
 
 class QCTaskConfig(BaseModel):

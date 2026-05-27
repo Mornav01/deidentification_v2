@@ -129,111 +129,124 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
             if join_db is not None:
                 join_db.close()
 
-    # 3. Mapping joins — try preloaded in-memory tables first; fall back to SQL
-    #    per-mapping when a specific table wasn't ready in time (partial preload).
+    # 3. Mapping joins
     preloaded = get_preloaded_data()
-    enc_df = preloaded.get("encounter_mapping")
-    pat_df = preloaded.get("patient_mapping")
-    apt_df = preloaded.get("appointment_mapping")
-
-    # Determine which mappings need SQL fallback
-    need_sql = (
-        (enc_df is None and bool(key_phi_columns[0])) or
-        (pat_df is None and bool(key_phi_columns[1] or key_phi_columns[2])) or
-        (apt_df is None and bool(key_phi_columns[3]))
+    possible_patient_identifier_columns: list[str] = (
+        config.mapping_db_config.get("patient_identifier_columns") or []
     )
+    if preloaded:
+        enc_df = preloaded.get("encounter_mapping")
+        pat_df = preloaded.get("patient_mapping")
+        apt_df = preloaded.get("appointment_mapping")
 
-    sql_obj = None
-    if need_sql:
-        sql_obj = JoinMapping(df, key_phi_columns, config.mapping_db_config, config.table_name)
+        if enc_df is not None and key_phi_columns[0]:
+            # Enrich enc_df with patient_mapping via nd_patient_id.
+            if pat_df is not None:
+                enc_enriched = join_dataframes(enc_df, pat_df,
+                                               left_on="nd_patient_id", right_on="nd_patient_id",
+                                               how="left", right_suffix="from_encounter_mapping",
+                                               drop_left_join_column=True)
+            else:
+                enc_enriched = enc_df
+            df = join_dataframes(df, enc_enriched, left_on=key_phi_columns[0][0],
+                                 right_on="encounter_id", how="left", right_suffix="",
+                                 drop_right_join_column=True)
 
-    try:
-        # --- Encounter mapping ---
-        if key_phi_columns[0]:
-            enc_from_sql = False
-            if enc_df is None and sql_obj is not None:
-                logger.warning("encounter_mapping not preloaded — using SQL fallback")
-                enc_df = sql_obj._get_encounter_mapping(sql_obj._get_distinct_encounterids())
-                enc_from_sql = True
-            if enc_df is not None:
-                # SQL fallback (_get_encounter_mapping) already runs the patient join internally
-                # and renames patient_id → patient_id_from_encounter_mapping, so skip here.
-                # For the raw preloaded table, do the patient enrichment only if patient_id exists.
-                if enc_from_sql or "patient_id" not in enc_df.columns:
-                    enc_enriched = enc_df
-                else:
-                    enrich_pat = pat_df if pat_df is not None else (
-                        sql_obj._get_patient_mapping(sql_obj._get_distinct_patientids())
-                        if sql_obj is not None else None
-                    )
-                    if enrich_pat is not None:
-                        enc_enriched = join_dataframes(enc_df, enrich_pat,
-                                                       left_on="patient_id", right_on="patient_id",
-                                                       how="left", right_suffix="from_encounter_mapping",
-                                                       drop_left_join_column=False)
-                        if "patient_id" in enc_enriched.columns:
-                            enc_enriched = enc_enriched.rename({"patient_id": "patient_id_from_encounter_mapping"})
-                    else:
-                        enc_enriched = enc_df
-                df = join_dataframes(df, enc_enriched, left_on=key_phi_columns[0][0],
+        # Direct patient mapping: one join per PATIENT_* rule, keyed by identifier column.
+        if pat_df is not None and key_phi_columns[1]:
+            pat_cols = pat_df.columns
+            for rule, columns in key_phi_columns[1].items():
+                if not columns:
+                    continue
+                left_col = columns[0]
+                identifier_col = "patient_id" if rule == "PATIENT_ID" else rule.split("_")[-1].lower()
+                if identifier_col in pat_cols and left_col in df.columns:
+                    df = join_dataframes(df, pat_df, left_on=left_col,
+                                         right_on=identifier_col, how="left",
+                                         right_suffix=f"from_{identifier_col}_mapping",
+                                         drop_right_join_column=True)
+
+        if pat_df is not None and key_phi_columns[2]:
+            df = join_dataframes(df, pat_df, left_on=key_phi_columns[2][0],
+                                 right_on="reference_mapping",
+                                 right_suffix="from_referencepid_mapping",
+                                 how="left", drop_right_join_column=True)
+
+        if apt_df is not None and key_phi_columns[3]:
+            if pat_df is not None:
+                apt_enriched = join_dataframes(apt_df, pat_df,
+                                               left_on="nd_patient_id", right_on="nd_patient_id",
+                                               how="left", right_suffix="from_appointment_mapping",
+                                               drop_left_join_column=True)
+            else:
+                apt_enriched = apt_df
+            df = join_dataframes(df, apt_enriched, left_on=key_phi_columns[3][0],
+                                 right_on="appointment_id", how="left",
+                                 drop_right_join_column=True)
+
+        chart_df = preloaded.get("chart_mapping")
+        if chart_df is not None and key_phi_columns[4]:
+            if pat_df is not None:
+                chart_enriched = join_dataframes(chart_df, pat_df,
+                                                 left_on="nd_patient_id", right_on="nd_patient_id",
+                                                 how="left", right_suffix="from_chart_mapping",
+                                                 drop_left_join_column=True)
+            else:
+                chart_enriched = chart_df
+            df = join_dataframes(df, chart_enriched, left_on=key_phi_columns[4][0],
+                                 right_on="chart_id", how="left",
+                                 drop_right_join_column=True)
+    else:
+        # Fallback: per-batch SQL joins via JoinMapping
+        mapping_obj = JoinMapping(df, key_phi_columns, config.mapping_db_config, config.table_name)
+        try:
+            _, validation_err = mapping_obj.get_possible_patient_identifier_columns()
+            if validation_err:
+                _update_table_state_failed(config, validation_err)
+                _publish(config, LogLevel.ERROR, "process",
+                         f"batch {config.start_id}-{config.end_id} skipped: {validation_err}",
+                         start_id=config.start_id, end_id=config.end_id, error=validation_err)
+                return {"table": config.table_name, "start_id": config.start_id,
+                        "end_id": config.end_id, "status": "failed", "rows": 0,
+                        "error": validation_err}
+
+            mapping_obj.apply_patient_mappings(possible_patient_identifier_columns)
+            df = mapping_obj.df
+
+            distinct_eids = mapping_obj._get_distinct_encounterids()
+            df_enc = mapping_obj._get_encounter_mapping(distinct_eids, possible_patient_identifier_columns)
+            if df_enc is not None and key_phi_columns[0]:
+                df = join_dataframes(df, df_enc, left_on=key_phi_columns[0][0],
                                      right_on="encounter_id", how="left", right_suffix="",
                                      drop_right_join_column=True)
 
-        # --- Patient mapping ---
-        if key_phi_columns[1]:
-            if pat_df is None and sql_obj is not None:
-                logger.warning("patient_mapping not preloaded — using SQL fallback")
-                pat_df = sql_obj._get_patient_mapping(sql_obj._get_distinct_patientids())
-            if pat_df is not None:
-                df = join_dataframes(df, pat_df, left_on=key_phi_columns[1][0],
-                                     right_on="patient_id", how="left",
-                                     right_suffix="from_patient_mapping",
-                                     drop_right_join_column=True)
-
-        # --- Reference PID mapping ---
-        if key_phi_columns[2]:
-            if pat_df is None and sql_obj is not None:
-                pat_df = sql_obj._get_patient_mapping(sql_obj._get_distinct_patientids())
-            if pat_df is not None:
-                df = join_dataframes(df, pat_df, left_on=key_phi_columns[2][0],
-                                     right_on="reference_mapping",
-                                     right_suffix="from_referencepid_mapping",
+            distinct_rpids = mapping_obj._get_distinct_referencepids()
+            df_ref = mapping_obj._get_reference_pid_mapping(distinct_rpids)
+            if df_ref is not None and key_phi_columns[2]:
+                df = join_dataframes(df, df_ref, left_on=key_phi_columns[2][0],
+                                     right_on="reference_mapping", right_suffix="from_referencepid_mapping",
                                      how="left", drop_right_join_column=True)
 
-        # --- Appointment mapping ---
-        if key_phi_columns[3]:
-            apt_from_sql = False
-            if apt_df is None and sql_obj is not None:
-                logger.warning("appointment_mapping not preloaded — using SQL fallback")
-                apt_df = sql_obj._get_appointment_mapping(sql_obj._get_distinct_appointmentids())
-                apt_from_sql = True
-            if apt_df is not None:
-                # SQL fallback already includes the patient join; preloaded is the raw table.
-                if apt_from_sql or "patient_id" not in apt_df.columns:
-                    apt_enriched = apt_df
-                else:
-                    enrich_pat = pat_df if pat_df is not None else (
-                        sql_obj._get_patient_mapping(sql_obj._get_distinct_patientids())
-                        if sql_obj is not None else None
-                    )
-                    if enrich_pat is not None:
-                        apt_enriched = join_dataframes(apt_df, enrich_pat,
-                                                       left_on="patient_id", right_on="patient_id",
-                                                       how="left", right_suffix="from_appointment_mapping",
-                                                       drop_left_join_column=False)
-                        if "patient_id" in apt_enriched.columns:
-                            apt_enriched = apt_enriched.rename({"patient_id": "patient_id_from_appointment_mapping"})
-                    else:
-                        apt_enriched = apt_df
-                df = join_dataframes(df, apt_enriched, left_on=key_phi_columns[3][0],
+            distinct_aids = mapping_obj._get_distinct_appointmentids()
+            df_apt = mapping_obj._get_appointment_mapping(distinct_aids, possible_patient_identifier_columns)
+            if df_apt is not None and key_phi_columns[3]:
+                df = join_dataframes(df, df_apt, left_on=key_phi_columns[3][0],
                                      right_on="appointment_id", how="left",
                                      drop_right_join_column=True)
-    finally:
-        if sql_obj is not None:
-            sql_obj.close_connection()
+
+            distinct_cids = mapping_obj._get_distinct_chartids()
+            df_chart = mapping_obj._get_chart_mapping(distinct_cids, possible_patient_identifier_columns)
+            if df_chart is not None and key_phi_columns[4]:
+                df = join_dataframes(df, df_chart, left_on=key_phi_columns[4][0],
+                                     right_on="chart_id", how="left",
+                                     drop_right_join_column=True)
+        finally:
+            mapping_obj.close_connection()
 
     # 4. Resolve patient identifiers
-    resolver = PatientIdentifierResolver(key_phi_columns, offset_days=config.offset_days)
+    resolver = PatientIdentifierResolver(
+        key_phi_columns, possible_patient_identifier_columns, offset_days=config.offset_days
+    )
     df = resolver.transform(df)
 
     # 5. Invalid row handling
@@ -327,3 +340,23 @@ def _update_batch_status(config: ProcessTaskConfig, status: str):
         if batch:
             batch.status = status
             session.commit()
+
+
+def _update_table_state_failed(config: ProcessTaskConfig, message: str):
+    """Mark the table as failed in state.db with a descriptive error message."""
+    from deid.models.state import TableState
+    engine = get_cached_state_engine(config.state_db_url)
+    with Session(engine) as session:
+        table_state = session.query(TableState).filter_by(
+            table_name=config.table_name,
+            config_key=config.config_key,
+        ).first()
+        if table_state:
+            table_state.status = "failed"
+            table_state.failure_remarks = message
+            session.commit()
+        else:
+            logger.warning(
+                "Could not find TableState for %s (config_key=%s) to record failure: %s",
+                config.table_name, config.config_key, message,
+            )

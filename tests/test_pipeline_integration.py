@@ -89,14 +89,16 @@ def test_fetch_process_write_chain(pipeline_env):
 
         # Setup process mocks
         mock_proc_src.return_value = MagicMock()
-        mock_ref.return_value.join_dataframe.return_value = (mock_df, ([], [], [], []))
+        mock_ref.return_value.join_dataframe.return_value = (mock_df, ([], {}, [], [], []))
         mock_jm_inst = MagicMock()
         mock_jm.return_value = mock_jm_inst
-        for m in ["_get_distinct_encounterids", "_get_distinct_patientids",
-                   "_get_distinct_referencepids", "_get_distinct_appointmentids"]:
+        mock_jm_inst.get_possible_patient_identifier_columns.return_value = ([], None)
+        mock_jm_inst.df = mock_df
+        for m in ["_get_distinct_encounterids", "_get_distinct_referencepids",
+                   "_get_distinct_appointmentids", "_get_distinct_chartids"]:
             getattr(mock_jm_inst, m).return_value = []
-        for m in ["_get_encounter_mapping", "_get_patient_mapping",
-                   "_get_reference_pid_mapping", "_get_appointment_mapping"]:
+        for m in ["_get_encounter_mapping", "_get_reference_pid_mapping",
+                   "_get_appointment_mapping", "_get_chart_mapping"]:
             getattr(mock_jm_inst, m).return_value = None
         mock_pir.return_value.transform.return_value = mock_df
         mock_irh.return_value.handle.return_value = mock_df

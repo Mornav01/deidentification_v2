@@ -378,6 +378,8 @@ _PHI_RULE_TO_DDL = {
     "ENCOUNTER_ID": "BIGINT",
     "REFERENCE_PID": "BIGINT",
     "APPOINTMENT_ID": "BIGINT",
+    "CHART_ID": "BIGINT",
+    "DOB": "INTEGER",
     "PATIENT_DOB": "INTEGER",
     "DATE_OFFSET": "DATETIME",
     "STATIC_OFFSET": "DATETIME",
@@ -403,6 +405,8 @@ def _apply_phi_type_overrides(col_schema: dict, table_details: dict | None) -> N
         rule = col_conf.get("de_identification_rule")
         if col_name and rule and col_name in col_schema:
             ddl = _PHI_RULE_TO_DDL.get(rule)
+            if ddl is None and rule.startswith("PATIENT_"):
+                ddl = "BIGINT"
             if ddl:
                 col_schema[col_name]["type"] = ddl
             elif rule == "MASK":
@@ -440,4 +444,7 @@ def _create_dest_table(handler: NDDBHandler, table_name: str, col_schema: dict):
             conn.exec_driver_sql("SET sql_mode = ''")
             conn.exec_driver_sql("SET innodb_strict_mode = 0")
         conn.exec_driver_sql(ddl_str)
+        if is_mysql:
+            conn.exec_driver_sql("SET innodb_strict_mode = 1")
+            conn.exec_driver_sql("SET sql_mode = 'STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION'")
     _created_dest_tables.add(table_name)

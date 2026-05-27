@@ -49,7 +49,10 @@ def _build_table_config(config: DeidConfig, table_name: str, rules: dict) -> dic
         offset_days=config.deidentification.date_offset_days,
         redis_url=config.redis_url,
         table_details_for_ui=table_details,
-        mapping_db_config={"connection_str": mappings_conn_str},
+        mapping_db_config={
+            "connection_str": mappings_conn_str,
+            "patient_identifier_columns": getattr(config.mapping_tables.get("patient"), "identifier_columns", []),
+        },
         run_config={
             "redis_url": config.redis_url,
             "log_verbosity": config.logging.log_verbosity.value,

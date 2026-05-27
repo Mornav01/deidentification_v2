@@ -88,10 +88,12 @@ class Rules(Enum):
     ENCOUNTER_ID = "ENCOUNTER_ID"
     REFERENCE_PID = "REFERENCE_PID"
     APPOINTMENT_ID = "APPOINTMENT_ID"
+    CHART_ID = "CHART_ID"
     MASK = "MASK"
     DATE_OFFSET = "DATE_OFFSET"
     STATIC_OFFSET = "STATIC_OFFSET"
     ZIP_CODE = "ZIP_CODE"
+    DOB = "DOB"
     PATIENT_DOB = "PATIENT_DOB"
     GENERIC_NOTES = "GENERIC_NOTES"
     NOTES = "NOTES"
@@ -165,6 +167,22 @@ class AppointmentIDRule(RuleBase):
         elif column in df.columns:
             nd_logger.warning(
                 f"[{self.__class__.__name__}] nd_appointment_id missing — "
+                f"nulling '{column}' to prevent PHI leakage"
+            )
+            df = df.with_columns(pl.lit(None).cast(df[column].dtype).alias(column))
+        return df
+
+
+class ChartIDRule(RuleBase):
+
+    def apply(self, df: pl.DataFrame, column_config: Dict) -> pl.DataFrame:
+        column = column_config["column_name"]
+        nd_logger.info(f"[{self.__class__.__name__}] Applying ChartIDRule for column: {column}")
+        if "nd_chart_id" in df.columns and column in df.columns:
+            df = df.with_columns(pl.col("nd_chart_id").cast(pl.Int64, strict=False).alias(column))
+        elif column in df.columns:
+            nd_logger.warning(
+                f"[{self.__class__.__name__}] nd_chart_id missing — "
                 f"nulling '{column}' to prevent PHI leakage"
             )
             df = df.with_columns(pl.lit(None).cast(df[column].dtype).alias(column))

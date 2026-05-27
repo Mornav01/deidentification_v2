@@ -18,20 +18,22 @@ class TestGetKeyPhiColumnList:
             {"column_name": "appt_id", "de_identification_rule": "APPOINTMENT_ID", "is_phi": True},
             {"column_name": "name", "de_identification_rule": "MASK", "is_phi": True},
         ]
-        enc, pat, ref, appt = get_key_phi_column_list(columns)
-        assert pat == ["pid"]
+        enc, pat, ref, appt, chart = get_key_phi_column_list(columns)
+        assert pat == {"PATIENT_ID": ["pid"]}
         assert enc == ["enc_id"]
         assert ref == ["ref_pid"]
         assert appt == ["appt_id"]
+        assert chart == []
 
     def test_non_phi_columns_ignored(self):
         from deid.core.process_df.main import get_key_phi_column_list
         columns = [
             {"column_name": "pid", "de_identification_rule": "PATIENT_ID", "is_phi": False},
         ]
-        enc, pat, ref, appt = get_key_phi_column_list(columns)
-        assert pat == []
+        enc, pat, ref, appt, chart = get_key_phi_column_list(columns)
+        assert pat == {}
         assert enc == []
+        assert chart == []
 
     def test_none_raises(self):
         from deid.core.process_df.main import get_key_phi_column_list
@@ -40,8 +42,8 @@ class TestGetKeyPhiColumnList:
 
     def test_empty_list(self):
         from deid.core.process_df.main import get_key_phi_column_list
-        enc, pat, ref, appt = get_key_phi_column_list([])
-        assert enc == [] and pat == [] and ref == [] and appt == []
+        enc, pat, ref, appt, chart = get_key_phi_column_list([])
+        assert enc == [] and pat == {} and ref == [] and appt == [] and chart == []
 
 
 # ---------------------------------------------------------------------------
@@ -54,9 +56,9 @@ class TestPatientIdentifierResolver:
         from deid.core.process_df.main import PatientIdentifierResolver
         df = pl.DataFrame({
             "patient_id": [1, 2],
-            "offset_from_patient_mapping": [10, 20],
+            "offset_from_patient_id_mapping": [10, 20],
         })
-        key_phi_columns = ([], ["patient_id"], [], [])
+        key_phi_columns = ([], {"PATIENT_ID": ["patient_id"]}, [], [], [])
         resolver = PatientIdentifierResolver(key_phi_columns, offset_days=34)
         result = resolver.transform(df)
         assert "_resolved_offset" in result.columns
@@ -66,9 +68,9 @@ class TestPatientIdentifierResolver:
         from deid.core.process_df.main import PatientIdentifierResolver
         df = pl.DataFrame({
             "patient_id": [1, 2],
-            "offset_from_patient_mapping": [None, 20],
+            "offset_from_patient_id_mapping": [None, 20],
         })
-        key_phi_columns = ([], ["patient_id"], [], [])
+        key_phi_columns = ([], {"PATIENT_ID": ["patient_id"]}, [], [], [])
         resolver = PatientIdentifierResolver(key_phi_columns, offset_days=34)
         result = resolver.transform(df)
         assert result["_resolved_offset"].to_list() == [34, 20]
@@ -76,7 +78,7 @@ class TestPatientIdentifierResolver:
     def test_resolved_offset_no_mapping_columns(self):
         from deid.core.process_df.main import PatientIdentifierResolver
         df = pl.DataFrame({"patient_id": [1, 2]})
-        key_phi_columns = ([], ["patient_id"], [], [])
+        key_phi_columns = ([], {"PATIENT_ID": ["patient_id"]}, [], [], [])
         resolver = PatientIdentifierResolver(key_phi_columns, offset_days=7)
         result = resolver.transform(df)
         assert result["_resolved_offset"].to_list() == [7, 7]
@@ -85,9 +87,9 @@ class TestPatientIdentifierResolver:
         from deid.core.process_df.main import PatientIdentifierResolver
         df = pl.DataFrame({
             "patient_id": [1, 2],
-            "nd_patient_id_from_patient_mapping": [100, 200],
+            "nd_patient_id_from_patient_id_mapping": [100, 200],
         })
-        key_phi_columns = ([], ["patient_id"], [], [])
+        key_phi_columns = ([], {"PATIENT_ID": ["patient_id"]}, [], [], [])
         resolver = PatientIdentifierResolver(key_phi_columns, offset_days=34)
         result = resolver.transform(df)
         assert "_resolved_nd_patient_id" in result.columns
@@ -97,15 +99,15 @@ class TestPatientIdentifierResolver:
         from deid.core.process_df.main import PatientIdentifierResolver
         df = pl.DataFrame({
             "patient_id": [1],
-            "nd_patient_id_from_patient_mapping": [100],
-            "offset_from_patient_mapping": [10],
+            "nd_patient_id_from_patient_id_mapping": [100],
+            "offset_from_patient_id_mapping": [10],
         })
-        key_phi_columns = ([], ["patient_id"], [], [])
+        key_phi_columns = ([], {"PATIENT_ID": ["patient_id"]}, [], [], [])
         resolver = PatientIdentifierResolver(key_phi_columns)
         result = resolver.transform(df)
         # Intermediate mapping columns should be dropped
-        assert "nd_patient_id_from_patient_mapping" not in result.columns
-        assert "offset_from_patient_mapping" not in result.columns
+        assert "nd_patient_id_from_patient_id_mapping" not in result.columns
+        assert "offset_from_patient_id_mapping" not in result.columns
         # But patient_id (the original PHI column) should remain
         assert "patient_id" in result.columns
 
@@ -116,9 +118,9 @@ class TestPatientIdentifierResolver:
         df = pl.DataFrame({
             "patient_id": [1],
             "nd_patient_id_from_referencepid_mapping": [999],
-            "nd_patient_id_from_patient_mapping": [100],
+            "nd_patient_id_from_patient_id_mapping": [100],
         })
-        key_phi_columns = ([], ["patient_id"], [], [])
+        key_phi_columns = ([], {"PATIENT_ID": ["patient_id"]}, [], [], [])
         resolver = PatientIdentifierResolver(key_phi_columns)
         result = resolver.transform(df)
         assert result["_resolved_nd_patient_id"].to_list() == [999]

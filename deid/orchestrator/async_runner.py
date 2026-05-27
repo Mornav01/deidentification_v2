@@ -82,6 +82,105 @@ async def run(config: DeidConfig, config_path: str):
                 "Run `deid mapping --config <config.yaml>` first."
             )
 
+    # ── Validate identifier_columns exist in patient_mapping_table ────────
+    _pat_cfg = config.mapping_tables.get("patient")
+    _identifier_cols = _pat_cfg.identifier_columns if _pat_cfg else []
+
+    # ── Guard: identifier_columns must not contain underscores ──────────────
+    # Underscores are ambiguous in rule names: PATIENT_MY_COL could mean
+    # identifier "MY_COL" or identifier "MY" with column "COL".
+    _bad_id_cols = [c for c in _identifier_cols if "_" in c]
+    if _bad_id_cols:
+        raise SystemExit(
+            f"identifier_columns entries must not contain underscores: {_bad_id_cols}. "
+            "Rename these columns in your patient_mapping_table to remove underscores "
+            "(e.g. 'chart_id' → 'chartid')."
+        )
+
+    # ── Single-identifier bypass: remap PATIENT_ID / PATIENT_DOB ────────────
+    # When exactly one identifier_column is configured, allow users to write
+    # legacy rule names PATIENT_ID and PATIENT_DOB in their rules CSV.
+    # These are automatically remapped before validation so downstream code
+    # always sees canonical names (e.g. PATIENT_CHARTID, DOB).
+    if len(_identifier_cols) == 1:
+        _single_id = _identifier_cols[0]
+        _remap = {
+            "PATIENT_ID": f"PATIENT_{_single_id.upper()}",
+            "PATIENT_DOB": "DOB",
+        }
+        _remapped_count = 0
+        for _table in (config.tables or []):
+            _new_rules: dict[str, str] = {}
+            for _col, _rule in _table.rules.items():
+                if _rule in _remap:
+                    _new_rules[_col] = _remap[_rule]
+                    _remapped_count += 1
+                else:
+                    _new_rules[_col] = _rule
+            _table.rules = _new_rules
+
+        if config.reference_mappings:
+            for _tbl_name, _ref_cfg in config.reference_mappings.items():
+                if isinstance(_ref_cfg, dict):
+                    _dct = _ref_cfg.get("destination_column_type", "")
+                    if _dct in _remap:
+                        config.reference_mappings[_tbl_name]["destination_column_type"] = _remap[_dct]
+                        _remapped_count += 1
+
+        if _remapped_count:
+            logger.info(
+                "Single-identifier mode: remapped %d rule(s) — "
+                "PATIENT_ID → PATIENT_%s, PATIENT_DOB → DOB.",
+                _remapped_count, _single_id.upper(),
+            )
+
+    if _identifier_cols:
+        from sqlalchemy import inspect as _insp_m
+        _mapping_insp = _insp_m(mappings_engine)
+        _actual_mapping_cols = [c["name"] for c in _mapping_insp.get_columns("patient_mapping_table")]
+        _missing_id_cols = [c for c in _identifier_cols if c not in _actual_mapping_cols]
+        if _missing_id_cols:
+            raise SystemExit(
+                f"identifier_columns {_missing_id_cols} not found in patient_mapping_table "
+                f"(case-sensitive). Available columns: {_actual_mapping_cols}. "
+                "Update 'mapping_tables.patient.identifier_columns' in your config to match exactly."
+            )
+
+    # ── Validate PATIENT_* rules in rules CSV match identifier_columns ────
+    if _identifier_cols:
+        _valid_patient_rules = {f"PATIENT_{c.upper()}" for c in _identifier_cols}
+
+        if config.tables:
+            _invalid_rules = [
+                (t.name, col, rule)
+                for t in config.tables
+                for col, rule in t.rules.items()
+                if rule.startswith("PATIENT_") and rule not in _valid_patient_rules
+            ]
+            if _invalid_rules:
+                raise SystemExit(
+                    f"Rules CSV contains PATIENT_* rules that don't match identifier_columns "
+                    f"{_identifier_cols}.\n"
+                    f"Invalid entries (table, column, rule): {_invalid_rules}\n"
+                    f"Valid PATIENT_* rules are: {sorted(_valid_patient_rules)}"
+                )
+
+        if config.reference_mappings:
+            _invalid_ref = [
+                (tbl, cfg.get("destination_column_type"))
+                for tbl, cfg in config.reference_mappings.items()
+                if isinstance(cfg, dict)
+                and cfg.get("destination_column_type", "").startswith("PATIENT_")
+                and cfg["destination_column_type"] not in _valid_patient_rules
+            ]
+            if _invalid_ref:
+                raise SystemExit(
+                    f"reference_mappings contain destination_column_type values that don't match "
+                    f"identifier_columns {_identifier_cols}.\n"
+                    f"Invalid entries (table, destination_column_type): {_invalid_ref}\n"
+                    f"Valid PATIENT_* values are: {sorted(_valid_patient_rules)}"
+                )
+
     if config.pii_db:
         if not config.pii_config:
             raise SystemExit(
@@ -595,7 +694,11 @@ def _build_fetch_config(config, batch, staging_root, mappings_conn_str):
         run_config={"max_batch_retries": config.workers.max_batch_retries},
     ).model_dump()
     # Extra fields forwarded by fetch_batch to process_batch and write_batch
-    base["mapping_db_config"] = {"connection_str": mappings_conn_str}
+    _pat_mapping = config.mapping_tables.get("patient")
+    base["mapping_db_config"] = {
+        "connection_str": mappings_conn_str,
+        "patient_identifier_columns": _pat_mapping.identifier_columns if _pat_mapping else [],
+    }
     base["table_details"] = _get_table_details(config, batch.table_name)
     base["offset_days"] = config.deidentification.date_offset_days
     base["dest_conn_str"] = config.destination_db.connection_string()
@@ -617,7 +720,13 @@ def _build_process_config(config, batch, staging_root, mappings_conn_str):
         end_id=batch.end_id,
         staging_root=str(staging_root),
         state_db_url=config.resolved_state_db_url,
-        mapping_db_config={"connection_str": mappings_conn_str},
+        mapping_db_config={
+            "connection_str": mappings_conn_str,
+            "patient_identifier_columns": (
+                config.mapping_tables.get("patient").identifier_columns
+                if config.mapping_tables.get("patient") else []
+            ),
+        },
         table_details=_get_table_details(config, batch.table_name),
         source_conn_str=config.source_db.connection_string(),
         config_key=config.config_key,

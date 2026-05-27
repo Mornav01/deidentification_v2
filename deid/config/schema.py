@@ -60,6 +60,7 @@ class MappingTableConfig(BaseModel):
     source_column: str
     destination_column: str
     reference: Optional[str] = None
+    identifier_columns: list[str] = []
 
 
 class WorkerSettings(BaseModel):

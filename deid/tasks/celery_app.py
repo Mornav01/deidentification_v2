@@ -22,9 +22,12 @@ _app: Celery | None = None
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
 def create_celery_app(
-    broker_url: str = "redis://localhost:6379/0",
+    broker_url: str | None = None,
     result_backend: str | None = None,
 ) -> Celery:
+    import os
+    if broker_url is None:
+        broker_url = os.environ.get("DEID_BROKER_URL", "redis://localhost:6379/0")
     global _app
     app = Celery("deid", include=_TASK_MODULES)
     app.conf.update(
@@ -89,7 +92,7 @@ def _preload_mappings(app: Celery) -> None:
     engine = create_read_only_mappings_engine(cfg.mappings_connection_string)
 
     # Tables that should filter by nd_ActiveFlag = 'Y' when that column exists.
-    _active_flag_tables = {"encounter_mapping_table", "appointment_mapping_table"}
+    _active_flag_tables = {"encounter_mapping_table", "appointment_mapping_table", "chart_mapping_table"}
 
     def _fetch_mapping_table(conn, table_name: str) -> tuple[list, list]:
         """Return (cols, rows) for a mapping table.
@@ -126,6 +129,7 @@ def _preload_mappings(app: Celery) -> None:
                 ("patient_mapping", "patient_mapping_table"),
                 ("encounter_mapping", "encounter_mapping_table"),
                 ("appointment_mapping", "appointment_mapping_table"),
+                ("chart_mapping", "chart_mapping_table"),
             ]:
                 try:
                     cols, rows = _fetch_mapping_table(conn, table_name)

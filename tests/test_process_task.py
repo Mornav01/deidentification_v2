@@ -74,17 +74,19 @@ def test_process_batch_deidentifies_and_writes_proc_arrow(tmp_path, state_engine
          patch("deid.tasks.process.NDDBHandler") as mock_handler, \
          patch("deid.tasks.write.write_batch") as mock_write:
 
-        mock_ref.return_value.join_dataframe.return_value = (df, ([], [], [], []))
+        mock_ref.return_value.join_dataframe.return_value = (df, ([], {}, [], [], []))
         mock_jm_inst = MagicMock()
         mock_jm.return_value = mock_jm_inst
+        mock_jm_inst.get_possible_patient_identifier_columns.return_value = ([], None)
+        mock_jm_inst.df = df
         mock_jm_inst._get_distinct_encounterids.return_value = []
-        mock_jm_inst._get_distinct_patientids.return_value = []
         mock_jm_inst._get_distinct_referencepids.return_value = []
         mock_jm_inst._get_distinct_appointmentids.return_value = []
+        mock_jm_inst._get_distinct_chartids.return_value = []
         mock_jm_inst._get_encounter_mapping.return_value = None
-        mock_jm_inst._get_patient_mapping.return_value = None
         mock_jm_inst._get_reference_pid_mapping.return_value = None
         mock_jm_inst._get_appointment_mapping.return_value = None
+        mock_jm_inst._get_chart_mapping.return_value = None
         mock_pir.return_value.transform.return_value = df
         mock_irh.return_value.handle.return_value = df
         mock_deid.return_value.apply_rules.return_value = df
