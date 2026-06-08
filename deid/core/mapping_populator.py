@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import random
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import func
@@ -143,22 +144,86 @@ def bulk_insert_patient_mappings(
     id_prefix: int,
     max_offset: int,
     random_seed: int = 42,
+    source_id_column: str = "patient_id",
 ) -> int:
-    """Bulk-insert new patient mappings, skipping IDs that already exist."""
-    rng = random.Random(random_seed)
+    """Bulk-insert new patient mappings using raw SQL with a configurable identifier column.
 
-    def factory(pid, next_id):
-        return PatientMapping(
-            nd_patient_id=next_id,
-            patient_id=pid,
-            offset=rng.randint(1, max_offset),
+    Uses raw SQL so the identifier column name is not hardcoded — it comes from
+    mapping_tables.patient.identifier_columns[0] in config.
+    """
+    import re
+    from sqlalchemy import text
+
+    # Validate column name: only word chars (letters, digits, underscores) allowed.
+    # This prevents SQL injection since column names cannot use bind parameters.
+    if not re.fullmatch(r"\w+", source_id_column):
+        raise ValueError(
+            f"source_id_column '{source_id_column}' contains invalid characters. "
+            "Only letters, digits, and underscores are allowed."
         )
 
-    return _bulk_insert_mappings(
-        mappings_engine, patient_ids, PatientMapping,
-        "patient_id", "nd_patient_id", factory, id_prefix,
-        "bulk_insert_patient_mappings",
+    if not patient_ids:
+        return 0
+
+    rng = random.Random(random_seed)
+    total_new = 0
+    now = datetime.now(timezone.utc)
+
+    with Session(mappings_engine) as session:
+        # Check which IDs already have a mapping row
+        existing_ids: set[str] = set()
+        for i in range(0, len(patient_ids), _WRITE_BATCH):
+            batch = patient_ids[i:i + _WRITE_BATCH]
+            params = {f"p{j}": v for j, v in enumerate(batch)}
+            placeholders = ", ".join(f":p{j}" for j in range(len(batch)))
+            rows = session.execute(
+                text(
+                    f"SELECT {source_id_column} FROM patient_mapping_table "
+                    f"WHERE {source_id_column} IN ({placeholders})"
+                ),
+                params,
+            ).fetchall()
+            existing_ids.update(str(r[0]) for r in rows)
+
+        new_ids = [pid for pid in patient_ids if pid not in existing_ids]
+        if not new_ids:
+            logger.info("bulk_insert_patient_mappings: all %d IDs already exist", len(patient_ids))
+            return 0
+
+        max_existing = session.execute(
+            text("SELECT MAX(nd_patient_id) FROM patient_mapping_table")
+        ).scalar()
+        next_id = (max_existing if max_existing is not None else id_prefix) + 1
+
+        for i in range(0, len(new_ids), _WRITE_BATCH):
+            batch = new_ids[i:i + _WRITE_BATCH]
+            rows_to_insert = [
+                {
+                    "nd_patient_id": next_id + j,
+                    "src_id": pid,
+                    "offset_val": rng.randint(1, max_offset),
+                    "now": now,
+                }
+                for j, pid in enumerate(batch)
+            ]
+            next_id += len(batch)
+            session.execute(
+                text(
+                    f"INSERT INTO patient_mapping_table "
+                    f"(nd_patient_id, {source_id_column}, offset, created_at, updated_at) "
+                    "VALUES (:nd_patient_id, :src_id, :offset_val, :now, :now)"
+                ),
+                rows_to_insert,
+            )
+            session.commit()
+            total_new += len(batch)
+            logger.debug("bulk_insert_patient_mappings: committed batch of %d", len(batch))
+
+    logger.info(
+        "bulk_insert_patient_mappings: created %d new mappings (%d already existed)",
+        total_new, len(existing_ids),
     )
+    return total_new
 
 
 def bulk_insert_encounter_mappings(
@@ -216,6 +281,7 @@ def populate_mappings(
     patient_id_prefix: int = 10000000,
     max_offset: int = 34,
     random_seed: int = 42,
+    source_id_column: str = "patient_id",
 ) -> dict:
     """Top-level orchestration: scan rules, fetch IDs from source, insert mappings.
 
@@ -259,6 +325,7 @@ def populate_mappings(
         patient_id_prefix,
         max_offset,
         random_seed,
+        source_id_column=source_id_column,
     )
 
     # ── 2. Encounters ─────────────────────────────────────────────────────

@@ -40,6 +40,16 @@ def run_mapping(config_path: str, mappings_db: str | None = None) -> dict:
 
     source = NDDBHandler(config.source_db.connection_string(), read_only=True)
 
+    # Derive the identifier column name used in patient_mapping_table from config.
+    # identifier_columns[0] is the primary column in the mapping table that holds
+    # the source patient ID. Falls back to "patient_id" for backward compatibility.
+    _pat_cfg = config.mapping_tables.get("patient") if config.mapping_tables else None
+    source_id_column = (
+        _pat_cfg.identifier_columns[0]
+        if _pat_cfg and _pat_cfg.identifier_columns
+        else "patient_id"
+    )
+
     try:
         print("\nScanning source tables for IDs...")
         summary = populate_mappings(
@@ -49,6 +59,7 @@ def run_mapping(config_path: str, mappings_db: str | None = None) -> dict:
             patient_id_prefix=config.deidentification.patient_id_prefix,
             max_offset=config.deidentification.date_offset_days,
             random_seed=config.deidentification.random_seed,
+            source_id_column=source_id_column,
         )
     finally:
         source.close()

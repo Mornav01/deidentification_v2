@@ -67,7 +67,7 @@ async def run(config: DeidConfig, config_path: str):
             config.table_overrides = _yaml.safe_load(f) or {}
 
     # ── Validate prerequisites ────────────────────────────────────────────
-    from deid.models.mappings import PatientMapping
+    from sqlalchemy import text as _text
 
     if not config.mappings_db and not Path(config.mappings_db_path).exists():
         raise SystemExit(
@@ -75,12 +75,15 @@ async def run(config: DeidConfig, config_path: str):
             "Run `deid mapping --config <config.yaml>` first."
         )
 
-    with Session(mappings_engine) as session:
-        if session.query(PatientMapping).count() == 0:
-            raise SystemExit(
-                "No patient mappings found in mappings DB. "
-                "Run `deid mapping --config <config.yaml>` first."
-            )
+    with mappings_engine.connect() as _conn:
+        _count = _conn.execute(
+            _text("SELECT COUNT(*) FROM patient_mapping_table")
+        ).scalar()
+    if _count == 0:
+        raise SystemExit(
+            "No patient mappings found in mappings DB. "
+            "Run `deid mapping --config <config.yaml>` first."
+        )
 
     # ── Validate identifier_columns exist in patient_mapping_table ────────
     _pat_cfg = config.mapping_tables.get("patient")

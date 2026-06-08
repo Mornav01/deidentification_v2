@@ -58,16 +58,7 @@ def run_command(
     if rerun:
         _rerun_cleanup(cfg)
 
-    if cfg.unmatched_tables:
-        _record_unmatched_tables(cfg)
-
-    if not cfg.tables:
-        typer.echo(
-            f"No tables to process — all tables_to_run were unmatched "
-            f"({cfg.unmatched_tables}). Recorded as failed in state.db.",
-            err=True,
-        )
-        raise typer.Exit(code=1)
+    configured_by_name = {t.name: t for t in cfg.tables}
 
     from deid.tasks.celery_app import create_celery_app, get_celery_app
     create_celery_app(broker_url=cfg.redis_url, result_backend=cfg.redis_url)
@@ -75,26 +66,63 @@ def run_command(
 
     from deid.orchestrator.async_runner import run
 
-    all_tables = cfg.tables[:]
     batch_size = cfg.workers.table_batch_size
-    batches = (
-        [all_tables[i:i + batch_size] for i in range(0, len(all_tables), batch_size)]
-        if batch_size > 0 else [all_tables]
-    )
-    n = len(batches)
+
+    if batch_size > 0 and cfg.tables_to_run:
+        # Per-batch path: iterate over the FULL tables_to_run list (including unmatched).
+        # Unmatched tables are failed lazily when their batch runs, not upfront.
+        batch_names_list = [
+            cfg.tables_to_run[i:i + batch_size]
+            for i in range(0, len(cfg.tables_to_run), batch_size)
+        ]
+    else:
+        # Upfront path: fail ALL unmatched immediately (existing behaviour).
+        if cfg.unmatched_tables:
+            _record_unmatched_tables(cfg)
+        if not cfg.tables:
+            typer.echo(
+                f"No tables to process — all tables_to_run were unmatched "
+                f"({cfg.unmatched_tables}). Recorded as failed in state.db.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        all_tables = cfg.tables[:]
+        batch_names_list = (
+            [[t.name for t in all_tables[i:i + batch_size]]
+             for i in range(0, len(all_tables), batch_size)]
+            if batch_size > 0 else [[t.name for t in all_tables]]
+        )
+
+    n = len(batch_names_list)
     if n > 1:
         logger.info(
-            "Processing %d tables in %d batch(es) of up to %d.",
-            len(all_tables), n, batch_size,
+            "Processing %d table(s) in %d batch(es) of up to %d.",
+            len(cfg.tables_to_run or cfg.tables), n, batch_size,
         )
 
     interrupted = False
-    for idx, batch in enumerate(batches):
+    for idx, batch_names in enumerate(batch_names_list):
         if interrupted:
             break
-        cfg.tables = batch
+
+        if batch_size > 0 and cfg.tables_to_run:
+            # Per-batch: split names into configured vs unmatched.
+            batch_unmatched = [name for name in batch_names if name not in configured_by_name]
+            if batch_unmatched:
+                cfg.unmatched_tables = batch_unmatched
+                _record_unmatched_tables(cfg)
+            batch_configured = [configured_by_name[name] for name in batch_names
+                                 if name in configured_by_name]
+            if not batch_configured:
+                logger.info("Batch %d/%d: all tables unmatched — skipping.", idx + 1, n)
+                continue
+            cfg.tables = batch_configured
+        else:
+            cfg.tables = [configured_by_name[name] for name in batch_names]
+
         if n > 1:
-            logger.info("Table batch %d/%d: %s", idx + 1, n, [t.name for t in batch])
+            logger.info("Table batch %d/%d: %s", idx + 1, n, [t.name for t in cfg.tables])
+
         # Queue hygiene: drop stale messages for this batch's queues.
         _purge_run_queues(cfg)
         worker_procs = _start_workers(cfg, str(config_path))
