@@ -44,16 +44,17 @@ def get_key_phi_column_list(column_details: list) -> tuple:
     for column in column_details:
         rule = column["de_identification_rule"]
         if column["is_phi"]:
+            col_name = column["column_name"].lower()
             if rule.startswith("PATIENT_"):
-                patient_id_columns.setdefault(rule, []).append(column["column_name"])
+                patient_id_columns.setdefault(rule, []).append(col_name)
             elif rule == "ENCOUNTER_ID":
-                encounter_id_columns.append(column["column_name"])
+                encounter_id_columns.append(col_name)
             elif rule == "REFERENCE_PID":
-                reference_pid_column.append(column["column_name"])
+                reference_pid_column.append(col_name)
             elif rule == "APPOINTMENT_ID":
-                appointment_id_columns.append(column["column_name"])
+                appointment_id_columns.append(col_name)
             elif rule == "CHART_ID":
-                chart_id_columns.append(column["column_name"])
+                chart_id_columns.append(col_name)
 
     return encounter_id_columns, patient_id_columns, reference_pid_column, appointment_id_columns, chart_id_columns
 
