@@ -151,7 +151,7 @@ class NotesRule(RuleBase):
         self, df: pl.DataFrame, column_details: dict
     ) -> pl.DataFrame:
         text_column = column_details["column_name"]
-        encounter_id_cols, patient_id_cols, reference_pid_cols, appointment_id_cols = (
+        encounter_id_cols, patient_id_cols, reference_pid_cols, appointment_id_cols, chart_id_cols = (
             self.key_phi_columns
         )
         encounter_id_col = encounter_id_cols[0] if encounter_id_cols else None
