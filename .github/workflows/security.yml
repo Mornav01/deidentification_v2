@@ -1,0 +1,13 @@
+name: Security Checks
+
+on:
+  pull_request:
+
+jobs:
+  semgrep:
+    name: SAST - Semgrep
+    uses: neurodiscoveryai/security-setup/.github/workflows/semgrep.yml@main
+    permissions:
+      contents: read
+      pull-requests: read
+      security-events: write
