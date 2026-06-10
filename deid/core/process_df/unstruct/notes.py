@@ -102,7 +102,7 @@ class PIITable:
         self._get_db_connection(connection_string)
         metadata = MetaData()
         pii_table = Table(table_name, metadata, autoload_with=self.engine)
-        stmt = select(pii_table).where(pii_table.c.patient_id.in_(patient_ids))
+        stmt = select(pii_table).where(pii_table.c.nd_patient_id.in_(patient_ids))
         result = self.master_session.execute(stmt)
         rows = result.fetchall()
         columns = list(result.keys())
@@ -328,11 +328,7 @@ class NotesRule(RuleBase):
 
         df = df.with_columns(pl.col(text_column).fill_null(""))
 
-        lookup_col = next(
-            (f"_resolved_{x}" for x in self.possible_patient_identifier_columns
-             if f"_resolved_{x}" in df.columns),
-            None,
-        )
+        lookup_col = "_resolved_nd_patient_id" if "_resolved_nd_patient_id" in df.columns else None
         has_pid = lookup_col is not None
         pid_list = (
             [_normalize_pid(v) for v in df[lookup_col].to_list()]
@@ -377,18 +373,18 @@ class NotesRule(RuleBase):
         )
 
         all_select = list(
-            {"patient_id"}
+            {"nd_patient_id"}
             | {t[1] for t in pii_cols}
             | {t[1] for t in dob_cols}
             | {c for r in combine_rules.values() for c in r["cols"]}
         )
         cast_to_utf8 = {
-            c: pl.Utf8 for c in all_select if c != "patient_id"
+            c: pl.Utf8 for c in all_select if c != "nd_patient_id"
         }
 
         nd_logger.info(
             f"[{self.__class__.__name__}] Building primary PII maps from "
-            f"{pii_df.height} records for {pii_df['patient_id'].n_unique()} patients…"
+            f"{pii_df.height} records for {pii_df['nd_patient_id'].n_unique()} patients…"
         )
 
         # ── Phase 1: scan pii_data_df ONCE, collecting all records per patient ─
@@ -402,7 +398,7 @@ class NotesRule(RuleBase):
             .with_columns([pl.col(c).cast(pl.Utf8).fill_null("") for c in cast_to_utf8])
         )
         _pii_col_lists = {col: _pii_prepared[col].to_list() for col in all_select}
-        _pid_col = _pii_col_lists.get("patient_id", [None] * _pii_prepared.height)
+        _pid_col = _pii_col_lists.get("nd_patient_id", [None] * _pii_prepared.height)
 
         for i in range(_pii_prepared.height):
             pid = _normalize_pid(_pid_col[i])
@@ -625,11 +621,7 @@ class NotesRule(RuleBase):
         df = df.with_columns(pl.col(text_column).fill_null(""))
         masked_col: pl.Series = df[text_column]
 
-        lookup_col = next(
-            (f"_resolved_{x}" for x in self.possible_patient_identifier_columns
-             if f"_resolved_{x}" in df.columns),
-            None,
-        )
+        lookup_col = "_resolved_nd_patient_id" if "_resolved_nd_patient_id" in df.columns else None
         has_pid = lookup_col is not None
         pid_list = (
             [_normalize_pid(v) for v in df[lookup_col].to_list()]
@@ -664,15 +656,15 @@ class NotesRule(RuleBase):
                 f"Building merged PII maps from {pii_df_raw.height} records…"
             )
             pid_to_map: dict = {}
-            select_cols = ["patient_id"] + [t[1] for t in pii_cols_tuples]
+            select_cols = ["nd_patient_id"] + [t[1] for t in pii_cols_tuples]
             _pii2_prepared = (
                 pii_df_raw
                 .select(select_cols)
-                .cast({c: pl.Utf8 for c in select_cols if c != "patient_id"})
+                .cast({c: pl.Utf8 for c in select_cols if c != "nd_patient_id"})
                 .fill_null("")
             )
             _pii2_col_lists = {col: _pii2_prepared[col].to_list() for col in select_cols}
-            _pid2_col = _pii2_col_lists["patient_id"]
+            _pid2_col = _pii2_col_lists["nd_patient_id"]
 
             for i in range(_pii2_prepared.height):
                 pid = _normalize_pid(_pid2_col[i])
@@ -768,11 +760,7 @@ class NotesRule(RuleBase):
         # share the same patient → we'd re-compute the same map hundreds of
         # times.  Instead, build 33k maps (one per distinct patient_id), then
         # look up by the first _resolved_{identifier} for each source row.
-        lookup_col = next(
-            (f"_resolved_{x}" for x in self.possible_patient_identifier_columns
-             if f"_resolved_{x}" in df_batch.columns),
-            None,
-        )
+        lookup_col = "_resolved_nd_patient_id" if "_resolved_nd_patient_id" in df_batch.columns else None
         has_pid = lookup_col is not None
 
         # Select just the columns we need (PII values + patient key).
@@ -1114,11 +1102,7 @@ class NotesRule(RuleBase):
         )
 
         # Step 3 ── PII table masking (patient-specific)
-        _pii_lookup_col = next(
-            (f"_resolved_{x}" for x in self.possible_patient_identifier_columns
-             if f"_resolved_{x}" in df.columns),
-            None,
-        )
+        _pii_lookup_col = "_resolved_nd_patient_id" if "_resolved_nd_patient_id" in df.columns else None
         if _pii_lookup_col is not None:
             patient_ids = [
                 _normalize_pid(v)
