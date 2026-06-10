@@ -151,9 +151,12 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
                                                left_on="nd_patient_id_from_encounter_mapping",
                                                right_on="nd_patient_id",
                                                how="left", right_suffix="from_encounter_mapping",
-                                               drop_right_join_column=True)
+                                               drop_right_join_column=False)
             else:
-                enc_enriched = enc_df
+                enc_enriched = (
+                    enc_df.rename({"nd_patient_id": "nd_patient_id_from_encounter_mapping"})
+                    if "nd_patient_id" in enc_df.columns else enc_df
+                )
             df = join_dataframes(df, enc_enriched, left_on=key_phi_columns[0][0],
                                  right_on="encounter_id", how="left", right_suffix="",
                                  drop_right_join_column=True)
@@ -186,9 +189,12 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
                                                left_on="nd_patient_id_from_appointment_mapping",
                                                right_on="nd_patient_id",
                                                how="left", right_suffix="from_appointment_mapping",
-                                               drop_right_join_column=True)
+                                               drop_right_join_column=False)
             else:
-                apt_enriched = apt_df
+                apt_enriched = (
+                    apt_df.rename({"nd_patient_id": "nd_patient_id_from_appointment_mapping"})
+                    if "nd_patient_id" in apt_df.columns else apt_df
+                )
             df = join_dataframes(df, apt_enriched, left_on=key_phi_columns[3][0],
                                  right_on="appointment_id", how="left",
                                  drop_right_join_column=True)
@@ -202,9 +208,12 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
                                                  left_on="nd_patient_id_from_chart_mapping",
                                                  right_on="nd_patient_id",
                                                  how="left", right_suffix="from_chart_mapping",
-                                                 drop_right_join_column=True)
+                                                 drop_right_join_column=False)
             else:
-                chart_enriched = chart_df
+                chart_enriched = (
+                    chart_df.rename({"nd_patient_id": "nd_patient_id_from_chart_mapping"})
+                    if "nd_patient_id" in chart_df.columns else chart_df
+                )
             df = join_dataframes(df, chart_enriched, left_on=key_phi_columns[4][0],
                                  right_on="chart_id", how="left",
                                  drop_right_join_column=True)

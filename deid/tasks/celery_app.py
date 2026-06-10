@@ -136,6 +136,11 @@ def _preload_mappings(app: Celery) -> None:
                     if rows:
                         _preloaded_data[table_key] = _to_df(cols, rows)
                         _preload_logger.info("Preloaded %s: %d rows", table_key, len(rows))
+                    else:
+                        _preload_logger.warning(
+                            "Mapping table %s (%s) is empty — joins for this type will be skipped",
+                            table_name, table_key,
+                        )
                 except Exception as e:
                     _preload_logger.warning("Failed to preload %s: %s", table_name, e)
     finally:
