@@ -54,6 +54,7 @@ class DeIdentifier:
         key_phi_columns: tuple = (),
         offset_days: int = 34,
         run_config: dict | None = None,
+        possible_patient_identifier_columns: list | None = None,
     ) -> None:
         self.df = df
         self.config = config
@@ -64,6 +65,7 @@ class DeIdentifier:
         self.key_phi_columns = key_phi_columns
         self.offset_days = offset_days
         self.run_config = run_config or {}
+        self.possible_patient_identifier_columns = possible_patient_identifier_columns or []
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def apply_rules(self) -> pl.DataFrame:
@@ -88,7 +90,8 @@ class DeIdentifier:
                 from .unstruct.notes import NotesRule  # local import — avoids circular dep
                 self._notes_rule = NotesRule(
                     self.pii_config, self.pii_db_conn_str,
-                    self.secondary_pii_configs, self.key_phi_columns
+                    self.secondary_pii_configs, self.key_phi_columns,
+                    self.possible_patient_identifier_columns,
                 )
             else:
                 # Refresh key_phi_columns in case reference mapping added new columns.

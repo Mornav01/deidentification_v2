@@ -104,10 +104,31 @@ class PatientIdentifierResolver:
             else:
                 identifier_col = rule_name.split("_")[-1].lower()
             groups.append({
+                "identifier_col": identifier_col,
                 "nd_patient_id": f"nd_patient_id_from_{identifier_col}_mapping",
                 "offset": f"offset_from_{identifier_col}_mapping",
             })
         return groups
+
+    def _identifier_candidates(self, x: str) -> list[str]:
+        """Candidate columns for _resolved_{x}, following all_groups priority order.
+
+        For the group whose identifier_col == x: the right join key x_from_x_mapping was
+        dropped during the mapping join, so use the direct source column x instead.
+        For all other groups: use x_from_{id_col}_mapping (non-key, survives the join).
+        """
+        candidates = [
+            f"{x}_from_referencepid_mapping",
+            f"{x}_from_encounter_mapping",
+        ]
+        for g in self.identifier_groups:
+            id_col = g["identifier_col"]
+            candidates.append(x if id_col == x else f"{x}_from_{id_col}_mapping")
+        candidates += [
+            f"{x}_from_appointment_mapping",
+            f"{x}_from_chart_mapping",
+        ]
+        return candidates
 
     def _coalesce_expr(self, df: pl.DataFrame, candidates: list[str | None]) -> pl.Expr | None:
         """Return pl.coalesce() over the candidate columns that actually exist."""
@@ -137,22 +158,7 @@ class PatientIdentifierResolver:
                 pl.lit(self.offset_days).alias("_resolved_offset")
             )
 
-        # --- Step 2: _resolved_patient_id (first source column as fallback) ---
-        first_rule_cols = next(iter(self.key_phi_columns[1].values()), [])
-        ref_phi_col = first_rule_cols[0] if first_rule_cols else None
-        patient_id_candidates = [
-            self.referencepid_group.get("patient_id"),
-            ref_phi_col,
-        ]
-        patient_expr = self._coalesce_expr(df, patient_id_candidates)
-        if patient_expr is not None:
-            df = df.with_columns(patient_expr.alias("_resolved_patient_id"))
-        else:
-            nd_logger.warning(
-                f"[{self.__class__.__name__}] No columns found for _resolved_patient_id. Skipping."
-            )
-
-        # --- Step 3: _resolved_nd_patient_id ---
+        # --- Step 2: _resolved_nd_patient_id ---
         nd_patient_id_candidates = [g.get("nd_patient_id") for g in all_groups]
         nd_patient_expr = self._coalesce_expr(df, nd_patient_id_candidates)
         if nd_patient_expr is not None:
@@ -162,21 +168,43 @@ class PatientIdentifierResolver:
                 f"[{self.__class__.__name__}] No columns found for _resolved_nd_patient_id. Skipping."
             )
 
-        # --- Step 4: _resolved_{col} for each source identifier column ---
-        # NotesRule uses these to mask original ID values in free text.
-        original_key_cols: set[str] = set()
-        for rule_cols in self.key_phi_columns[1].values():
-            for col in rule_cols:
-                original_key_cols.add(col)
-                if col in df.columns:
-                    df = df.with_columns(pl.col(col).alias(f"_resolved_{col}"))
+        # --- Step 3: _resolved_{identifier} for every project identifier ---
+        # Generated for ALL identifiers in possible_patient_identifier_columns regardless of
+        # which PATIENT_* rules are present in this table's config.
+        for x in self.possible_patient_identifier_columns:
+            expr = self._coalesce_expr(df, self._identifier_candidates(x))
+            if expr is not None:
+                df = df.with_columns(expr.alias(f"_resolved_{x}"))
+            else:
+                nd_logger.warning(
+                    "[PatientIdentifierResolver] No candidates found for _resolved_%s.", x
+                )
 
-        # --- Step 5: drop intermediate mapping columns ---
-        all_candidates = offset_candidates + patient_id_candidates + nd_patient_id_candidates
-        all_used = set(filter(None, all_candidates))
-        # Never drop the original source columns or their resolved aliases
-        preserved = original_key_cols | {f"_resolved_{c}" for c in original_key_cols}
-        to_drop = [c for c in all_used if c in df.columns and c not in preserved]
+        # --- Step 4: drop intermediate mapping columns ---
+        all_join_suffixes = (
+            ["from_referencepid_mapping", "from_encounter_mapping"]
+            + [f"from_{g['identifier_col']}_mapping" for g in self.identifier_groups]
+            + ["from_appointment_mapping", "from_chart_mapping"]
+        )
+
+        # Keep original source PHI columns and the newly generated _resolved_{x} columns.
+        preserved: set[str] = set()
+        for rule_cols in self.key_phi_columns[1].values():
+            preserved.update(rule_cols)
+        for x in self.possible_patient_identifier_columns:
+            preserved.add(f"_resolved_{x}")
+
+        nd_offset_intermediates = set(filter(None, offset_candidates + nd_patient_id_candidates))
+        cross_join_cols = {
+            f"{x}_{suffix}"
+            for x in self.possible_patient_identifier_columns
+            for suffix in all_join_suffixes
+        }
+
+        to_drop = [
+            c for c in (nd_offset_intermediates | cross_join_cols)
+            if c in df.columns and c not in preserved
+        ]
         if to_drop:
             nd_logger.debug(
                 f"[{self.__class__.__name__}] Dropping intermediate columns: {to_drop}"
@@ -477,14 +505,17 @@ class JoinMapping:
                 schema={"nd_patient_id": pl.Int64, "offset": pl.Int64}
             )
 
+        nd_pid_col = f"nd_patient_id_{right_suffix}"
+        if "nd_patient_id" in df_mapping.columns:
+            df_mapping = df_mapping.rename({"nd_patient_id": nd_pid_col})
         df_joined = join_dataframes(
             df_mapping,
             df_patient_mapping,
-            left_on="nd_patient_id",
+            left_on=nd_pid_col,
             right_on="nd_patient_id",
             how="left",
             right_suffix=right_suffix,
-            drop_left_join_column=True,
+            drop_right_join_column=True,
         )
         nd_logger.info(
             f"[{self.__class__.__name__}] Joined {table_name} + patient_mapping. "
@@ -925,6 +956,7 @@ def start_de_identification_for_table(
                     key_phi_columns=key_phi_columns,
                     offset_days=offset_days,
                     run_config={**_run_config, "table_name": table_name},
+                    possible_patient_identifier_columns=possible_patient_identifier_columns,
                 )
             else:
                 deidentifier.df = df

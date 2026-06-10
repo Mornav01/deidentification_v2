@@ -141,11 +141,17 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
 
         if enc_df is not None and key_phi_columns[0]:
             # Enrich enc_df with patient_mapping via nd_patient_id.
+            # Rename nd_patient_id → nd_patient_id_from_encounter_mapping BEFORE the join so it
+            # survives as a regular (non-key) column — Polars drops the right join key when
+            # left_on != right_on, so keeping it on the left side is the only reliable way.
             if pat_df is not None:
-                enc_enriched = join_dataframes(enc_df, pat_df,
-                                               left_on="nd_patient_id", right_on="nd_patient_id",
+                _enc = enc_df.rename({"nd_patient_id": "nd_patient_id_from_encounter_mapping"}) \
+                       if "nd_patient_id" in enc_df.columns else enc_df
+                enc_enriched = join_dataframes(_enc, pat_df,
+                                               left_on="nd_patient_id_from_encounter_mapping",
+                                               right_on="nd_patient_id",
                                                how="left", right_suffix="from_encounter_mapping",
-                                               drop_left_join_column=True)
+                                               drop_right_join_column=True)
             else:
                 enc_enriched = enc_df
             df = join_dataframes(df, enc_enriched, left_on=key_phi_columns[0][0],
@@ -174,10 +180,13 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
 
         if apt_df is not None and key_phi_columns[3]:
             if pat_df is not None:
-                apt_enriched = join_dataframes(apt_df, pat_df,
-                                               left_on="nd_patient_id", right_on="nd_patient_id",
+                _apt = apt_df.rename({"nd_patient_id": "nd_patient_id_from_appointment_mapping"}) \
+                       if "nd_patient_id" in apt_df.columns else apt_df
+                apt_enriched = join_dataframes(_apt, pat_df,
+                                               left_on="nd_patient_id_from_appointment_mapping",
+                                               right_on="nd_patient_id",
                                                how="left", right_suffix="from_appointment_mapping",
-                                               drop_left_join_column=True)
+                                               drop_right_join_column=True)
             else:
                 apt_enriched = apt_df
             df = join_dataframes(df, apt_enriched, left_on=key_phi_columns[3][0],
@@ -187,10 +196,13 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
         chart_df = preloaded.get("chart_mapping")
         if chart_df is not None and key_phi_columns[4]:
             if pat_df is not None:
-                chart_enriched = join_dataframes(chart_df, pat_df,
-                                                 left_on="nd_patient_id", right_on="nd_patient_id",
+                _chart = chart_df.rename({"nd_patient_id": "nd_patient_id_from_chart_mapping"}) \
+                         if "nd_patient_id" in chart_df.columns else chart_df
+                chart_enriched = join_dataframes(_chart, pat_df,
+                                                 left_on="nd_patient_id_from_chart_mapping",
+                                                 right_on="nd_patient_id",
                                                  how="left", right_suffix="from_chart_mapping",
-                                                 drop_left_join_column=True)
+                                                 drop_right_join_column=True)
             else:
                 chart_enriched = chart_df
             df = join_dataframes(df, chart_enriched, left_on=key_phi_columns[4][0],
@@ -286,6 +298,7 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
         key_phi_columns=key_phi_columns,
         offset_days=config.offset_days,
         run_config={**(config.run_config or {}), "table_name": config.table_name},
+        possible_patient_identifier_columns=possible_patient_identifier_columns,
     )
     df = deidentifier.apply_rules()
     df = _serialize_dict_values(df)

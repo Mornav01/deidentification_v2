@@ -132,7 +132,8 @@ class NotesRule(RuleBase):
     """
 
     def __init__(self, pii_config: dict | None, pii_db_conn_str: str | None,
-                 secondary_pii_configs: list | None, key_phi_columns: tuple):
+                 secondary_pii_configs: list | None, key_phi_columns: tuple,
+                 possible_patient_identifier_columns: list | None = None):
         self.pii_config = pii_config
         self.pii_db_config = pii_db_conn_str
         self.secondary_pii_configs = secondary_pii_configs or []
@@ -140,6 +141,7 @@ class NotesRule(RuleBase):
         self.secondary_pii_data_dfs: dict[str, pl.DataFrame] = {}
         self._known_patient_ids: set = set()
         self.key_phi_columns = key_phi_columns
+        self.possible_patient_identifier_columns = possible_patient_identifier_columns or []
         nd_logger.info(f"[{self.__class__.__name__}] Initialized NotesRule.")
 
     # ------------------------------------------------------------------
@@ -155,15 +157,17 @@ class NotesRule(RuleBase):
             self.key_phi_columns
         )
         encounter_id_col = encounter_id_cols[0] if encounter_id_cols else None
-        patient_id_col = (
-            "_resolved_patient_id" if "_resolved_patient_id" in df.columns else None
-        )
         reference_pid_col = reference_pid_cols[0] if reference_pid_cols else None
         appointment_id_col = appointment_id_cols[0] if appointment_id_cols else None
 
+        resolved_identifier_cols = [
+            f"_resolved_{x}" for x in self.possible_patient_identifier_columns
+            if f"_resolved_{x}" in df.columns
+        ]
+
         nd_logger.info(
             f"[{self.__class__.__name__}] Key-PHI de-identification: "
-            f"enc={encounter_id_col}, pid={patient_id_col}, "
+            f"enc={encounter_id_col}, resolved_ids={resolved_identifier_cols}, "
             f"ref={reference_pid_col}, appt={appointment_id_col}"
         )
         # nd_logger.info(f"[{self.__class__.__name__}] df.columns: {df.columns}")
@@ -189,13 +193,13 @@ class NotesRule(RuleBase):
             int_s = col_s.cast(pl.Float64, strict=False).cast(pl.Int64, strict=False).cast(pl.Utf8)
             return int_s.fill_null(col_s.cast(pl.Utf8)).to_list()
 
-        enc_orig_list  = _str_list(encounter_id_col)
-        nd_enc_list    = _str_list("nd_encounter_id")
-        appt_orig_list = _str_list(appointment_id_col)
-        nd_appt_list   = _str_list("nd_appointment_id")
-        pid_orig_list  = _int_str_list(patient_id_col)
-        ref_orig_list  = _int_str_list(reference_pid_col)
-        nd_pid_list    = _int_str_list("_resolved_nd_patient_id")
+        enc_orig_list    = _str_list(encounter_id_col)
+        nd_enc_list      = _str_list("nd_encounter_id")
+        appt_orig_list   = _str_list(appointment_id_col)
+        nd_appt_list     = _str_list("nd_appointment_id")
+        resolved_id_lists = [_int_str_list(col) for col in resolved_identifier_cols]
+        ref_orig_list    = _int_str_list(reference_pid_col)
+        nd_pid_list      = _int_str_list("_resolved_nd_patient_id")
 
         # Pre-compile regex patterns keyed by unique original-ID string.
         # Uses `regex` module (middle tier: supports lookbehind, faster than stdlib re).
@@ -227,11 +231,12 @@ class NotesRule(RuleBase):
                     nd_appt = nd_appt_list[i]
                     repl = nd_appt if nd_appt is not None else "((APPOINTMENT_ID))"
                     text = _compiled(appt).sub(repl, text)
-                # Patient ID and reference PID share the same anonymised replacement
+                # All resolved identifier values + reference PID share the same replacement.
                 nd_pid_repl = nd_pid_list[i] if nd_pid_list[i] is not None else "((PATIENT_ID))"
-                pid = pid_orig_list[i]
-                if pid is not None:
-                    text = _compiled(pid).sub(nd_pid_repl, text)
+                for rid_list in resolved_id_lists:
+                    rid = rid_list[i]
+                    if rid is not None:
+                        text = _compiled(rid).sub(nd_pid_repl, text)
                 ref = ref_orig_list[i]
                 if ref is not None:
                     text = _compiled(ref).sub(nd_pid_repl, text)
@@ -323,8 +328,12 @@ class NotesRule(RuleBase):
 
         df = df.with_columns(pl.col(text_column).fill_null(""))
 
-        lookup_col = "_resolved_patient_id"
-        has_pid = lookup_col in df.columns
+        lookup_col = next(
+            (f"_resolved_{x}" for x in self.possible_patient_identifier_columns
+             if f"_resolved_{x}" in df.columns),
+            None,
+        )
+        has_pid = lookup_col is not None
         pid_list = (
             [_normalize_pid(v) for v in df[lookup_col].to_list()]
             if has_pid
@@ -616,8 +625,12 @@ class NotesRule(RuleBase):
         df = df.with_columns(pl.col(text_column).fill_null(""))
         masked_col: pl.Series = df[text_column]
 
-        lookup_col = "_resolved_patient_id"
-        has_pid = lookup_col in df.columns
+        lookup_col = next(
+            (f"_resolved_{x}" for x in self.possible_patient_identifier_columns
+             if f"_resolved_{x}" in df.columns),
+            None,
+        )
+        has_pid = lookup_col is not None
         pid_list = (
             [_normalize_pid(v) for v in df[lookup_col].to_list()]
             if has_pid
@@ -754,9 +767,13 @@ class NotesRule(RuleBase):
         # A 100k-row batch may have only 33k unique patients.  Many notes rows
         # share the same patient → we'd re-compute the same map hundreds of
         # times.  Instead, build 33k maps (one per distinct patient_id), then
-        # look up by _resolved_patient_id for each source row.
-        lookup_col = "_resolved_patient_id"
-        has_pid = lookup_col in df_batch.columns
+        # look up by the first _resolved_{identifier} for each source row.
+        lookup_col = next(
+            (f"_resolved_{x}" for x in self.possible_patient_identifier_columns
+             if f"_resolved_{x}" in df_batch.columns),
+            None,
+        )
+        has_pid = lookup_col is not None
 
         # Select just the columns we need (PII values + patient key).
         select_cols = pii_columns + ([lookup_col] if has_pid else [])
@@ -1097,10 +1114,15 @@ class NotesRule(RuleBase):
         )
 
         # Step 3 ── PII table masking (patient-specific)
-        if "_resolved_patient_id" in df.columns:
+        _pii_lookup_col = next(
+            (f"_resolved_{x}" for x in self.possible_patient_identifier_columns
+             if f"_resolved_{x}" in df.columns),
+            None,
+        )
+        if _pii_lookup_col is not None:
             patient_ids = [
                 _normalize_pid(v)
-                for v in df["_resolved_patient_id"].drop_nulls().unique().to_list()
+                for v in df[_pii_lookup_col].drop_nulls().unique().to_list()
             ]
             new_ids = set(patient_ids) - self._known_patient_ids - {None}
             if new_ids:

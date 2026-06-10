@@ -10,29 +10,15 @@ from deid.core.logger import nd_logger
 
 
 class InvalidRowHandler:
-    """Filter out rows with unresolved de-identified IDs and persist them for audit.
+    """Filter out rows where _resolved_nd_patient_id is null and persist them for audit.
 
-    Uses a **priority-based** check: only the highest-priority ID column
-    present in the DataFrame determines whether a row is kept or rejected.
-
-    Priority order (first match wins):
-      1. ``_resolved_nd_patient_id`` — if the table maps patient IDs
-      2. ``nd_encounter_id``         — if the table maps encounter IDs only
-      3. ``nd_appointment_id``       — if the table maps appointment IDs only
-
-    Lower-priority columns that are null are NOT grounds for rejection.
-    Their corresponding rules (``EncounterIDRule``, ``AppointmentIDRule``)
-    already null out the raw PHI value, so no data leaks.
+    A row is invalid only when ``_resolved_nd_patient_id`` is null, meaning no
+    mapping join (PATIENT_*, ENCOUNTER_ID, APPOINTMENT_ID, CHART_ID) resolved a
+    de-identified patient ID for that row.  Null ``nd_encounter_id``,
+    ``nd_appointment_id``, or ``nd_chart_id`` alone are NOT grounds for rejection.
     """
 
-    # Ordered by priority — first column found in the DataFrame is the
-    # mandatory check; the rest are informational only.
-    _ID_COLUMNS_PRIORITY = [
-        ("_resolved_nd_patient_id", "no_resolved_patient_id"),
-        ("nd_encounter_id", "no_resolved_encounter_id"),
-        ("nd_appointment_id", "no_resolved_appointment_id"),
-        ("nd_chart_id", "no_resolved_chart_id"),
-    ]
+    _RESOLVED_ID_COL = "_resolved_nd_patient_id"
 
     def __init__(self, db_name: str, table_name: str, db_path: str | None = None, config_key: str = "default"):
         self.db_name = db_name
@@ -103,50 +89,27 @@ class InvalidRowHandler:
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def handle(self, df: pl.DataFrame) -> pl.DataFrame:
-        # Find the highest-priority ID column present in the DataFrame.
-        # Only that column determines whether a row is kept or rejected.
-        check_col = None
-        check_reason = None
-        for col_name, reason in self._ID_COLUMNS_PRIORITY:
-            if col_name in df.columns:
-                check_col = col_name
-                check_reason = reason
-                break
-
-        if check_col is None:
+        if self._RESOLVED_ID_COL not in df.columns:
             nd_logger.warning(
-                "[InvalidRowHandler] No de-identified ID columns found in DataFrame. "
-                "Returning original DataFrame."
+                "[InvalidRowHandler] '%s' not in DataFrame — returning as-is.",
+                self._RESOLVED_ID_COL,
             )
             return df
 
-        # Log null counts for ALL ID columns (informational), not just the
-        # mandatory one — helps diagnose missing encounter/appointment mappings.
-        for col_name, reason in self._ID_COLUMNS_PRIORITY:
-            if col_name in df.columns:
-                null_count = df.filter(pl.col(col_name).is_null()).height
-                if null_count > 0:
-                    tag = "REJECTING" if col_name == check_col else "info-only"
-                    nd_logger.warning(
-                        f"[InvalidRowHandler] {null_count}/{df.height} rows in "
-                        f"{self.db_name}.{self.table_name} have null '{col_name}' "
-                        f"({tag})"
-                    )
-
-        invalid_mask = pl.col(check_col).is_null()
-        ignored_df = df.filter(invalid_mask)
-
-        if ignored_df.is_empty():
+        null_count = df.filter(pl.col(self._RESOLVED_ID_COL).is_null()).height
+        if null_count == 0:
             nd_logger.info("[InvalidRowHandler] No invalid rows found. Nothing to ignore.")
             return df
 
-        rows = ignored_df.to_dicts()
-        self._write_to_failed_rows_db(rows, check_col)
-
         nd_logger.warning(
-            f"[InvalidRowHandler] Removed {ignored_df.height} rows where "
-            f"'{check_col}' is null from {self.db_name}.{self.table_name}. "
-            f"Persisted to '{self.db_path}'."
+            "[InvalidRowHandler] %d/%d rows in %s.%s have null '%s' (REJECTING)",
+            null_count, df.height, self.db_name, self.table_name, self._RESOLVED_ID_COL,
         )
-
+        invalid_mask = pl.col(self._RESOLVED_ID_COL).is_null()
+        ignored_df = df.filter(invalid_mask)
+        self._write_to_failed_rows_db(ignored_df.to_dicts(), self._RESOLVED_ID_COL)
+        nd_logger.warning(
+            "[InvalidRowHandler] Removed %d rows from %s.%s — persisted to '%s'.",
+            ignored_df.height, self.db_name, self.table_name, self.db_path,
+        )
         return df.filter(~invalid_mask)
