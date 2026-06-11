@@ -47,10 +47,13 @@ def process_batch(self, raw_config: dict):
     try:
         result = _process_batch_inner(config, raw_config)
         duration_ms = int((time.monotonic() - t0) * 1000)
+        _rows_out    = result.get("rows", 0)
+        _rows_failed = result.get("rows_failed", 0)
         _publish(config, LogLevel.INFO, "process",
                  f"batch {batch_tag} processed",
-                 batch=config.start_id, rows_in_batch=result.get("rows", 0),
-                 rows_succeeded=result.get("rows", 0),
+                 batch=config.start_id, rows_in_batch=_rows_out + _rows_failed,
+                 rows_succeeded=_rows_out,
+                 rows_failed=_rows_failed,
                  start_id=config.start_id, end_id=config.end_id,
                  duration_ms=duration_ms, peak_memory_mb=get_peak_memory_mb())
         return result

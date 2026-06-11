@@ -20,7 +20,7 @@ def test_full_logging_pipeline(tmp_path):
     ).model_dump())
 
     collector.handle_record(make_log_record(
-        LogLevel.INFO, "patients", "deidentify",
+        LogLevel.INFO, "patients", "process",
         "batch 1: 1000/1000 rows OK in 1500ms",
         batch=1, rows_in_batch=1000, rows_succeeded=1000, rows_failed=0,
         duration_ms=1500, peak_memory_mb=200,
@@ -33,14 +33,14 @@ def test_full_logging_pipeline(tmp_path):
     ).model_dump())
 
     collector.handle_record(make_log_record(
-        LogLevel.INFO, "patients", "deidentify",
+        LogLevel.INFO, "patients", "process",
         "batch 2: 997/1000 rows OK in 1800ms",
         batch=2, rows_in_batch=1000, rows_succeeded=997, rows_failed=3,
         duration_ms=1800, peak_memory_mb=250,
     ).model_dump())
 
     collector.handle_record(make_log_record(
-        LogLevel.INFO, "patients", "deidentify",
+        LogLevel.INFO, "patients", "process",
         "batch 3: 500/500 rows OK in 900ms",
         batch=3, rows_in_batch=500, rows_succeeded=500, rows_failed=0,
         duration_ms=900, peak_memory_mb=220,
@@ -56,7 +56,7 @@ def test_full_logging_pipeline(tmp_path):
     ).model_dump())
 
     collector.handle_record(make_log_record(
-        LogLevel.INFO, "encounters", "deidentify",
+        LogLevel.INFO, "encounters", "process",
         "batch 1: 2000/2000 rows OK in 3000ms",
         batch=1, rows_in_batch=2000, rows_succeeded=2000, rows_failed=0,
         duration_ms=3000, peak_memory_mb=400,

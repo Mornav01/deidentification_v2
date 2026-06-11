@@ -52,6 +52,8 @@ class LogCollector:
                 "duration_ms": 0,
                 "errors": [],
                 "status": "started",
+                "_first_seen_time": None,
+                "_last_seen_time": None,
             }
 
     def handle_record(self, raw: dict):
@@ -60,16 +62,25 @@ class LogCollector:
         self._ensure_table(record.table)
         ts = self._table_stats[record.table]
 
+        # Track wall time per table (first event → last event).
+        now = time.monotonic()
+        if ts["_first_seen_time"] is None:
+            ts["_first_seen_time"] = now
+        ts["_last_seen_time"] = now
+
         # Write formatted log line.
         line = self._format_line(record)
         self._log_fh.write(line + "\n")
         self._log_fh.flush()
 
         # Accumulate stats from batch-completion records.
-        if record.rows_succeeded is not None:
-            ts["rows_succeeded"] += record.rows_succeeded
-        if record.rows_failed is not None:
-            ts["rows_failed"] += record.rows_failed
+        # Rows are counted only from the "process" phase to avoid 3× inflation
+        # (fetch, process, and write tasks each emit rows_succeeded for the same batch).
+        if record.phase == "process":
+            if record.rows_succeeded is not None:
+                ts["rows_succeeded"] += record.rows_succeeded
+            if record.rows_failed is not None:
+                ts["rows_failed"] += record.rows_failed
         if record.duration_ms is not None:
             ts["duration_ms"] += record.duration_ms
 
@@ -103,6 +114,16 @@ class LogCollector:
             self._records_since_summary += 1
             if self._records_since_summary % 50 == 0:
                 self.write_summary()
+
+    def _export_table_stats(self, ts: dict) -> dict:
+        """Return a serialisable copy of a table stats dict with wall/cpu times added."""
+        first = ts["_first_seen_time"]
+        last  = ts["_last_seen_time"]
+        wall_s = round((last - first), 1) if (first is not None and last is not None) else 0.0
+        out = {k: v for k, v in ts.items() if not k.startswith("_")}
+        out["wall_time_s"] = wall_s
+        out["cpu_time_s"]  = round(ts["duration_ms"] / 1000, 1)
+        return out
 
     def _format_line(self, record: LogRecord) -> str:
         level = record.level if isinstance(record.level, str) else record.level.value
@@ -171,7 +192,8 @@ class LogCollector:
                 "peak_total_mb": self._peak_concurrent_workers_mb + orch_mb,
             },
             "tables": {
-                name: dict(ts) for name, ts in self._table_stats.items()
+                name: self._export_table_stats(ts)
+                for name, ts in self._table_stats.items()
             },
             "log_file": str(self._log_path),
             "failures_file": str(self._failures_path) if self._failure_count > 0 else None,
@@ -221,20 +243,24 @@ class LogCollector:
 
         # Per-table breakdown.
         lines.append("")
-        lines.append(f"  {'Table':<20} {'Status':<10} {'Rows':>10} {'Failed':>8} {'Warnings':>10} {'Duration':>10}")
-        lines.append(f"  {'-'*20} {'-'*10} {'-'*10} {'-'*8} {'-'*10} {'-'*10}")
+        lines.append(f"  {'Table':<20} {'Status':<10} {'Rows':>10} {'Failed':>8} {'Warnings':>10} {'Wall time':>12} {'CPU time':>12}")
+        lines.append(f"  {'-'*20} {'-'*10} {'-'*10} {'-'*8} {'-'*10} {'-'*12} {'-'*12}")
+
+        def _fmt_duration(s: float) -> str:
+            if s >= 3600:
+                return f"{int(s // 3600)}h {int((s % 3600) // 60)}m {int(s % 60):02d}s"
+            if s >= 60:
+                return f"{int(s // 60)}m {int(s % 60):02d}s"
+            return f"{s:.1f}s"
 
         for name, ts in stats["tables"].items():
             status = "FAILED" if ts["batches_failed"] > 0 else "OK"
             total_rows = ts["rows_succeeded"] + ts["rows_failed"]
-            duration_s = ts["duration_ms"] / 1000
-            if duration_s >= 60:
-                dur_str = f"{int(duration_s // 60)}m {int(duration_s % 60):02d}s"
-            else:
-                dur_str = f"{duration_s:.1f}s"
+            wall_str = _fmt_duration(ts.get("wall_time_s", 0))
+            cpu_str  = _fmt_duration(ts.get("cpu_time_s", ts["duration_ms"] / 1000))
             lines.append(
                 f"  {name:<20} {status:<10} {total_rows:>10,} {ts['rows_failed']:>8,} "
-                f"{ts['warnings']:>10} {dur_str:>10}"
+                f"{ts['warnings']:>10} {wall_str:>12} {cpu_str:>12}"
             )
 
         # Failed table details.

@@ -9,7 +9,7 @@ def _make_record(**overrides):
         timestamp="2026-03-09T14:30:05.123Z",
         level="INFO",
         table="patients",
-        phase="deidentify",
+        phase="process",
         message="batch 1: 1000/1000 rows OK",
         batch=1,
         rows_in_batch=1000,
