@@ -293,8 +293,8 @@ class BaseDateOffsetRule(RuleBase):
         """Vectorized date-shift using Polars native expressions — no Python per-row loops.
 
         Parses the column with ``str.to_datetime``, adds the offset via ``pl.duration``,
-        and formats back — all in a single Rust-level pass.  Non-date values are
-        preserved as-is; nulls and empty strings become null.
+        and formats back — all in a single Rust-level pass.  Non-date values that cannot
+        be parsed become null; nulls and empty strings become null.
 
         All detected formats are tried in order so that a cached format from a previous
         batch (e.g. with microseconds) does not silently skip rows that use a different
@@ -342,7 +342,7 @@ class BaseDateOffsetRule(RuleBase):
             .then(pl.lit(None, dtype=pl.Utf8))
             .when(parsed.is_not_null())
             .then(shifted)
-            .otherwise(col_str)
+            .otherwise(pl.lit(None, dtype=pl.Utf8))
             .alias(col_name)
         )
 
