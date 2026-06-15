@@ -486,19 +486,13 @@ def _adjust_ddl_for_mysql_row_limit(col_specs: list[tuple[str, str, str]]) -> li
 class NDDBHandler:
     def __init__(self, connection_string: str, read_only: bool = False):
         self.read_only = read_only
-        # pymssql defaults to 4096-byte TDS packets; raise to max (32767) so large
-        # nvarchar(max) columns are transferred in far fewer round-trips, preventing
-        # the EOF 20017 error that occurs when SQL Server drops a half-sent stream.
-        connect_args = {}
-        if "pymssql" in connection_string:
-            connect_args["network_packetsize"] = 32767
         if read_only:
             # Read-only workers need a single connection; keeping the pool
             # small avoids flooding the source DB when many workers run.
-            engine_kwargs = dict(pool_size=1, max_overflow=2, pool_timeout=30, pool_recycle=1800, pool_pre_ping=True, connect_args=connect_args)
+            engine_kwargs = dict(pool_size=1, max_overflow=2, pool_timeout=30, pool_recycle=1800, pool_pre_ping=True)
             self.engine = create_read_only_engine(connection_string, **engine_kwargs)
         else:
-            engine_kwargs = dict(pool_size=5, max_overflow=5, pool_timeout=30, pool_recycle=1800, pool_pre_ping=True, connect_args=connect_args)
+            engine_kwargs = dict(pool_size=5, max_overflow=5, pool_timeout=30, pool_recycle=1800, pool_pre_ping=True)
             self.engine = create_engine(connection_string, **engine_kwargs)
 
         self.metadata = MetaData()
