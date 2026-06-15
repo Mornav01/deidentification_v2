@@ -174,7 +174,11 @@ def extract_dump_info(sql_file_path: str) -> dict:
                 ts_str = re.sub(r"\s+", " ", ts_m.group(1).strip())
                 dump_completed_at = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
             except ValueError:
-                pass
+                logger.debug(
+                    "Could not parse dump completion timestamp '%s' in %s; leaving dump_completed_at as None",
+                    ts_m.group(1),
+                    sql_file_path,
+                )
 
     except OSError as e:
         logger.warning("Cannot read %s: %s", sql_file_path, e)
