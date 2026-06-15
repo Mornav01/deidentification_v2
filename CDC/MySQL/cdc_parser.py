@@ -225,6 +225,7 @@ def worker_db_writer(queue, table_name, db_url, batch_size=2000, commit_interval
             try:
                 cursor.close()
             except pymysql.err.Error:
+                # Best-effort cleanup during shutdown; ignore close errors.
                 pass
         if conn is not None:
             try:
