@@ -489,10 +489,18 @@ async def _deidentify_phase(config, state_engine):
 
     # Resume in-progress batches (fetched -> process, processed -> write)
     with Session(state_engine) as session:
-        for batch in session.query(BatchState).filter_by(status="fetched", config_key=config.config_key).all():
+        for batch in session.query(BatchState).filter(
+            BatchState.status == "fetched",
+            BatchState.config_key == config.config_key,
+            BatchState.table_name.in_(configured_table_names),
+        ).all():
             cfg = _build_process_config(config, batch, staging_root, mappings_conn_str)
             process_batch.apply_async(args=[cfg], queue=f"deid-process-{config.config_key}")
-        for batch in session.query(BatchState).filter_by(status="processed", config_key=config.config_key).all():
+        for batch in session.query(BatchState).filter(
+            BatchState.status == "processed",
+            BatchState.config_key == config.config_key,
+            BatchState.table_name.in_(configured_table_names),
+        ).all():
             cfg = _build_write_config(config, batch, staging_root)
             write_batch.apply_async(args=[cfg], queue=f"deid-write-{config.config_key}-{batch.table_name}")
 
@@ -717,6 +725,7 @@ def _build_fetch_config(config, batch, staging_root, mappings_conn_str):
 
 def _build_process_config(config, batch, staging_root, mappings_conn_str):
     from deid.config.task_models import ProcessTaskConfig
+    _pat_mapping = config.mapping_tables.get("patient")
     base = ProcessTaskConfig(
         table_name=batch.table_name,
         start_id=batch.start_id,

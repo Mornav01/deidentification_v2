@@ -273,6 +273,7 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
     )
     df = resolver.transform(df)
 
+
     # 5. Invalid row handling
     rows_before_filter = df.height
     if rows_before_filter != rows_in:
