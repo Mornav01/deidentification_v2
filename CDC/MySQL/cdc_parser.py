@@ -229,8 +229,8 @@ def worker_db_writer(queue, table_name, db_url, batch_size=2000, commit_interval
         if conn is not None:
             try:
                 conn.close()
-            except pymysql.err.Error:
-                pass
+            except pymysql.err.Error as e:
+                logger.debug("DB Writer ignored connection close error during cleanup: %s", e)
         engine.dispose()
     logger.info("DB Writer finished. Total inserted: %s", total_inserted)
  
