@@ -69,12 +69,35 @@ def run_command(
     batch_size = cfg.workers.table_batch_size
 
     if batch_size > 0 and cfg.tables_to_run:
-        # Per-batch path: iterate over the FULL tables_to_run list (including unmatched).
-        # Unmatched tables are failed lazily when their batch runs, not upfront.
-        batch_names_list = [
-            cfg.tables_to_run[i:i + batch_size]
-            for i in range(0, len(cfg.tables_to_run), batch_size)
-        ]
+        # Per-batch path: find the NEXT batch of pending tables by skipping any that
+        # are already in a terminal state (completed / failed / skipped) from prior runs.
+        from sqlalchemy.orm import Session as _Session
+        from deid.models.base import create_state_engine as _cse, create_all_state_tables as _cat
+        from deid.models.state import TableState as _TS
+        _st_eng = _cse(cfg.resolved_state_db_url)
+        _cat(_st_eng)
+        try:
+            with _Session(_st_eng) as _sess:
+                _terminal = {
+                    row[0] for row in _sess.query(_TS.table_name).filter(
+                        _TS.config_key == cfg.config_key,
+                        _TS.status.in_(["completed", "failed", "skipped"]),
+                    ).all()
+                }
+        finally:
+            _st_eng.dispose()
+
+        _pending = [name for name in cfg.tables_to_run if name not in _terminal]
+        if not _pending:
+            typer.echo("All tables already processed — nothing to do.")
+            raise typer.Exit(code=0)
+
+        next_batch = _pending[:batch_size]
+        batch_names_list = [next_batch]
+        logger.info(
+            "table_batch_size=%d: %d pending tables, running next %d: %s",
+            batch_size, len(_pending), len(next_batch), next_batch,
+        )
     else:
         # Upfront path: fail ALL unmatched immediately (existing behaviour).
         if cfg.unmatched_tables:
@@ -260,24 +283,24 @@ def _record_unmatched_tables(cfg):
                     table_name=tname, config_key=cfg.config_key
                 ).first()
                 if existing:
-                    existing.status = "failed"
+                    existing.status = "skipped"
                     existing.failure_remarks = (
-                        "Table listed in tables_to_run but has no de-identification rules in config"
+                        "Table has no de-identification rules in config — skipped"
                     )
                 else:
                     session.add(TableState(
                         db_config_id=db_cfg.id,
                         table_name=tname,
                         config_key=cfg.config_key,
-                        status="failed",
+                        status="skipped",
                         failure_remarks=(
-                            "Table listed in tables_to_run but has no de-identification rules in config"
+                            "Table has no de-identification rules in config — skipped"
                         ),
                         rules_config={},
                     ))
             session.commit()
-            logger.warning(
-                "Recorded %d table(s) as failed (no config rules): %s",
+            logger.info(
+                "Recorded %d table(s) as skipped (no config rules): %s",
                 len(cfg.unmatched_tables), cfg.unmatched_tables,
             )
     finally:

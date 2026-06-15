@@ -233,9 +233,8 @@ class DeidConfig(BaseModel):
                 import logging
                 logger = logging.getLogger("deid.config")
                 for tname in self.unmatched_tables:
-                    logger.error(
-                        "Table '%s' is in tables_to_run but has no config rules — "
-                        "it will be recorded as failed and skipped.",
+                    logger.warning(
+                        "Table '%s' is in tables_to_run but has no config rules — will be skipped.",
                         tname,
                     )
             self.tables = [t for t in self.tables if t.name in allowed]
