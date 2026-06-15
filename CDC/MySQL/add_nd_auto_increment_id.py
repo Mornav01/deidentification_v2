@@ -46,12 +46,6 @@ def process_tables_mysql(engine, table_name):
         if 'nd_auto_increment_id' in columns:
             logger.info(f"  Column 'nd_auto_increment_id' already exists in {table_name}. Skipping.")
             return {"success": True, "action": "skipped"}
-            # try:
-            #     conn.execute(text(f"ALTER TABLE `{table_name}` DROP COLUMN `nd_auto_increment_id`"))
-            #     logger.info(f"  Dropped existing column in {table_name}")
-            # except Exception as e:
-            #     logger.error(f"  Error dropping column in {table_name}: {e}")
-            #     continue
 
         try:
             # 2. Optimization & Safety Bypass
