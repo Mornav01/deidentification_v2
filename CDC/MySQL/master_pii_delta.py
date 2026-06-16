@@ -14,7 +14,7 @@ Usage:
 import argparse
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import timezone
 
 from sqlalchemy import MetaData, create_engine, text
 
