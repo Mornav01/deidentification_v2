@@ -5,7 +5,7 @@ the rules CSV are automatically remapped to PATIENT_{identifier} and DOB before
 validation runs.
 """
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from deid.config.schema import TableConfig, MappingTableConfig
 
 
