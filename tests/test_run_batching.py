@@ -1,7 +1,7 @@
 """Tests for table_batch_size batching in deid run and deid retry."""
 import pytest
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 
 def _make_cfg(table_names, batch_size=0):
