@@ -159,6 +159,7 @@ def worker_db_writer(queue, table_name, db_url, batch_size=2000, commit_interval
         try:
             engine.dispose()
         except Exception:
+            # Best-effort cleanup: ignore dispose errors to preserve the original checkout failure path.
             pass
         return
 
