@@ -14,7 +14,6 @@ import sys
 import argparse
 import logging
 from sqlalchemy import create_engine, text, inspect
-from sqlalchemy.exc import ProgrammingError
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Setup logging — file + stdout so Airflow captures output
