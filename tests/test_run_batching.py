@@ -1,5 +1,4 @@
 """Tests for table_batch_size batching in deid run and deid retry."""
-import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
