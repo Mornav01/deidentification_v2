@@ -489,10 +489,10 @@ class NDDBHandler:
         if read_only:
             # Read-only workers need a single connection; keeping the pool
             # small avoids flooding the source DB when many workers run.
-            engine_kwargs = dict(pool_size=1, max_overflow=2, pool_timeout=30, pool_recycle=1800, pool_pre_ping=True)
+            engine_kwargs = dict(pool_size=6, max_overflow=2, pool_timeout=1000, pool_recycle=1800, pool_pre_ping=True)
             self.engine = create_read_only_engine(connection_string, **engine_kwargs)
         else:
-            engine_kwargs = dict(pool_size=5, max_overflow=5, pool_timeout=30, pool_recycle=1800, pool_pre_ping=True)
+            engine_kwargs = dict(pool_size=6, max_overflow=5, pool_timeout=1000, pool_recycle=1800, pool_pre_ping=True)
             self.engine = create_engine(connection_string, **engine_kwargs)
 
         self.metadata = MetaData()

@@ -8,13 +8,13 @@ using deltas from the staging schema.
 It is a .py version of NOTEBOOK/DENT/master_pii_delta.ipynb.
 
 Usage:
-    python master_pii_delta.py --master_schema "master" --staging_schema "mobiledoc_apr26_staging"
+    python master_pii_delta.py --master_schema "master" --staging_schema "mobiledoc_staging"
 """
 
 import argparse
 import logging
 import os
-from datetime import timezone
+from datetime import datetime, timezone
 
 from sqlalchemy import MetaData, create_engine, text
 

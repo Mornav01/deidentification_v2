@@ -36,6 +36,45 @@ def _db_url(schema: str) -> str:
     return f"mysql+pymysql://{user}:{password}@{host}:{port}/{schema}"
 
 
+def prefetch_constraint_status(engine, schema: str, tables: list) -> dict:
+    """
+    Two schema-wide INFORMATION_SCHEMA queries — no TABLE_NAME IN (...) list.
+    Filtering is done in Python against the input table set.
+    Returns { table_name_lower: {'has_col': bool, 'has_unique': bool} }
+    """
+    target = {t.lower() for t in tables}
+    with engine.connect() as conn:
+        col_rows = conn.execute(text("""
+            SELECT TABLE_NAME
+            FROM   INFORMATION_SCHEMA.COLUMNS
+            WHERE  TABLE_SCHEMA = :schema
+              AND  COLUMN_NAME  = 'nd_auto_increment_id'
+        """), {"schema": schema}).fetchall()
+
+        idx_rows = conn.execute(text("""
+            SELECT TABLE_NAME
+            FROM   INFORMATION_SCHEMA.STATISTICS
+            WHERE  TABLE_SCHEMA = :schema
+              AND  COLUMN_NAME  = 'nd_auto_increment_id'
+              AND  NON_UNIQUE   = 0
+        """), {"schema": schema}).fetchall()
+
+    has_col    = {r[0].lower() for r in col_rows} & target
+    has_unique = {r[0].lower() for r in idx_rows} & target
+
+    result = {
+        t.lower(): {"has_col": t.lower() in has_col, "has_unique": t.lower() in has_unique}
+        for t in tables
+    }
+
+    already_done = sum(1 for v in result.values() if v["has_unique"])
+    logger.info(
+        "Constraint prefetch complete — %d tables already have UNIQUE, %d need work",
+        already_done, len(tables) - already_done,
+    )
+    return result
+
+
 def _check_column_exists(conn, schema: str, table_name: str) -> bool:
     result = conn.execute(
         text("""
@@ -173,15 +212,28 @@ def run(schema: str, max_workers: int = 10) -> None:
         max_overflow=max_workers,
     )
 
-    # tables = get_all_tables(engine, schema)
-    df = pd.read_csv("/Users/ndaidcnd/Desktop/Air_DEID/airflow-automation/Airflow/input/deid_runner.csv", header=None, names=['table_name'])
-    tables = df['table_name'].to_list()
+    tables = get_all_tables(engine, schema)
+    # df = pd.read_csv("/Users/ndaidcnd/Desktop/Air_DEID/airflow-automation/Airflow/input/deid_runner.csv", header=None, names=['table_name'])
+    # tables = df['table_name'].to_list()
 
     if not tables:
         logger.warning("No tables found — nothing to do")
         return
 
-    logger.info("Processing %d tables | workers=%d | schema=%s", len(tables), max_workers, schema)
+    status_map = prefetch_constraint_status(engine, schema, tables)
+
+    # Skip tables that already have the UNIQUE constraint — no worker needed.
+    dispatch_list = [t for t in tables if not status_map.get(t.lower(), {}).get("has_unique")]
+    skip_count    = len(tables) - len(dispatch_list)
+
+    logger.info(
+        "Processing %d tables (skipped %d already-constrained) | workers=%d | schema=%s",
+        len(dispatch_list), skip_count, max_workers, schema,
+    )
+
+    if not dispatch_list:
+        logger.info("Nothing to do — all tables already have the UNIQUE constraint")
+        return
 
     def _dispatch(table_list: list, workers: int) -> list:
         results = []
@@ -202,7 +254,7 @@ def run(schema: str, max_workers: int = 10) -> None:
         return results
 
     # First pass — parallel
-    results = _dispatch(tables, max_workers)
+    results = _dispatch(dispatch_list, max_workers)
 
     # Retry failed tables sequentially
     failed_tables = [r["table"] for r in results if not r["success"]]
@@ -220,8 +272,8 @@ def run(schema: str, max_workers: int = 10) -> None:
 
     logger.info("=" * 60)
     logger.info(
-        "Summary — total: %d | added: %d | skipped: %d | failed: %d",
-        len(results), added, skipped, failed,
+        "Summary — total: %d | added: %d | skipped: %d (incl. %d pre-skipped) | failed: %d",
+        len(tables), added, skipped + skip_count, skip_count, failed,
     )
     if failed:
         logger.error("Failed: %s", [r["table"] for r in results if not r["success"]])

@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import json
 import argparse
 import subprocess
@@ -140,14 +141,12 @@ def worker_db_writer(queue, table_name, db_url, batch_size=2000, commit_interval
             try:
                 cursor.close()
             except pymysql.err.Error:
-                # Best-effort cleanup: ignore cursor close errors before obtaining a new connection.
                 pass
             cursor = None
         if conn is not None:
             try:
                 conn.close()
             except pymysql.err.Error:
-                # Best-effort cleanup: ignore close errors before obtaining a new connection.
                 pass
             conn = None
         conn = engine.raw_connection()
@@ -160,7 +159,6 @@ def worker_db_writer(queue, table_name, db_url, batch_size=2000, commit_interval
         try:
             engine.dispose()
         except Exception:
-            # Best-effort cleanup: ignore dispose errors to preserve the original checkout failure path.
             pass
         return
 
@@ -192,11 +190,31 @@ def worker_db_writer(queue, table_name, db_url, batch_size=2000, commit_interval
             flush_batch()
         except pymysql.err.Error as e:
             logger.error("DB Writer MySQL error during flush: %s", e)
+            # Collect the binlog files touched by this batch so we can clean up
+            # any partial records that may have been committed before the drop.
+            affected_binlogs = {record[3] for record in batch if record[3]}
             try:
                 checkout()
             except Exception as e2:
                 logger.error("DB Writer reconnect failed: %s", e2)
                 return
+            # Drop all records for affected binlog files to avoid duplicates on retry.
+            if affected_binlogs:
+                try:
+                    placeholders = ", ".join(["%s"] * len(affected_binlogs))
+                    cleanup_cur = conn.cursor()
+                    cleanup_cur.execute(
+                        f"DELETE FROM `{table_name}` WHERE binlog_file IN ({placeholders})",
+                        tuple(affected_binlogs),
+                    )
+                    conn.commit()
+                    cleanup_cur.close()
+                    logger.info(
+                        "Cleaned up partial records for %d binlog file(s) before retry: %s",
+                        len(affected_binlogs), affected_binlogs,
+                    )
+                except Exception as e_del:
+                    logger.error("Failed to clean up binlog records: %s", e_del)
             if not batch:
                 return
             try:
@@ -228,39 +246,44 @@ def worker_db_writer(queue, table_name, db_url, batch_size=2000, commit_interval
             try:
                 cursor.close()
             except pymysql.err.Error:
-                # Best-effort cleanup during shutdown; ignore close errors.
                 pass
         if conn is not None:
             try:
                 conn.close()
-            except pymysql.err.Error as e:
-                logger.debug("DB Writer ignored connection close error during cleanup: %s", e)
+            except pymysql.err.Error:
+                pass
         engine.dispose()
     logger.info("DB Writer finished. Total inserted: %s", total_inserted)
  
 # ============================
 # Worker: Parser (Producer)
 # ============================
-def worker_parse(binlog_path, p0_tables_set, queue, run_date, end_date=None):
+def worker_parse(binlog_path, p0_tables_set, queue, run_date, end_date=None, exclude_p0=False):
     """
     Producer process that parses a binlog file and pushes records to the queue.
     """
     # --- Precompiled regex (big speed improvement) ---
     RE_USE = re.compile(r"[Uu][Ss][Ee] `(.*?)`")
-    RE_STMT = re.compile(r"^(INSERT|UPDATE)\s+", re.IGNORECASE)
+    RE_STMT = re.compile(r"^(INSERT|UPDATE|DELETE)\s+", re.IGNORECASE)
     RE_TABLE = re.compile(r"(?:INTO|UPDATE|FROM)\s+`?([a-zA-Z0-9_]+)`?(?:\.`?([a-zA-Z0-9_]+)`?)?", re.IGNORECASE)
     # Match: ### INSERT INTO `schema`.`table` or ### INSERT INTO schema.table
     RE_ROW_INSERT = re.compile(r"### INSERT INTO (?:`([^`]+)`\.`([^`]+)`|([^`\.\s]+)\.([^`\.\s]+))")
     RE_ROW_UPDATE = re.compile(r"### UPDATE (?:`([^`]+)`\.`([^`]+)`|([^`\.\s]+)\.([^`\.\s]+))")
+    RE_ROW_DELETE = re.compile(r"### DELETE FROM (?:`([^`]+)`\.`([^`]+)`|([^`\.\s]+)\.([^`\.\s]+))")
     RE_ROW_TABLE = re.compile(r"### table: `.*?`\.`(.*?)`")
- 
+    # Statement-based AUTO_INCREMENT value: MySQL emits a standalone Intvar event
+    # (rendered by mysqlbinlog as `SET INSERT_ID=N`) immediately before an INSERT
+    # that assigns an AUTO_INCREMENT column.  The PK value is NOT inside the INSERT
+    # statement itself, so this is the only place to recover the exact prod PK.
+    RE_INSERT_ID = re.compile(r"^SET INSERT_ID=(\d+)", re.IGNORECASE)
+
     current_schema = None
     current_op = None
     current_row_based_table = None
-    current_where = {}   # before-image: UPDATE WHERE columns
-    current_set   = {}   # after-image:  INSERT/UPDATE SET columns
-    row_section   = None # "WHERE" | "SET" | None
+    current_data = {}
     current_pos = 0
+    # Most recent SET INSERT_ID value seen; consumed by the next statement.
+    pending_insert_id = None
  
     matched_events = 0
     total_lines = 0
@@ -268,38 +291,82 @@ def worker_parse(binlog_path, p0_tables_set, queue, run_date, end_date=None):
     binlog_basename = os.path.basename(binlog_path)
     whitelist = WHITELIST_SCHEMAS
  
-    # Use start/stop datetime to filter events at the source (mysqlbinlog)
-    # This significantly reduces the data piped to Python if we only need a specific window
-    # Note: run_date is a date object, so we default to full day
-    start_dt = datetime.combine(run_date, datetime.min.time())
-    
-    # Format for mysqlbinlog: "YYYY-MM-DD HH:MM:SS"
+    # end_date is the lower bound (start of window), run_date is the upper bound (end of window)
+    start_dt = datetime.combine(end_date, datetime.min.time())
     start_str = start_dt.strftime("%Y-%m-%d %H:%M:%S")
-    
-    cmd = ["mysqlbinlog", "--base64-output=DECODE-ROWS", "--verbose", 
-           f"--start-datetime={start_str}", binlog_path]
-    
-    if end_date:
-        end_dt = datetime.combine(end_date, datetime.max.time())
-        end_str = end_dt.strftime("%Y-%m-%d %H:%M:%S")
-        cmd.append(f"--stop-datetime={end_str}")
+
+    stop_dt = datetime.combine(run_date, datetime.max.time())
+    stop_str = stop_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    cmd = ["mysqlbinlog", "--base64-output=DECODE-ROWS", "--verbose",
+           f"--start-datetime={start_str}", f"--stop-datetime={stop_str}", binlog_path]
     
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except Exception as e:
-        logger.error(f"Failed to start mysqlbinlog for {binlog_path}: {e}")
-        return 0, 0
+        raise RuntimeError(f"Failed to start mysqlbinlog for {binlog_path}: {e}") from e
  
     # Alias for speed
     read_next = proc.stdout.readline
- 
+
+    # Memoize the filter verdict per raw table name. The same name recurs
+    # across thousands of rows in a binlog, so caching turns the repeated
+    # .lower() + set lookup into a single dict hit after the first sighting.
+    # Works for both modes; an allow-list can't be prebuilt for exclude mode
+    # since the universe of non-P0 table names isn't known up front.
+    _verdict_cache = {}
+
+    def table_allowed(name):
+        """Whether a table passes the P0 filter.
+
+        No CSV (p0_tables_set is None) → all tables pass. With a CSV, the
+        membership test is inverted by exclude_p0: include-mode keeps only
+        listed tables; exclude-mode keeps everything except listed tables.
+        """
+        if p0_tables_set is None:
+            return True
+        verdict = _verdict_cache.get(name)
+        if verdict is None:
+            in_set = name.lower() in p0_tables_set
+            verdict = (not in_set) if exclude_p0 else in_set
+            _verdict_cache[name] = verdict
+        return verdict
+
+    def flush_row():
+        """Emit the currently-buffered row event (if any) and reset row state.
+
+        Row-based events can pack many rows into a single binlog event (e.g. a
+        bulk INSERT/UPDATE). Each row restarts with a `### <OP>` marker
+        but reuses the same `@N` column keys, so we must flush the previous row
+        before the next marker overwrites current_data — otherwise only the last
+        row of the event survives.
+        """
+        nonlocal current_op, current_row_based_table, current_data, matched_events
+        if (current_schema in whitelist and current_op and current_data
+                and current_row_based_table
+                and table_allowed(current_row_based_table)):
+            matched_events += 1
+            # Store the table name lowercased — the change-log table holds
+            # names in lowercase only, so downstream lookups stay consistent
+            # regardless of the binlog's original casing.
+            queue.put((
+                current_row_based_table.lower(),
+                current_op,
+                json_dumps(current_data),
+                binlog_basename,
+                current_pos,
+            ))
+        current_op = None
+        current_row_based_table = None
+        current_data = {}
+
     for raw_line in proc.stdout:
         total_lines += 1
  
         # FAST decode (no strip!)
         try:
             line = raw_line.decode("utf-8")
-        except:
+        except UnicodeDecodeError:
             line = raw_line.decode("latin1", errors="replace")
  
         # Track binlog position (but don't continue - let it fall through to commit check)
@@ -308,7 +375,7 @@ def worker_parse(binlog_path, p0_tables_set, queue, run_date, end_date=None):
             if len(sp) > 2:
                 try:
                     current_pos = int(sp[2])
-                except:
+                except (ValueError, IndexError):
                     pass
             # Don't continue here - let it fall through to the commit check below
  
@@ -321,14 +388,30 @@ def worker_parse(binlog_path, p0_tables_set, queue, run_date, end_date=None):
  
         if current_schema not in whitelist:
             continue  # ultra fast skip for non-whitelisted schemas
- 
+
+        # ------------------------------
+        #  AUTO_INCREMENT value (statement-based)
+        #  Buffer the SET INSERT_ID=N that precedes an auto-increment INSERT.
+        #  The intervening `# at <pos>` event line only updates current_pos /
+        #  flushes row state, so this value survives until the next statement.
+        # ------------------------------
+        m_iid = RE_INSERT_ID.match(line)
+        if m_iid:
+            pending_insert_id = int(m_iid.group(1))
+            continue
+
         # ------------------------------
         #  STATEMENT-BASED (INSERT/UPDATE)
         # ------------------------------
         stmt = RE_STMT.match(line)
         if stmt:
             op_type = stmt.group(1).upper()
- 
+            # Consume the buffered INSERT_ID into a local immediately and clear the
+            # shared state, so it can NEVER leak onto a later statement — even if
+            # this one is dropped below (no table match / non-whitelisted schema).
+            stmt_insert_id = pending_insert_id
+            pending_insert_id = None
+
             # Extract table
             t_match = RE_TABLE.search(line)
             if not t_match:
@@ -339,11 +422,12 @@ def worker_parse(binlog_path, p0_tables_set, queue, run_date, end_date=None):
  
             if table_schema not in whitelist:
                 continue
- 
-            # Check P0 tables (O(1) lookup)
-            # if table_name not in p0_tables_set:
-            #     continue
-            
+
+            # Apply the P0 filter (case-insensitive), mirroring the row-based
+            # path so both honor the same list and the same include/exclude mode.
+            if not table_allowed(table_name):
+                continue
+
             matched_events += 1
  
             # FAST MULTI-LINE SQL CAPTURE
@@ -356,7 +440,7 @@ def worker_parse(binlog_path, p0_tables_set, queue, run_date, end_date=None):
  
                 try:
                     nxt_line = nxt.decode("utf-8")
-                except:
+                except UnicodeDecodeError:
                     nxt_line = nxt.decode("latin1", errors="replace")
  
                 stripped = nxt_line.strip()
@@ -372,12 +456,21 @@ def worker_parse(binlog_path, p0_tables_set, queue, run_date, end_date=None):
                     break
  
             full_sql = "\n".join(sql_lines)
- 
-            # Convert to JSON for storage
-            record_json = json_dumps({"raw_sql": full_sql})
- 
-            # Push to queue
-            queue.put((table_name, op_type, record_json, binlog_basename, current_pos))
+
+            # Convert to JSON for storage.  Attach the captured AUTO_INCREMENT value
+            # so the restore can reproduce the exact prod PK instead of re-assigning
+            # one (only meaningful for INSERTs; other statements ignore it).
+            record = {"raw_sql": full_sql}
+            # Store only a positive INSERT_ID.  0 / missing means "no PK captured",
+            # which the restore treats as a hard error (it refuses to let MySQL
+            # auto-assign a PK) rather than silently drifting.
+            if op_type == "INSERT" and stmt_insert_id:
+                record["insert_id"] = stmt_insert_id
+            record_json = json_dumps(record)
+
+            # Push to queue — lowercase the name to match the row-based path
+            # so the change-log table stores table names in lowercase only.
+            queue.put((table_name.lower(), op_type, record_json, binlog_basename, current_pos))
             continue
  
         # ------------------------------
@@ -385,20 +478,8 @@ def worker_parse(binlog_path, p0_tables_set, queue, run_date, end_date=None):
         # ------------------------------
         m_insert = RE_ROW_INSERT.match(line)
         if m_insert:
-            # Flush any pending row before starting the next one (multi-row events)
-            if current_op and current_set and current_row_based_table:
-                if p0_tables_set is None or current_row_based_table in p0_tables_set:
-                    matched_events += 1
-                    if current_op == "UPDATE":
-                        record = {"format": "row_update", "where": current_where, "set": current_set}
-                    else:
-                        record = {"format": "row", "data": current_set}
-                    queue.put((current_row_based_table, current_op, json_dumps(record), binlog_basename, current_pos))
-
+            flush_row()  # flush previous row in a multi-row event
             current_op = "INSERT"
-            current_where = {}
-            current_set   = {}
-            row_section   = None
             # Extract schema and table - handle both backtick and non-backtick formats
             groups = m_insert.groups()
             if groups[0] and groups[1]:  # Backtick format: `schema`.`table`
@@ -410,7 +491,7 @@ def worker_parse(binlog_path, p0_tables_set, queue, run_date, end_date=None):
             else:
                 schema_from_line = None
                 current_row_based_table = None
-
+                
             # If we don't have a current_schema yet, use the one from the line
             if schema_from_line and current_schema is None:
                 current_schema = schema_from_line
@@ -418,22 +499,31 @@ def worker_parse(binlog_path, p0_tables_set, queue, run_date, end_date=None):
  
         m_update = RE_ROW_UPDATE.match(line)
         if m_update:
-            # Flush any pending row before starting the next one (multi-row events)
-            if current_op and current_set and current_row_based_table:
-                if p0_tables_set is None or current_row_based_table in p0_tables_set:
-                    matched_events += 1
-                    if current_op == "UPDATE":
-                        record = {"format": "row_update", "where": current_where, "set": current_set}
-                    else:
-                        record = {"format": "row", "data": current_set}
-                    queue.put((current_row_based_table, current_op, json_dumps(record), binlog_basename, current_pos))
-
+            flush_row()  # flush previous row in a multi-row event
             current_op = "UPDATE"
-            current_where = {}
-            current_set   = {}
-            row_section   = None
             # Extract schema and table - handle both backtick and non-backtick formats
             groups = m_update.groups()
+            if groups[0] and groups[1]:  # Backtick format: `schema`.`table`
+                schema_from_line = groups[0]
+                current_row_based_table = groups[1]
+            elif groups[2] and groups[3]:  # Non-backtick format: schema.table
+                schema_from_line = groups[2]
+                current_row_based_table = groups[3]
+            else:
+                schema_from_line = None
+                current_row_based_table = None
+                
+            # If we don't have a current_schema yet, use the one from the line
+            if schema_from_line and current_schema is None:
+                current_schema = schema_from_line
+            continue
+
+        m_delete = RE_ROW_DELETE.match(line)
+        if m_delete:
+            flush_row()  # flush previous row in a multi-row event
+            current_op = "DELETE"
+            # Extract schema and table - handle both backtick and non-backtick formats
+            groups = m_delete.groups()
             if groups[0] and groups[1]:  # Backtick format: `schema`.`table`
                 schema_from_line = groups[0]
                 current_row_based_table = groups[1]
@@ -448,53 +538,26 @@ def worker_parse(binlog_path, p0_tables_set, queue, run_date, end_date=None):
             if schema_from_line and current_schema is None:
                 current_schema = schema_from_line
             continue
- 
+
         t_match = RE_ROW_TABLE.match(line)
         if t_match:
             current_row_based_table = t_match.group(1)
             continue
  
-        # Row section headers — set routing flag for subsequent @N=val lines
-        if line.startswith("### WHERE"):
-            row_section = "WHERE"
-            continue
-        if line.startswith("### SET"):
-            row_section = "SET"
-            continue
-
-        # Column lines: ###   @1=...
+        # Column lines: ### @1=...
         if line.startswith("###   @"):
             kv = line[7:].split("=", 1)
             if len(kv) == 2:
-                if row_section == "WHERE":
-                    current_where[kv[0]] = kv[1].strip()
-                else:  # "SET" or None (INSERT before SET header seen)
-                    current_set[kv[0]] = kv[1].strip()
+                current_data[kv[0]] = kv[1].strip()
             continue
  
-        # Event boundary → commit row event
+        # Event boundary → commit the last buffered row event
         if line.startswith("### COMMIT") or line.startswith("# at "):
-            if current_schema in whitelist and current_op and current_set and current_row_based_table:
-                if p0_tables_set is None or current_row_based_table in p0_tables_set:
-                    matched_events += 1
-                    if current_op == "UPDATE":
-                        record = {"format": "row_update", "where": current_where, "set": current_set}
-                    else:
-                        record = {"format": "row", "data": current_set}
-                    queue.put((
-                        current_row_based_table,
-                        current_op,
-                        json_dumps(record),
-                        binlog_basename,
-                        current_pos,
-                    ))
-
-            current_op = None
-            current_row_based_table = None
-            current_where = {}
-            current_set   = {}
-            row_section   = None
+            flush_row()
  
+    # Flush any row still buffered at EOF (no trailing boundary line followed it)
+    flush_row()
+
     # Wait for mysqlbinlog to finish
     _, stderr = proc.communicate()
     err_text = stderr.decode("utf-8", errors="ignore").strip()
@@ -510,27 +573,27 @@ def get_files(folder_path, run_date, end_date):
     # Optimized file scanning using os.scandir
     modified_files = []
     
-    # Convert dates to timestamps for faster comparison
-    run_ts = datetime.combine(run_date, datetime.min.time()).timestamp()
-    end_ts = datetime.combine(end_date, datetime.max.time()).timestamp()
-    
-    logger.info(f"Scanning {folder_path} for files modified between {run_date} and {end_date}")
-    
+    # end_date is the lower bound (start of window), run_date is the upper bound (end of window)
+    end_ts = datetime.combine(end_date, datetime.min.time()).timestamp()
+    run_ts = datetime.combine(run_date, datetime.max.time()).timestamp()
+
+    logger.info(f"Scanning {folder_path} for files modified between {end_date} and {run_date}")
+
     try:
         with os.scandir(folder_path) as it:
             for entry in it:
                 if not entry.is_file():
                     continue
-                    
+
                 # Check name pattern first (fastest check)
                 name = entry.name
                 if not (name.startswith('binarylogs.') and not name.endswith('.index')):
                     continue
-                
+
                 try:
                     # Check modification time
                     mtime = entry.stat().st_mtime
-                    if run_ts <= mtime <= end_ts:
+                    if end_ts <= mtime <= run_ts:
                         modified_files.append(entry.path)
                 except OSError:
                     continue
@@ -597,9 +660,21 @@ def parse_args():
         help="Directory containing binary logs",
     )
     parser.add_argument(
+        "--binlog_file",
+        default=None,
+        help="Path to a single binary log file to process. When provided, "
+             "--binlog_dir scanning and checkpoint filtering are skipped.",
+    )
+    parser.add_argument(
         "--p0_csv",
         default=None,
         help="Path to P0 tables CSV file. Omit to process ALL tables.",
+    )
+    parser.add_argument(
+        "--exclude_p0",
+        action="store_true",
+        help="Invert --p0_csv: process all tables EXCEPT those in the CSV "
+             "(instead of only those listed). No effect without --p0_csv.",
     )
     parser.add_argument(
         "--checkpoint_file",
@@ -611,10 +686,10 @@ def parse_args():
 # ============================
 # Worker Wrapper (must be module-level for multiprocessing spawn pickling)
 # ============================
-def worker_wrapper(files, p0_set, data_q, stats_q, r_date, e_date):
+def worker_wrapper(files, p0_set, data_q, stats_q, r_date, e_date, exclude_p0=False):
     for f in files:
         try:
-            matched, total = worker_parse(f, p0_set, data_q, r_date, e_date)
+            matched, total = worker_parse(f, p0_set, data_q, r_date, e_date, exclude_p0)
             stats_q.put({
                 'type': 'file_complete',
                 'filename': os.path.basename(f),
@@ -624,7 +699,8 @@ def worker_wrapper(files, p0_set, data_q, stats_q, r_date, e_date):
             logger.info(f"Processed {os.path.basename(f)}: {matched} events")
         except Exception as e:
             logger.error(f"Error processing {f}: {e}")
- 
+            stats_q.put({'type': 'file_error', 'filename': os.path.basename(f), 'error': str(e)})
+
     stats_q.put({'type': 'worker_done'})
  
  
@@ -641,7 +717,7 @@ def main():
         if args.end_date:
             end_date = datetime.strptime(args.end_date, "%Y-%m-%d").date()
         else:
-            end_date = datetime.today().date()
+            end_date = run_date  # single-day window when end_date not provided
     except ValueError as e:
         logger.error(f"Invalid date format: {e}")
         return
@@ -659,8 +735,12 @@ def main():
         try:
             logger.info(f"Loading P0 tables from {args.p0_csv}")
             df = pd.read_csv(args.p0_csv)
-            p0_tables_set = set(df['TABLE_NAME'].unique())
-            logger.info(f"Loaded {len(p0_tables_set)} P0 tables")
+            # Normalise to lowercase so matching is case-insensitive (binlog table
+            # names can differ in case from the CSV).  Strip whitespace and drop blanks.
+            p0_tables_set = {str(t).strip().lower() for t in df['TABLE_NAME'].dropna().unique()}
+            p0_tables_set.discard("")
+            mode = "EXCLUDING" if args.exclude_p0 else "restricting to"
+            logger.info(f"Loaded {len(p0_tables_set)} P0 tables — {mode} them")
         except Exception as e:
             logger.error(f"Failed to load P0 tables CSV: {e}")
             return
@@ -668,16 +748,25 @@ def main():
         logger.info("No --p0_csv provided — processing ALL tables")
  
     # 2. Get Files (Optimized)
-    binlog_files = get_files(folder, run_date, end_date)
-    logger.info(f"Found {len(binlog_files)} binlog files to process")
-    
-    # Checkpoint Filtering
-    processed_files_set = load_checkpoint(args.checkpoint_file)
-    if processed_files_set:
-        original_count = len(binlog_files)
-        binlog_files = [f for f in binlog_files if os.path.basename(f) not in processed_files_set]
-        logger.info(f"Skipping {original_count - len(binlog_files)} already processed files based on checkpoint")
-    
+    if args.binlog_file:
+        # Single-file mode: process exactly the file provided, bypassing
+        # directory scanning and checkpoint filtering.
+        if not os.path.isfile(args.binlog_file):
+            logger.error(f"--binlog_file not found: {args.binlog_file}")
+            return
+        binlog_files = [args.binlog_file]
+        logger.info(f"Single-file mode: processing {args.binlog_file}")
+    else:
+        binlog_files = get_files(folder, run_date, end_date)
+        logger.info(f"Found {len(binlog_files)} binlog files to process")
+
+        # Checkpoint Filtering
+        processed_files_set = load_checkpoint(args.checkpoint_file)
+        if processed_files_set:
+            original_count = len(binlog_files)
+            binlog_files = [f for f in binlog_files if os.path.basename(f) not in processed_files_set]
+            logger.info(f"Skipping {original_count - len(binlog_files)} already processed files based on checkpoint")
+
     if not binlog_files:
         logger.info("No new files to process. Exiting.")
         return
@@ -738,7 +827,7 @@ def main():
                 stats_queue.put({'type': 'worker_done'})
                 continue
                 
-            p = mp.Process(target=worker_wrapper, args=(files_chunk, p0_tables_set, queue, stats_queue, run_date, end_date))
+            p = mp.Process(target=worker_wrapper, args=(files_chunk, p0_tables_set, queue, stats_queue, run_date, end_date, args.exclude_p0))
             p.start()
             parser_processes.append(p)
  
@@ -746,7 +835,8 @@ def main():
         file_stats = []
         active_workers = num_workers
         processed_files_buffer = set()
-        
+        failed_files = []
+
         while active_workers > 0:
             try:
                 msg = stats_queue.get(timeout=1.0)
@@ -755,11 +845,13 @@ def main():
                 elif msg['type'] == 'file_complete':
                     file_stats.append(msg)
                     processed_files_buffer.add(msg['filename'])
-                    
+
                     # Update checkpoint every 10 files or so to reduce I/O
                     if len(processed_files_buffer) >= 10:
                         save_checkpoint(args.checkpoint_file, processed_files_buffer)
                         processed_files_buffer.clear()
+                elif msg['type'] == 'file_error':
+                    failed_files.append(msg['filename'])
             except Empty:
                 continue
         
@@ -787,7 +879,14 @@ def main():
             output_csv = f"cdc_parser_log_{run_date}.csv"
             stats_df.to_csv(output_csv, index=False)
             logger.info(f"Stats saved to {output_csv}")
-            
+
+        if failed_files:
+            logger.error(
+                "%d binlog file(s) failed to process: %s — DAG will be marked as failed.",
+                len(failed_files), failed_files,
+            )
+            sys.exit(1)
+
     except KeyboardInterrupt:
         logger.warning("Interrupted! Terminating processes...")
         for p in parser_processes:

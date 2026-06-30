@@ -49,12 +49,12 @@ def parse_args():
     parser.add_argument(
         "--staging_schema",
         required=True,
-        help='Staging schema to read from (e.g. "mobiledoc_apr26_staging")',
+        help='Staging schema to read from (e.g. "mobiledoc_staging")',
     )
     parser.add_argument(
         "--prod_schema",
         required=True,
-        help='Prod schema to write into (e.g. "mobiledoc_apr26")',
+        help='Prod schema to write into (e.g. "mobiledoc")',
     )
     parser.add_argument(
         "--max_workers",
@@ -134,8 +134,8 @@ def init_databases(staging_schema_arg: str, prod_schema_arg: str):
 CDC_COLS = [
     ("nd_extracted_date",        "DATETIME DEFAULT NULL"),
     ("nd_updated_at",        "DATETIME DEFAULT NULL"),
-    ("nd_operation",         "VARCHAR(100)"),
-    ("nd_ActiveFlag",         "VARCHAR(10)"),
+    ("nd_operation",         "VARCHAR(6)"),
+    ("nd_ActiveFlag",         "VARCHAR(1)"),
 ]
 
 def ensure_cdc_columns_for_table(conn, table_name, table_columns):
@@ -163,9 +163,18 @@ def ensure_cdc_columns_for_table(conn, table_name, table_columns):
             table_columns[t].append(col_name)
             logger.info(f"➕ Added {col_name} to {table_name}")
         except Exception as e:
-            logger.warning(
-                f"⚠️ Skipped adding {table_name}.{col_name}: {e}"
-            )
+            orig = getattr(e, "orig", None)
+            orig_code = orig.args[0] if (orig and hasattr(orig, "args") and orig.args) else None
+            if orig_code == 1118 and "VARCHAR" in col_def.upper():
+                # Row too wide for VARCHAR — retry with TEXT (stored off-page, no row-size cost)
+                try:
+                    conn.execute(text(f"ALTER TABLE `{table_name}` ADD COLUMN `{col_name}` TEXT"))
+                    table_columns[t].append(col_name)
+                    logger.warning(f"⚠️ Added {table_name}.{col_name} as TEXT (row too wide for {col_def})")
+                except Exception as e2:
+                    logger.warning(f"⚠️ Skipped adding {table_name}.{col_name}: {e2}")
+            else:
+                logger.warning(f"⚠️ Skipped adding {table_name}.{col_name}: {e}")
 
 def remove_generated_columns(table_name, columns, values, generated_cols):
     gen_set = generated_cols.get(table_name.lower())

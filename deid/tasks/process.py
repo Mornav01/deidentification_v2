@@ -137,7 +137,32 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
     possible_patient_identifier_columns: list[str] = (
         config.mapping_db_config.get("patient_identifier_columns") or []
     )
-    if preloaded:
+
+    # Use the shared in-memory mappings ONLY if every mapping table THIS batch
+    # actually needs (per its rules) is present. If the preload is empty or a
+    # required table is missing (e.g. a load error in the parent process), fall
+    # back to the per-batch SQL joins instead of silently skipping a needed
+    # join — which would otherwise null out nd_patient_id and reject rows.
+    _required_tables: set[str] = set()
+    if key_phi_columns[0]:                         # ENCOUNTER_ID rules
+        _required_tables |= {"encounter_mapping", "patient_mapping"}
+    if key_phi_columns[1] or key_phi_columns[2]:   # PATIENT_* / REFERENCE_PID
+        _required_tables.add("patient_mapping")
+    if key_phi_columns[3]:                         # APPOINTMENT_ID
+        _required_tables |= {"appointment_mapping", "patient_mapping"}
+    if key_phi_columns[4]:                         # CHART_ID
+        _required_tables |= {"chart_mapping", "patient_mapping"}
+    use_preloaded = bool(preloaded) and all(
+        preloaded.get(t) is not None for t in _required_tables
+    )
+    if preloaded and not use_preloaded:
+        _missing = sorted(t for t in _required_tables if preloaded.get(t) is None)
+        logger.warning(
+            "[%s] preloaded mappings incomplete (missing: %s) — falling back to SQL joins",
+            config.table_name, ", ".join(_missing) or "none",
+        )
+
+    if use_preloaded:
         enc_df = preloaded.get("encounter_mapping")
         pat_df = preloaded.get("patient_mapping")
         apt_df = preloaded.get("appointment_mapping")

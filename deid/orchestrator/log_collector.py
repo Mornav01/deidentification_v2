@@ -286,23 +286,62 @@ class LogCollector:
         return "\n".join(lines)
 
     async def listen(self, redis_url: str):
-        """Subscribe to deid:logs and process records until stopped."""
+        """Subscribe to deid:logs and process records until stopped.
+
+        Resilient to Redis connection drops — idle sockets are commonly killed
+        on NAT/firewall setups during long DEID runs. Uses socket keep-alive +
+        periodic health checks, a polling get_message (so _stop is honoured and
+        a dropped connection surfaces promptly), and reconnect with exponential
+        backoff. Backported from dent. (Async model preserved.)
+        """
+        import asyncio
         import redis.asyncio as aioredis
+        from redis.exceptions import ConnectionError as RedisConnectionError
 
-        r = aioredis.from_url(redis_url)
-        pubsub = r.pubsub()
-        await pubsub.subscribe("deid:logs")
-
-        try:
-            async for message in pubsub.listen():
+        backoff = 1
+        while not self._stop:
+            r = None
+            pubsub = None
+            try:
+                r = aioredis.from_url(
+                    redis_url,
+                    socket_connect_timeout=15,
+                    socket_keepalive=True,
+                    health_check_interval=30,
+                )
+                pubsub = r.pubsub()
+                await pubsub.subscribe("deid:logs")
+                backoff = 1  # reset on successful connect
+                while not self._stop:
+                    message = await pubsub.get_message(
+                        ignore_subscribe_messages=True, timeout=5.0
+                    )
+                    if message is None:
+                        continue
+                    if message["type"] == "message":
+                        data = json.loads(message["data"])
+                        self.handle_record(data)
+            except (RedisConnectionError, ConnectionError, OSError) as exc:
                 if self._stop:
                     break
-                if message["type"] == "message":
-                    data = json.loads(message["data"])
-                    self.handle_record(data)
-        finally:
-            await pubsub.unsubscribe("deid:logs")
-            await r.aclose()
+                logger.warning(
+                    "log_collector Redis connection lost (%s); reconnecting in %ss",
+                    exc, backoff,
+                )
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30)
+            finally:
+                if pubsub is not None:
+                    try:
+                        await pubsub.unsubscribe("deid:logs")
+                        await pubsub.aclose()
+                    except Exception:
+                        pass
+                if r is not None:
+                    try:
+                        await r.aclose()
+                    except Exception:
+                        pass
 
     def stop(self):
         """Signal the listener to stop."""

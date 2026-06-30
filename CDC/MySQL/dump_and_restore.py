@@ -23,20 +23,20 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Source (dump) credentials
 # ---------------------------------------------------------------------------
-SRC_HOST     = "172.30.0.74"
-SRC_PORT     = "4928"
-SRC_USER     = "ndiscoveryro"
-SRC_PASSWORD = quote_plus("Silencer9-Carnivore-Seldom")
-SRC_SCHEMA   = "mobiledoc"
+SRC_HOST     = os.environ.get("SRC_DB_HOST", "")
+SRC_PORT     = os.environ.get("SRC_DB_PORT", "3306")
+SRC_USER     = os.environ.get("SRC_DB_USER", "")
+SRC_PASSWORD = quote_plus(os.environ.get("SRC_DB_PASS", ""))
+SRC_SCHEMA   = os.environ.get("SRC_DB_SCHEMA", "mobiledoc")
 
 # ---------------------------------------------------------------------------
 # Destination (restore) credentials
 # ---------------------------------------------------------------------------
-DST_HOST     = "localhost"
-DST_PORT     = "3306"
+DST_HOST     = os.environ.get("DB_HOST", "localhost")
+DST_PORT     = os.environ.get("MYSQL_PORT", "3306")
 DST_USER     = os.environ.get("DB_USER", "")
 DST_PASSWORD = os.environ.get("DB_PASS", "")
-DST_SCHEMA   = "mobiledoc"
+DST_SCHEMA   = os.environ.get("DST_DB_SCHEMA", "mobiledoc")
 
 DUMP_FOLDER  = SRC_SCHEMA          # local folder where .sql files are written
 RESTORE_FROM = f"/Volumes/NDAIVol/MySQL Dump/mobiledoc"

@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 # Shared MySQL credentials/host (align with individual scripts)
 MYSQL_USER = os.environ.get("DB_USER", "")
 MYSQL_PASS = os.environ.get("DB_PASS", "")
-MYSQL_HOST = "localhost"
+MYSQL_HOST = os.environ.get("DB_HOST", "localhost")
 
 
 def run_step(cmd, step_name):
