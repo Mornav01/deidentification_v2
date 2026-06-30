@@ -26,7 +26,7 @@ from deid.core.process_df.main import (
 from deid.tasks.celery_app import get_preloaded_data
 from deid.core.process_df.rowhandler import InvalidRowHandler
 from deid.models.base import get_cached_state_engine
-from deid.models.state import BatchState
+from deid.models.state import BatchState, TableState
 from deid.staging import batch_fetched_path, batch_processed_path
 
 logger = logging.getLogger("deid.tasks.process")
@@ -118,6 +118,48 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
     rows_in = df.height
 
     table_details = config.table_details
+
+    # Empty-config recovery (backported from dent, adapted to main's state DB URL).
+    # If PHI rules are missing from the Celery task message — e.g. Redis evicted/
+    # flushed the payload under memory pressure, or this is an orphaned batch from
+    # a prior run — recover them from the persistent state DB (TableState.rules_config).
+    # If they're absent there too, refuse to process: a rule-less batch would write
+    # PHI un-deidentified. Raising here lets the batch be retried.
+    if not table_details.get("columns_details"):
+        logger.warning(
+            "[%s] columns_details missing from task message — "
+            "reading rules_config from state.db as fallback.",
+            config.table_name,
+        )
+        _fb_engine = get_cached_state_engine(config.state_db_url)
+        with Session(_fb_engine) as _s:
+            _ts = _s.query(TableState).filter_by(
+                table_name=config.table_name,
+                config_key=config.config_key,
+            ).first()
+        _rules = (_ts.rules_config or {}) if _ts else {}
+        if not _rules:
+            raise RuntimeError(
+                f"[{config.table_name}] No PHI rules found in task message or "
+                f"state.db — refusing to process to prevent PHI leakage. "
+                f"Batch will be retried."
+            )
+        table_details["columns_details"] = [
+            {
+                "column_name": col,
+                "table_name": config.table_name,
+                "is_phi": True,
+                "de_identification_rule": rule,
+                "mask_value": col.upper(),
+            }
+            for col, rule in _rules.items()
+            if rule
+        ]
+        logger.warning(
+            "[%s] Recovered %d PHI rule(s) from state.db fallback.",
+            config.table_name, len(table_details["columns_details"]),
+        )
+
     key_phi_columns = get_key_phi_column_list(table_details.get("columns_details", []))
 
     # 2. Reference mapping resolution (needs source DB only if reference_mapping is configured)

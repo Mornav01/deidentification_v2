@@ -376,6 +376,16 @@ async def _setup_phase(config: DeidConfig, state_engine):
 
     staging_root = get_staging_root(config.state_db_path)
 
+    # Pass-through topology check: no-PHI tables can be copied server-side via
+    # CREATE TABLE … AS SELECT only when source and dest live on the same MySQL
+    # server (different schemas) — the standard deployment. (Backported from dent.)
+    _src_schema = config.source_db.database
+    _dst_schema = config.destination_db.database
+    _same_server = (
+        config.source_db.host == config.destination_db.host
+        and config.source_db.port == config.destination_db.port
+    )
+
     with Session(state_engine) as session:
         for table_cfg in config.tables:
             tname = table_cfg.name
@@ -384,6 +394,68 @@ async def _setup_phase(config: DeidConfig, state_engine):
             batch_size = overrides.get("batch_size") or config.deidentification.batch_size
 
             row_count = table_row_counts.get(tname, 0)
+
+            # ── Pass-through: a table with no PHI rules needs no de-identification,
+            # so copy it straight to the (always-MySQL) destination and mark it
+            # completed — bypassing the fetch→process→write Celery/Redis pipeline.
+            #   • same MySQL server → server-side CREATE TABLE … AS SELECT (fast)
+            #   • cross-server (e.g. MSSQL source → MySQL dest) → create the dest
+            #     table from the source schema and stream the rows over directly
+            #     (server-side cursor, O(batch_size) memory; no tasks/queues).
+            # Falls through to the normal batch pipeline on any failure.
+            # (Backported from dent; cross-server streaming added for MSSQL sources.)
+            if not table_cfg.rules:
+                ts = session.query(TableState).filter_by(
+                    table_name=tname, config_key=config.config_key
+                ).first()
+                try:
+                    from deid.core.dbPkg.dbhandler import NDDBHandler
+                    from sqlalchemy import text as _sa_text
+                    if _same_server:
+                        _dest = NDDBHandler(config.destination_db.connection_string())
+                        _qi = _dest._qi
+                        with _dest.engine.begin() as _conn:
+                            # Identifiers quoted via _qi (config-sourced, not user input).
+                            _conn.execute(_sa_text(  # nosec
+                                f"DROP TABLE IF EXISTS {_qi(_dst_schema)}.{_qi(tname)}"
+                            ))
+                            _conn.execute(_sa_text(  # nosec
+                                f"CREATE TABLE {_qi(_dst_schema)}.{_qi(tname)} "
+                                f"AS SELECT * FROM {_qi(_src_schema)}.{_qi(tname)}"
+                            ))
+                        _dest.close()
+                        _how = "CREATE TABLE AS SELECT (same server)"
+                    else:
+                        # Cross-server (source engine != dest MySQL): create the dest
+                        # table from the source schema (create_table_in_dest handles
+                        # MSSQL→MySQL type mapping) and stream rows over in chunks.
+                        _bs = config.deidentification.batch_size
+                        _src = NDDBHandler(config.source_db.connection_string(), read_only=True)
+                        _dest = NDDBHandler(config.destination_db.connection_string())
+                        with _dest.engine.begin() as _conn:
+                            _conn.execute(_sa_text(  # nosec
+                                f"DROP TABLE IF EXISTS {_dest._qi(tname)}"
+                            ))
+                        _src.create_table_in_dest(tname, _dest, dest_table_name=tname)
+                        for _chunk in _src.stream_table_as_dataframes(tname, _bs):
+                            _dest.insert_dataframe_in_batches(_chunk, tname, _bs)
+                        _src.close()
+                        _dest.close()
+                        _how = "streamed copy (cross-server)"
+                    if ts:
+                        ts.status = "completed"
+                        ts.row_count = row_count
+                    logger.info(
+                        "  %s: no PHI — copied directly via %s (%d rows, skipping batch pipeline).",
+                        tname, _how, row_count,
+                    )
+                    continue
+                except Exception as _e:
+                    logger.warning(
+                        "  %s: direct copy failed (%s) — falling through to batch pipeline.",
+                        tname, _e,
+                    )
+
             if row_count == 0:
                 # Mark 0-row tables as completed immediately — nothing to process.
                 ts = session.query(TableState).filter_by(
