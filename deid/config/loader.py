@@ -1,6 +1,7 @@
 """Load and validate config.yaml with env var interpolation."""
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 try:
@@ -18,8 +19,30 @@ _ENV_VAR_PATTERN = re.compile(r"\$\{(\w+)\}")
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
 def _interpolate_env_vars(obj):
-    """Recursively replace ${VAR_NAME} with os.environ[VAR_NAME]."""
+    """Recursively replace ${VAR_NAME} with os.environ[VAR_NAME].
+
+    When a value is *exactly* a single ${VAR} token and the environment value
+    parses as JSON yielding a list or dict, the parsed structure is returned.
+    This lets structured config — e.g. a pii_config ``replace_value`` list — be
+    supplied from one env var. Embedded/partial references and scalar values
+    (ports, names, connection strings) fall back to plain string substitution,
+    so existing configs are unaffected.
+    """
     if isinstance(obj, str):
+        whole = _ENV_VAR_PATTERN.fullmatch(obj)
+        if whole is not None:
+            var = whole.group(1)
+            val = os.environ.get(var)
+            if val is None:
+                raise ValueError(f"Environment variable '{var}' not set (referenced in config)")
+            try:
+                parsed = json.loads(val)
+            except (ValueError, TypeError):
+                return val
+            # Only substitute structured JSON; scalars stay strings so that e.g.
+            # "${MYSQL_PORT}" remains "3306" rather than becoming the int 3306.
+            return parsed if isinstance(parsed, (list, dict)) else val
+
         @validate_call(config=dict(arbitrary_types_allowed=True))
         def _replacer(match):
             var = match.group(1)

@@ -14,8 +14,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Shared MySQL credentials/host (align with individual scripts)
-MYSQL_USER = "ndadmin"
-MYSQL_PASS = "ndADMIN@2025"
+MYSQL_USER = os.environ.get("DB_USER", "")
+MYSQL_PASS = os.environ.get("DB_PASS", "")
 MYSQL_HOST = "localhost"
 
 

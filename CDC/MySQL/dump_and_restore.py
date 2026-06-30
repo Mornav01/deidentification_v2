@@ -34,8 +34,8 @@ SRC_SCHEMA   = "mobiledoc"
 # ---------------------------------------------------------------------------
 DST_HOST     = "localhost"
 DST_PORT     = "3306"
-DST_USER     = "ndadmin"
-DST_PASSWORD = "ndADMIN@2025"
+DST_USER     = os.environ.get("DB_USER", "")
+DST_PASSWORD = os.environ.get("DB_PASS", "")
 DST_SCHEMA   = "mobiledoc"
 
 DUMP_FOLDER  = SRC_SCHEMA          # local folder where .sql files are written

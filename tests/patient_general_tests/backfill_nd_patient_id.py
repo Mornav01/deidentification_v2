@@ -7,6 +7,7 @@ Usage:
     cd deidentification_v2
     python tests/patient_general_tests/backfill_nd_patient_id.py
 """
+import os
 import logging
 import time
 import sys
@@ -15,7 +16,7 @@ import sqlalchemy as sa
 from sqlalchemy import text
 
 # ── Config ────────────────────────────────────────────────────────────────────
-DB_URL = "mysql+pymysql://ndadmin:ndADMIN%402025@localhost:3306/mapping_test"
+DB_URL = f"mysql+pymysql://{os.environ.get('DB_USER','')}:{os.environ.get('DB_PASS','')}@localhost:3306/mapping_test"
 BATCH_SIZE = 50_000      # rows per id-range batch (increase if indexes are fast)
 LOG_INTERVAL = 20        # seconds between progress logs
 MAX_RETRIES = 3

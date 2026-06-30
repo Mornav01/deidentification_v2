@@ -195,8 +195,8 @@ def extract_dump_info(sql_file_path: str) -> dict:
 # DB helpers
 # ============================
 def _db_url(schema: str) -> str:
-    user     = os.environ.get("DB_USER", "ndadmin")
-    password = os.environ.get("DB_PASS", "ndADMIN%402025")
+    user     = os.environ.get("DB_USER", "")
+    password = os.environ.get("DB_PASS", "")
     host     = os.environ.get("DB_HOST", "localhost")
     port     = os.environ.get("DB_PORT", "3306")
     return f"mysql+pymysql://{user}:{password}@{host}:{port}/{schema}"
