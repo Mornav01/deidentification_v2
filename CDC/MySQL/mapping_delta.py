@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 def create_mysql_engine(schema: str):
     """Create SQLAlchemy engine for a given schema."""
     url = f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASS}@{MYSQL_HOST}:{MYSQL_PORT}/{schema}"
-    return create_engine(url, pool_recycle=3600, pool_pre_ping=True)
+    return create_engine(url, pool_recycle=3600, pool_pre_ping=True, connect_args={"init_command": "SET sql_mode=''"})
 
 
 def run_mapping_delta(mapping_schema: str, staging_schema: str):
@@ -73,9 +73,9 @@ def run_mapping_delta(mapping_schema: str, staging_schema: str):
     )
 
     # Engines
-    old_engine = create_mysql_engine(mapping_schema)
+    old_engine = create_mysql_engine(mapping_schema)   # read existing mappings
     source_engine = create_mysql_engine(staging_schema)
-    dest_engine = create_mysql_engine(mapping_schema)
+    dest_engine = create_mysql_engine(mapping_schema)  # write mappings
 
     metadata = MetaData()
 
@@ -155,10 +155,17 @@ def run_mapping_delta(mapping_schema: str, staging_schema: str):
     # -------------------------------------------------------------------------
     # Load exclusion data from staging_schema
     # -------------------------------------------------------------------------
-    exdf = pd.read_sql(text(f"""select distinct patientid from mobiledoc.enc where visittype in ('NP','NPC2','NP-DEMT','NPIV','RESU','NB RESU','RESURainka','RESU ANC','D & B RESU','Blood Draw') union
-    select distinct patientid from mobiledoc.structdemographics sd, mobiledoc.structdatadetail sdd where sd.detailid = sdd.id and sd.detailid=7062 and value = 'Yes'"""), source_engine.connect())
+    exdf = pd.read_sql(text(f"""select distinct patientid from {staging_schema}.enc where visittype in ('NP','NPC2','NP-DEMT','NPIV','RESU','NB RESU','RESURainka','RESU ANC','D & B RESU','Blood Draw') union
+    select distinct patientid from {staging_schema}.structdemographics sd, {staging_schema}.structdatadetail sdd where sd.detailid = sdd.id and sd.detailid=7062 and value = 'Yes'"""), source_engine.connect())
     patientids = tuple(exdf['patientid'].to_list())
     logger.info("Loaded %s exclusion patients", len(patientids))
+
+    # Fix #1: guard against empty tuple — `NOT IN ()` is invalid MySQL syntax
+    if patientids:
+        pat_excl = f"AND uid NOT IN {patientids}"
+        enc_excl = f"AND patientID NOT IN {patientids}"
+    else:
+        pat_excl = enc_excl = ""
 
     # -------------------------------------------------------------------------
     # Load delta data from staging_schema
@@ -169,7 +176,7 @@ def run_mapping_delta(mapping_schema: str, staging_schema: str):
             f"""
         SELECT DISTINCT uid AS patient_id, cdate AS registration_date
         FROM users
-        WHERE UserType = 3 and uid not in {patientids}
+        WHERE UserType = 3 {pat_excl}
         """
         )
         result = conn.execute(query)
@@ -186,7 +193,7 @@ def run_mapping_delta(mapping_schema: str, staging_schema: str):
             date      AS encounter_date,
             encounterID AS dent_encounter_id
         FROM enc
-        WHERE patientID not in {patientids}
+        WHERE 1=1 {enc_excl}
         ORDER BY 1, 2, 3
         """
         )
@@ -227,11 +234,21 @@ def run_mapping_delta(mapping_schema: str, staging_schema: str):
         Column("updated_by", String(50), nullable=False),
         Column("updated_at", DATETIME, nullable=False),
         UniqueConstraint("nd_encounter_id", name="uq_nd_encounter_id"),
+        UniqueConstraint("patient_id", "encounter_id", name="uq_patient_encounter_id"),
         Index("ix_patient_id", "patient_id"),
     )
 
     metadata.create_all(dest_engine)
     logger.info("Ensured patient_mapping_table and encounter_mapping_table exist")
+
+    # Fix #3: override last_patid with DB-authoritative MAX to handle deleted rows
+    # or any out-of-band inserts that the in-memory loop may have missed
+    with dest_engine.connect() as conn:
+        db_last_patid = conn.execute(
+            text("SELECT COALESCE(MAX(nd_patient_id), 0) FROM patient_mapping_table")
+        ).scalar() or 0
+    last_patid = max(last_patid, int(db_last_patid))
+    logger.info("DB-authoritative last_patid=%d", last_patid)
 
     # -------------------------------------------------------------------------
     # STEP 1: Process & upsert delta patients
@@ -342,7 +359,7 @@ def run_mapping_delta(mapping_schema: str, staging_schema: str):
 
         # Build a set of ALL nd_encounter_ids already in use (from history) to prevent duplicates
         used_nd_encounter_ids = set()
-        for pid, enc_map in old_pat_encids.items():
+        for enc_map in old_pat_encids.values():
             for k, v in enc_map.items():
                 if k != 'last_encid' and v:
                     used_nd_encounter_ids.add(int(v))
@@ -360,6 +377,11 @@ def run_mapping_delta(mapping_schema: str, staging_schema: str):
                 target_nd_patient_id = patient_info[0]
             else:
                 # If we can't find the patient, skip immediately to avoid ghosting
+                logger.warning(
+                    "No patient mapping found for patient_id=%s; skipping encounter_id=%s",
+                    patient_id,
+                    dent_encounter_id,
+                )
                 continue
             
             # DELTA CHECK: encounter already exists in history
@@ -368,7 +390,8 @@ def run_mapping_delta(mapping_schema: str, staging_schema: str):
                 # --- UPDATE LOGIC ---
                 
                 encounters_to_update.append({
-                    'encounter_id': dent_encounter_id, # Key for WHERE clause
+                    'patient_id': patient_id,
+                    'encounter_id': dent_encounter_id,
                     'encounter_date': encounter_date,
                     'updated_by': 'nd-admin',
                     'updated_at': datetime.now(timezone.utc)
@@ -435,8 +458,8 @@ def run_mapping_delta(mapping_schema: str, staging_schema: str):
                         stmt = (
                             update(encounter_mapping_table)
                             .where(
-                                encounter_mapping_table.c.encounter_id
-                                == bindparam("b_enc_id")
+                                (encounter_mapping_table.c.encounter_id == bindparam("b_enc_id"))
+                                & (encounter_mapping_table.c.patient_id == bindparam("b_pid"))
                             )
                             .values(
                                 {
@@ -450,6 +473,7 @@ def run_mapping_delta(mapping_schema: str, staging_schema: str):
                         bulk_update_data = [
                             {
                                 "b_enc_id": row["encounter_id"],
+                                "b_pid": row["patient_id"],
                                 "b_enc_date": row["encounter_date"],
                                 "b_updated_by": row["updated_by"],
                                 "b_updated_at": row["updated_at"],

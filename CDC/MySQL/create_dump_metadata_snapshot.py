@@ -107,6 +107,10 @@ def build_snapshot(cdc_engine, schema_name: str, run_date: str) -> None:
 
     with cdc_engine.begin() as conn:
 
+        # Give the server enough time to aggregate large change_log tables.
+        conn.execute(text("SET SESSION net_read_timeout  = 600"))
+        conn.execute(text("SET SESSION net_write_timeout = 600"))
+
         # ── 1. Create snapshot table ───────────────────────────────────────
         conn.execute(text(_CREATE_SNAPSHOT_DDL.format(table=snapshot_table)))
         logger.info("Snapshot table ready: %s", snapshot_table)
@@ -118,40 +122,38 @@ def build_snapshot(cdc_engine, schema_name: str, run_date: str) -> None:
                 "only carried-forward positions", change_log,
             )
             today_rows = []
+            counts: dict = {}
         else:
-            today_rows = conn.execute(text(f"""
-                SELECT table_name, binlog_file, binlog_pos
-                FROM (
-                    SELECT
-                        table_name,
-                        binlog_file,
-                        binlog_pos,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY table_name
-                            ORDER BY binlog_file DESC, binlog_pos DESC
-                        ) AS rn
-                    FROM `{change_log}`
-                    WHERE binlog_file IS NOT NULL
-                ) ranked
-                WHERE rn = 1
+            # Single-pass GROUP BY: pack (binlog_file, zero-padded binlog_pos)
+            # into one string so MAX() picks the lexicographically latest combo,
+            # then unpack. This scans the table once and needs no self-join.
+            raw = conn.execute(text(f"""
+                SELECT
+                    table_name,
+                    SUBSTRING_INDEX(
+                        MAX(CONCAT(binlog_file, '|', LPAD(binlog_pos, 20, '0'))),
+                        '|', 1
+                    )                            AS binlog_file,
+                    CAST(
+                        SUBSTRING_INDEX(
+                            MAX(CONCAT(binlog_file, '|', LPAD(binlog_pos, 20, '0'))),
+                            '|', -1
+                        ) AS UNSIGNED
+                    )                            AS binlog_pos,
+                    COUNT(*)                     AS event_count
+                FROM `{change_log}`
+                WHERE binlog_file IS NOT NULL
+                GROUP BY table_name
             """)).fetchall()
+            today_rows = [(r[0], r[1], r[2]) for r in raw]
+            counts     = {r[0]: r[3] for r in raw}
 
         today_tables = {r[0].lower() for r in today_rows}
         logger.info(
             "%s: found max binlog for %d tables", change_log, len(today_rows)
         )
 
-        # ── 3. Event count per table (for the event_count column) ─────────
-        counts: dict = {}
-        if today_rows and _table_exists(conn, change_log):
-            counts = dict(conn.execute(text(f"""
-                SELECT table_name, COUNT(*)
-                FROM `{change_log}`
-                WHERE binlog_file IS NOT NULL
-                GROUP BY table_name
-            """)).fetchall())
-
-        # ── 4. Choose carry-forward source ────────────────────────────────
+        # ── 3. Choose carry-forward source ────────────────────────────────
         latest_snapshot = _find_latest_snapshot(conn, run_date)
         if latest_snapshot:
             carry_source = latest_snapshot
@@ -242,7 +244,12 @@ def parse_args():
 
 def main():
     args   = parse_args()
-    engine = create_engine(_db_url("cdc"), pool_size=2, max_overflow=2)
+    engine = create_engine(
+        _db_url("cdc"),
+        pool_size=2,
+        max_overflow=2,
+        connect_args={"connect_timeout": 10, "read_timeout": 600, "write_timeout": 600},
+    )
     build_snapshot(engine, args.schema_name, args.run_date)
 
 

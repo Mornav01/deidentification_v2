@@ -376,7 +376,7 @@ While negotiating the long-term fix with the client, apply Solution C to stop pr
 
 **Step 1** — Ask client to add `--master-data=2` to their dump command:
 ```bash
-mysqldump --single-transaction --master-data=2 -u ndadmin -p mobiledoc > mobiledoc_YYYYMMDD.sql
+mysqldump --single-transaction --master-data=2 -u <mysql_user> -p mobiledoc > mobiledoc_YYYYMMDD.sql
 ```
 This requires only `REPLICATION CLIENT` privilege, which is a standard ask for any CDC/replication setup.
 

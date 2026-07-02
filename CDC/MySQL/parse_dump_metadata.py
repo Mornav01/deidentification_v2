@@ -16,20 +16,37 @@ That metadata is consumed by cdc_restore.py to skip CDC events that occurred
 before the dump snapshot for each table, preventing orphan rows and
 AUTO_INCREMENT mismatches.
 
-Usage:
+Usage (local path):
     python parse_dump_metadata.py \
         --dump_folder "/Volumes/NDAIVol/MySQL Dump/mobiledoc" \
         --schema_name "mobiledoc"
+
+Usage (auto-mount SMB — dump_folder omitted):
+    python parse_dump_metadata.py --schema_name "mobiledoc"
 """
 
 import os
 import re
+import shutil
 import logging
 import argparse
+import subprocess
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 from sqlalchemy import create_engine, text
+
+# ============================
+# SMB Config
+# ============================
+SMB_HOST      = os.environ.get("SMB_HOST",     "")
+SMB_SHARE     = os.environ.get("SMB_SHARE",    "")
+SMB_USERNAME  = os.environ.get("SMB_USERNAME", "")
+SMB_PASSWORD  = os.environ.get("SMB_PASSWORD", "")
+SMB_MOUNT_PT  = Path(os.environ.get("SMB_MOUNT_PT", "/tmp/mysql_dump_smb_mount"))
+TEMP_MOUNT_POINT = Path("/tmp/mysql_dump_smb_mount")
+VOLUME_MOUNT_POINT = Path("/Volumes/mobiledoc")
 
 # ============================
 # Logging
@@ -40,6 +57,74 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+# ============================
+# SMB helpers
+# ============================
+def prepare_mount_point() -> None:
+    # Silently clear any stale mounts before recreating the directory.
+    subprocess.run(["umount", "-f", str(TEMP_MOUNT_POINT)], capture_output=True, text=True, timeout=5)
+    subprocess.run(["umount", "-f", str(VOLUME_MOUNT_POINT)], capture_output=True, text=True, timeout=5)
+
+    if TEMP_MOUNT_POINT.exists():
+        try:
+            TEMP_MOUNT_POINT.rmdir()
+        except OSError:
+            shutil.rmtree(TEMP_MOUNT_POINT, ignore_errors=True)
+
+    TEMP_MOUNT_POINT.mkdir(parents=True, exist_ok=True)
+
+def mount_smb_share():
+    """
+    Mount the Windows SMB share at TEMP_MOUNT_POINT.
+    Idempotent: if already mounted, returns silently.
+    """
+    prepare_mount_point()
+    
+    if not SMB_USERNAME or not SMB_PASSWORD:
+        raise ValueError("Missing SMB credentials (SMB_USERNAME / SMB_PASSWORD)")
+
+    # Idempotent — skip if already mounted
+    if TEMP_MOUNT_POINT.is_mount():
+        print(f"SMB share already mounted at {TEMP_MOUNT_POINT}")
+        return TEMP_MOUNT_POINT
+
+    TEMP_MOUNT_POINT.mkdir(exist_ok=True, parents=True)
+
+    # Escape special chars: # is an SMB URL fragment delimiter
+    safe_pwd = SMB_PASSWORD.replace("#", "\\#")
+    # Convert DOMAIN\user → DOMAIN;user (SMB URL domain syntax)
+    username_fmt = SMB_USERNAME.replace("\\", ";")
+    # URL-encode spaces in share name
+    share_fmt = SMB_SHARE.replace(" ", "%20")
+
+    share_url = f"//{username_fmt}:{safe_pwd}@{SMB_HOST}/{share_fmt}"
+    cmd = ["mount", "-t", "smbfs", share_url, str(TEMP_MOUNT_POINT)]
+
+    # Log without leaking the password
+    print(f"Mounting SMB: //{username_fmt}:***@{SMB_HOST}/{share_fmt} at {TEMP_MOUNT_POINT}")
+
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        print(f"Mounted successfully at {TEMP_MOUNT_POINT}")
+        return TEMP_MOUNT_POINT
+    except subprocess.CalledProcessError as e:
+        # Scrub the password from any error output before raising
+        scrubbed = e.stderr.replace(safe_pwd, "***") if e.stderr else ""
+        raise RuntimeError(f"Failed to mount SMB share: {scrubbed}")
+
+
+def unmount_smb():
+    """Unmount the SMB share. Safe to call even if not mounted."""
+    if not TEMP_MOUNT_POINT.is_mount():
+        print(f"{TEMP_MOUNT_POINT} is not mounted, skipping unmount")
+        return
+    try:
+        subprocess.run(["umount", str(TEMP_MOUNT_POINT)], check=True, capture_output=True, text=True,)
+        print(f"Unmounted {TEMP_MOUNT_POINT}")
+    except subprocess.CalledProcessError as e:
+        print(f"Unmount failed: {e.stderr}")
+
 
 # ============================
 # DDL
@@ -174,11 +259,7 @@ def extract_dump_info(sql_file_path: str) -> dict:
                 ts_str = re.sub(r"\s+", " ", ts_m.group(1).strip())
                 dump_completed_at = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
             except ValueError:
-                logger.debug(
-                    "Could not parse dump completion timestamp '%s' in %s; leaving dump_completed_at as None",
-                    ts_m.group(1),
-                    sql_file_path,
-                )
+                pass
 
     except OSError as e:
         logger.warning("Cannot read %s: %s", sql_file_path, e)
@@ -195,9 +276,9 @@ def extract_dump_info(sql_file_path: str) -> dict:
 # DB helpers
 # ============================
 def _db_url(schema: str) -> str:
-    user     = os.environ.get("DB_USER", "ndadmin")
-    password = os.environ.get("DB_PASS", "ndADMIN%402025")
-    host     = os.environ.get("DB_HOST", "localhost")
+    user     = os.environ.get("DB_USER", "")
+    password = os.environ.get("DB_PASS", "")
+    host     = os.environ.get("DB_HOST", "")
     port     = os.environ.get("DB_PORT", "3306")
     return f"mysql+pymysql://{user}:{password}@{host}:{port}/{schema}"
 
@@ -347,8 +428,16 @@ def parse_args():
     )
     parser.add_argument(
         "--dump_folder",
-        required=True,
-        help='Folder containing per-table .sql dump files (e.g. "/Volumes/NDAIVol/MySQL Dump/mobiledoc")',
+        default=None,
+        help=(
+            "Folder containing per-table .sql dump files. "
+            "If omitted, the SMB share is auto-mounted and --smb_subfolder is appended."
+        ),
+    )
+    parser.add_argument(
+        "--smb_subfolder",
+        default=None,
+        help="Subfolder within the SMB mount that holds the .sql files (e.g. P0). Omit to use the mount root.",
     )
     parser.add_argument(
         "--schema_name",
@@ -367,18 +456,30 @@ def parse_args():
 def main():
     args = parse_args()
 
+    smb_mounted = False
+    if args.dump_folder:
+        dump_folder = args.dump_folder
+    else:
+        mount_smb_share()
+        smb_mounted = True
+        dump_folder = str(SMB_MOUNT_PT / args.smb_subfolder) if args.smb_subfolder else str(SMB_MOUNT_PT)
+
     logger.info(
         "parse_dump_metadata | folder=%s | schema=%s | workers=%d",
-        args.dump_folder, args.schema_name, args.workers,
+        dump_folder, args.schema_name, args.workers,
     )
 
     engine = create_engine(_db_url("cdc"), pool_size=5, max_overflow=2)
 
-    ensure_table(engine)
-    parse_and_store(args.dump_folder, args.schema_name, engine, workers=args.workers)
-    print_summary(engine, args.schema_name)
+    try:
+        ensure_table(engine)
+        parse_and_store(dump_folder, args.schema_name, engine, workers=args.workers)
+        print_summary(engine, args.schema_name)
+    finally:
+        engine.dispose()
+        if smb_mounted:
+            unmount_smb()
 
-    engine.dispose()
     logger.info("Done")
 
 

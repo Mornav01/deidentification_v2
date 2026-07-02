@@ -3,10 +3,9 @@ from __future__ import annotations
 
 import logging
 import os
-import threading
 
 from celery import Celery
-from celery.signals import worker_process_init
+from celery.signals import worker_init
 from pydantic import validate_call
 
 _TASK_MODULES = [
@@ -43,6 +42,22 @@ def create_celery_app(
         # Memory-based recycling checks happen *between* tasks (not during),
         # so it avoids the BrokenPipeError race that task-count recycling causes.
         worker_max_memory_per_child=10_000_000,  # 10 GB in KB
+        # ── Broker/Redis connection resilience (backported from dent) ──────────
+        # Keep broker connections alive across long-running DEID jobs so Redis
+        # doesn't silently drop idle sockets (common on NAT/firewall setups),
+        # and reconnect indefinitely instead of failing the run.
+        broker_connection_retry=True,
+        broker_connection_retry_on_startup=True,
+        broker_connection_max_retries=None,  # unlimited — let Celery reconnect forever
+        broker_transport_options={
+            "socket_timeout": 30,
+            "socket_connect_timeout": 30,
+            "socket_keepalive": True,
+            "retry_policy": {"timeout": 30},
+        },
+        redis_socket_keepalive=True,
+        redis_socket_timeout=30,
+        redis_socket_connect_timeout=30,
     )
     _app = app
     return app
@@ -65,9 +80,12 @@ celery = get_celery_app()
 # Worker-level preloaded data (process workers only)
 # ---------------------------------------------------------------------------
 
+# Loaded ONCE in the parent Celery master process (worker_init signal, before
+# any worker is forked). All forked children inherit the pages via OS
+# copy-on-write — workers only READ this dict, so the pages are never copied
+# and all children share the same physical RAM (faster startup + lower RAM).
+# (Backported from dent.)
 _preloaded_data: dict = {}
-_preload_ready = threading.Event()   # set once _preload_mappings() finishes
-_preload_thread: threading.Thread | None = None
 _preload_logger = logging.getLogger("deid.tasks.preload")
 
 
@@ -166,34 +184,41 @@ def _preload_mappings(app: Celery) -> None:
 def get_preloaded_data(timeout: float = 60.0) -> dict:
     """Return the preloaded data dict.
 
-    If a background preload thread is running, waits up to *timeout* seconds
-    for it to finish.  Returns an empty dict on timeout so callers fall back
-    to the SQL path.
+    Data is loaded once in the parent process before workers fork (worker_init),
+    so children inherit it via copy-on-write and this returns the complete set
+    with no waiting. The *timeout* arg is kept for backwards-compatible callers
+    and is ignored.
     """
-    if _preload_thread is not None and not _preload_ready.is_set():
-        _preload_ready.wait(timeout=timeout)
     return dict(_preloaded_data)
 
 
-def _run_preload_in_background(app: Celery) -> None:
-    """Start _preload_mappings in a daemon thread and set _preload_ready when done."""
-    global _preload_thread
+@worker_init.connect
+def _on_worker_init(**kwargs):
+    """Load mapping + master tables ONCE in the parent before forking workers.
 
-    def _target():
-        try:
-            _preload_mappings(app)
-        finally:
-            _preload_ready.set()
-
-    _preload_thread = threading.Thread(target=_target, daemon=True, name="deid-preload")
-    _preload_thread.start()
-
-
-@worker_process_init.connect
-def _on_worker_process_init(**kwargs):
+    Celery's prefork pool uses os.fork(), so child workers inherit the parent's
+    _preloaded_data via copy-on-write. Workers only READ it, so the pages are
+    never copied — loaded exactly once and shared across all children, instead
+    of each worker re-loading its own copy. (Backported from dent.)
+    """
     queue = os.environ.get("DEID_WORKER_QUEUE", "")
-    # Matches both the legacy "deid-process" queue and the per-config_key
-    # "deid-process-<config_key>" queues introduced to isolate concurrent runs.
+    # Only process workers consume the mapping tables; matches both the legacy
+    # "deid-process" queue and per-config_key "deid-process-<config_key>" queues.
     if queue.startswith("deid-process"):
-        _preload_logger.info("Process worker starting — preloading mapping tables in background...")
-        _run_preload_in_background(get_celery_app())
+        _preload_logger.info(
+            "Parent process: loading mapping + master tables once before forking workers..."
+        )
+        try:
+            _preload_mappings(get_celery_app())
+            _preload_logger.info(
+                "Parent preload complete — %d table(s) shared with workers via fork.",
+                len(_preloaded_data),
+            )
+        except Exception as exc:
+            # A serious preload failure must not crash worker startup. Clear any
+            # partial data so workers fall back to the per-batch SQL join path.
+            _preloaded_data.clear()
+            _preload_logger.error(
+                "Parent preload failed (%s) — workers will use the SQL join fallback.",
+                exc, exc_info=True,
+            )

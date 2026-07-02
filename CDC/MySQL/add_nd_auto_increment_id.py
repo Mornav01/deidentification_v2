@@ -6,7 +6,7 @@ This script adds the nd_auto_increment_id column to all tables found in the CDC 
 if the column doesn't already exist. It processes tables in the production schema.
 
 Usage:
-    python add_nd_auto_increment_id.py --prod_schema "mobiledoc_apr26" --cdc_schema "cdc" --cdc_table "change_log"
+    python add_nd_auto_increment_id.py --prod_schema "mobiledoc" --cdc_schema "cdc" --cdc_table "change_log"
 """
 
 import os
@@ -14,6 +14,7 @@ import sys
 import argparse
 import logging
 from sqlalchemy import create_engine, text, inspect
+from sqlalchemy.exc import ProgrammingError
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Setup logging — file + stdout so Airflow captures output
@@ -45,6 +46,12 @@ def process_tables_mysql(engine, table_name):
         if 'nd_auto_increment_id' in columns:
             logger.info(f"  Column 'nd_auto_increment_id' already exists in {table_name}. Skipping.")
             return {"success": True, "action": "skipped"}
+            # try:
+            #     conn.execute(text(f"ALTER TABLE `{table_name}` DROP COLUMN `nd_auto_increment_id`"))
+            #     logger.info(f"  Dropped existing column in {table_name}")
+            # except Exception as e:
+            #     logger.error(f"  Error dropping column in {table_name}: {e}")
+            #     continue
 
         try:
             # 2. Optimization & Safety Bypass
@@ -118,7 +125,7 @@ def get_tables_from_cdc(engine, cdc_schema: str, cdc_table: str) -> list:
 def main():
     parser = argparse.ArgumentParser(description="Add nd_auto_increment_id column to tables from CDC")
     
-    parser.add_argument("--prod_schema", required=True, help="Production schema name (where tables are located, e.g., 'mobiledoc_apr26')")
+    parser.add_argument("--prod_schema", required=True, help="Production schema name (where tables are located, e.g., 'mobiledoc')")
     parser.add_argument("--cdc_schema", default="cdc", help="CDC schema name (default: 'cdc')")
     parser.add_argument("--cdc_table", default="change_log", help="CDC table name (default: 'change_log')")
     parser.add_argument("--max_workers", type=int, default=10, help="Maximum number of parallel workers (default: 10)")

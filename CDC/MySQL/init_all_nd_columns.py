@@ -106,23 +106,53 @@ def prefetch_existing_cols(engine, schema: str, tables: list) -> dict:
 # ============================
 # ON UPDATE CURRENT_TIMESTAMP removal
 # ============================
-def drop_on_update_constraints(conn, schema: str, table_name: str) -> int:
+def prefetch_on_update_cols(engine, schema: str, tables: list) -> dict:
+    """
+    One schema-wide INFORMATION_SCHEMA query for all ON UPDATE CURRENT_TIMESTAMP columns.
+    Returns { table_name_lower: [(col_name, col_type), ...] } for affected tables only.
+    """
+    target = {t.lower() for t in tables}
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE
+            FROM   INFORMATION_SCHEMA.COLUMNS
+            WHERE  TABLE_SCHEMA = :schema
+              AND  EXTRA        LIKE '%on update%'
+        """), {"schema": schema}).fetchall()
+
+    result: dict = {}
+    for tname, cname, ctype in rows:
+        tl = tname.lower()
+        if tl in target:
+            result.setdefault(tl, []).append((cname, ctype))
+
+    if result:
+        logger.info("ON UPDATE prefetch — %d tables have auto-updating columns", len(result))
+    return result
+
+
+def drop_on_update_constraints(conn, schema: str, table_name: str, prefetched_cols=None) -> int:
     """
     For every column carrying ON UPDATE CURRENT_TIMESTAMP, redefine it as
     simply `{type} NULL` — no DEFAULT, no ON UPDATE — so subsequent UPDATEs
     (e.g. populating nd_auto_increment_id) don't silently overwrite date columns.
+    prefetched_cols: list of (col_name, col_type) from prefetch_on_update_cols;
+                     if None, falls back to a live INFORMATION_SCHEMA query.
     Returns the number of columns modified.
     """
-    rows = conn.execute(
-        text("""
-            SELECT COLUMN_NAME, COLUMN_TYPE
-            FROM   INFORMATION_SCHEMA.COLUMNS
-            WHERE  TABLE_SCHEMA = :schema
-              AND  TABLE_NAME   = :table
-              AND  EXTRA        LIKE '%on update%'
-        """),
-        {"schema": schema, "table": table_name},
-    ).fetchall()
+    if prefetched_cols is None:
+        rows = conn.execute(
+            text("""
+                SELECT COLUMN_NAME, COLUMN_TYPE
+                FROM   INFORMATION_SCHEMA.COLUMNS
+                WHERE  TABLE_SCHEMA = :schema
+                  AND  TABLE_NAME   = :table
+                  AND  EXTRA        LIKE '%on update%'
+            """),
+            {"schema": schema, "table": table_name},
+        ).fetchall()
+    else:
+        rows = prefetched_cols
 
     if not rows:
         return 0
@@ -144,7 +174,7 @@ def drop_on_update_constraints(conn, schema: str, table_name: str) -> int:
 # Chunked NULL-fill helper
 # ============================
 def _chunked_update_nulls(
-    conn,
+    engine,
     qualified: str,
     col_name: str,
     value_expr: str,
@@ -152,22 +182,55 @@ def _chunked_update_nulls(
 ) -> int:
     """
     UPDATE qualified SET col = value WHERE col IS NULL LIMIT batch_size
-    in a loop until no rows remain.  Each batch is its own round-trip so
-    InnoDB row-locks are held only for that slice, avoiding lock-wait
+    in a loop until no rows remain. Each batch commits in its own transaction
+    so InnoDB row-locks are released after every slice, avoiding lock-wait
     timeouts on large tables (error 1205).
     Returns total rows updated.
     """
     total = 0
-    sql = text(
+    sql_str = (
         f"UPDATE {qualified} SET `{col_name}` = {value_expr} "
         f"WHERE `{col_name}` IS NULL LIMIT {batch_size}"
     )
     while True:
-        result = conn.execute(sql)
-        total += result.rowcount
-        if result.rowcount == 0:
+        with engine.begin() as conn:
+            conn.execute(text("SET sql_safe_updates = 0"))
+            result = conn.execute(text(sql_str))
+            rowcount = result.rowcount
+            conn.execute(text("SET sql_safe_updates = 1"))
+        total += rowcount
+        if rowcount == 0:
             break
     return total
+
+
+# ============================
+# NULL existence helpers
+# ============================
+def _has_nulls(engine, qualified: str, col_name: str) -> bool:
+    """Read-only check — True if any NULL exists in col_name."""
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(f"SELECT 1 FROM {qualified} WHERE `{col_name}` IS NULL LIMIT 1")
+        ).fetchone()
+    return row is not None
+
+
+def _table_needs_null_fill(engine, schema: str, table_name: str) -> bool:
+    """
+    Single query covering all three non-increment audit columns.
+    Used to skip dispatch for fully-colonned tables that are already clean.
+    """
+    qualified = f"`{schema}`.`{table_name}`"
+    with engine.connect() as conn:
+        row = conn.execute(text(
+            f"SELECT 1 FROM {qualified} "
+            f"WHERE `nd_extracted_date` IS NULL "
+            f"   OR `nd_updated_at`     IS NULL "
+            f"   OR `nd_ActiveFlag`     IS NULL "
+            f"LIMIT 1"
+        )).fetchone()
+    return row is not None
 
 
 # ============================
@@ -180,112 +243,108 @@ def process_table(
     extracted_date: str,
     updated_at: str,
     existing_cols: set,
+    on_update_cols: list,
 ) -> dict:
     """
     Add and populate whichever audit columns are missing.
 
-    Strategy:
-      • All missing columns → single ALTER TABLE (ALGORITHM=INSTANT preferred)
-      • nd_extracted_date / nd_updated_at / nd_ActiveFlag → declared with
-        DEFAULT in the ALTER, so existing rows get the right value immediately
-        with no UPDATE pass needed
-      • nd_auto_increment_id → one UPDATE with @row_num after the ALTER,
-        then an ADD INDEX
-      • Columns that already exist but have NULL rows → UPDATE to fill them
+    Phase 1 (one transaction): DROP ON UPDATE, ALTER TABLE, assign nd_auto_increment_id, ADD INDEX.
+    Phase 2 (per-batch transactions): fill NULLs in pre-existing columns — each batch commits
+      independently so InnoDB row-locks are released between slices.
     """
     need_inc       = "nd_auto_increment_id" not in existing_cols
     need_extracted = "nd_extracted_date"    not in existing_cols
     need_updated   = "nd_updated_at"        not in existing_cols
     need_flag      = "nd_ActiveFlag"        not in existing_cols
 
+    qualified = f"`{schema}`.`{table_name}`"
 
     try:
-        with engine.begin() as conn:
-            conn.execute(text("SET SESSION sql_mode = '';"))
-            conn.execute(text("SET sql_safe_updates = 0;"))
+        # ── Build ADD COLUMN clauses (used to gate phase 1 and determine action) ──
+        add_clauses = []
+        if need_inc:
+            add_clauses.append("ADD COLUMN `nd_auto_increment_id` BIGINT NULL")
+        if need_extracted:
+            add_clauses.append(
+                f"ADD COLUMN `nd_extracted_date` DATETIME "
+                f"NULL DEFAULT '{extracted_date} 00:00:00'"
+            )
+        if need_updated:
+            add_clauses.append(
+                f"ADD COLUMN `nd_updated_at` DATETIME "
+                f"NULL DEFAULT '{updated_at} 00:00:00'"
+            )
+        if need_flag:
+            add_clauses.append("ADD COLUMN `nd_ActiveFlag` VARCHAR(10) NULL DEFAULT 'Y'")
 
-            qualified = f"`{schema}`.`{table_name}`"
+        # ── Phase 1: DDL + row-number assignment (single transaction) ────────────
+        if add_clauses or on_update_cols:
+            with engine.begin() as conn:
+                conn.execute(text("SET SESSION sql_mode = '';"))
+                conn.execute(text("SET sql_safe_updates = 0;"))
 
-            # ── 0. Drop ON UPDATE CURRENT_TIMESTAMP so UPDATEs below don't mutate dates ──
-            n = drop_on_update_constraints(conn, schema, table_name)
-            if n:
-                logger.info("[%s] Cleared ON UPDATE CURRENT_TIMESTAMP from %d column(s)", table_name, n)
+                # ── 0. Drop ON UPDATE CURRENT_TIMESTAMP (prefetched, no per-table query) ──
+                n = drop_on_update_constraints(conn, schema, table_name, on_update_cols)
+                if n:
+                    logger.info("[%s] Cleared ON UPDATE CURRENT_TIMESTAMP from %d column(s)", table_name, n)
 
-            # ── 1. Build ADD COLUMN clauses ───────────────────────────────
-            add_clauses = []
-            if need_inc:
-                add_clauses.append(
-                    "ADD COLUMN `nd_auto_increment_id` BIGINT NULL"
-                )
-            if need_extracted:
-                add_clauses.append(
-                    f"ADD COLUMN `nd_extracted_date` DATETIME "
-                    f"NULL DEFAULT '{extracted_date} 00:00:00'"
-                )
-            if need_updated:
-                add_clauses.append(
-                    f"ADD COLUMN `nd_updated_at` DATETIME "
-                    f"NULL DEFAULT '{updated_at} 00:00:00'"
-                )
-            if need_flag:
-                add_clauses.append(
-                    "ADD COLUMN `nd_ActiveFlag` VARCHAR(10) "
-                    "NULL DEFAULT 'Y'"
-                )
+                # ── 1. Single ALTER TABLE (INSTANT → INPLACE → default) ──────────
+                if add_clauses:
+                    alter_base = f"ALTER TABLE {qualified} " + ", ".join(add_clauses)
+                    for algo_hint in ("ALGORITHM=INSTANT", "ALGORITHM=INPLACE, LOCK=NONE", ""):
+                        try:
+                            suffix = f", {algo_hint}" if algo_hint else ""
+                            conn.execute(text(f"{alter_base}{suffix}"))
+                            label = algo_hint if algo_hint else "default algorithm"
+                            logger.info("[%s] ALTER TABLE (%s)", table_name, label)
+                            break
+                        except Exception:
+                            if not algo_hint:
+                                raise
 
-            # ── 2. Single ALTER TABLE (INSTANT → INPLACE → default) ──────
-            if add_clauses:
-                alter_base = f"ALTER TABLE {qualified} " + ", ".join(add_clauses)
-                for algo_hint in ("ALGORITHM=INSTANT", "ALGORITHM=INPLACE, LOCK=NONE", ""):
+                # ── 2. Populate nd_auto_increment_id ─────────────────────────────
+                if need_inc:
+                    conn.execute(text("SET @row_num = 0;"))
+                    conn.execute(text(
+                        f"UPDATE {qualified} "
+                        f"SET `nd_auto_increment_id` = (@row_num := @row_num + 1)"
+                    ))
+
+                # ── 3. Add index for nd_auto_increment_id ─────────────────────────
+                if need_inc:
                     try:
-                        suffix = f", {algo_hint}" if algo_hint else ""
-                        conn.execute(text(f"{alter_base}{suffix}"))
-                        label = algo_hint if algo_hint else "default algorithm"
-                        logger.info("[%s] ALTER TABLE (%s)", table_name, label)
-                        break
+                        conn.execute(text(
+                            f"ALTER TABLE {qualified} "
+                            f"ADD INDEX `idx_nd_auto_increment_id` "
+                            f"(`nd_auto_increment_id`), ALGORITHM=INPLACE"
+                        ))
                     except Exception:
-                        if not algo_hint:
-                            raise
+                        conn.execute(text(
+                            f"ALTER TABLE {qualified} "
+                            f"ADD INDEX `idx_nd_auto_increment_id` (`nd_auto_increment_id`)"
+                        ))
 
-            # ── 3. Populate nd_auto_increment_id (single UPDATE) ─────────
-            if need_inc:
-                conn.execute(text("SET @row_num = 0;"))
-                conn.execute(text(
-                    f"UPDATE {qualified} "
-                    f"SET `nd_auto_increment_id` = (@row_num := @row_num + 1)"
-                ))
+                conn.execute(text("SET sql_safe_updates = 1;"))
 
-            # ── 4. Add index for nd_auto_increment_id ─────────────────────
-            if need_inc:
-                try:
-                    conn.execute(text(
-                        f"ALTER TABLE {qualified} "
-                        f"ADD INDEX `idx_nd_auto_increment_id` "
-                        f"(`nd_auto_increment_id`), ALGORITHM=INPLACE"
-                    ))
-                except Exception:
-                    conn.execute(text(
-                        f"ALTER TABLE {qualified} "
-                        f"ADD INDEX `idx_nd_auto_increment_id` "
-                        f"(`nd_auto_increment_id`)"
-                    ))
-
-            # ── 5. Fill NULLs in columns that already existed ────────────
-            # (no-op for columns just added since DEFAULT already fills them)
-            if not need_extracted:
-                _chunked_update_nulls(conn, qualified, "nd_extracted_date", f"'{extracted_date} 00:00:00'")
-                logger.info("[%s] Filled NULL nd_extracted_date", table_name)
-            if not need_updated:
-                _chunked_update_nulls(conn, qualified, "nd_updated_at", f"'{updated_at} 00:00:00'")
-                logger.info("[%s] Filled NULL nd_updated_at", table_name)
-            if not need_flag:
-                _chunked_update_nulls(conn, qualified, "nd_ActiveFlag", "'Y'")
-                logger.info("[%s] Filled NULL nd_ActiveFlag", table_name)
-
-            conn.execute(text("SET sql_safe_updates = 1;"))
+        # ── Phase 2: NULL fills (per-batch transactions, locks released each batch) ──
+        # No-op for columns just added since DEFAULT already populated them.
+        any_fill = False
+        if not need_extracted and _has_nulls(engine, qualified, "nd_extracted_date"):
+            _chunked_update_nulls(engine, qualified, "nd_extracted_date", f"'{extracted_date} 00:00:00'")
+            logger.info("[%s] Filled NULL nd_extracted_date", table_name)
+            any_fill = True
+        if not need_updated and _has_nulls(engine, qualified, "nd_updated_at"):
+            _chunked_update_nulls(engine, qualified, "nd_updated_at", f"'{updated_at} 00:00:00'")
+            logger.info("[%s] Filled NULL nd_updated_at", table_name)
+            any_fill = True
+        if not need_flag and _has_nulls(engine, qualified, "nd_ActiveFlag"):
+            _chunked_update_nulls(engine, qualified, "nd_ActiveFlag", "'Y'")
+            logger.info("[%s] Filled NULL nd_ActiveFlag", table_name)
+            any_fill = True
 
         logger.info("[%s] Done", table_name)
-        return {"success": True, "action": "added"}
+        action = "added" if add_clauses else ("filled" if any_fill else "skipped")
+        return {"success": True, "action": action}
 
     except Exception as e:
         logger.error("[%s] Error: %s", table_name, e)
@@ -383,10 +442,43 @@ def run(
 
     existing_map = prefetch_existing_cols(engine, prod_schema, tables)
 
+    # Pre-check: tables where all 4 audit cols already exist — verify no residual NULLs
+    # before paying the cost of a full worker dispatch.
+    full_cols = [t for t in tables if len(existing_map.get(t.lower(), set())) == len(_AUDIT_COLS)]
+    partial   = [t for t in tables if t not in set(full_cols)]
+    dispatch_list = list(partial)
+
+    if full_cols:
+        logger.info("Pre-checking %d fully-colonned tables for residual NULLs ...", len(full_cols))
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            null_futures = {
+                ex.submit(_table_needs_null_fill, engine, prod_schema, t): t
+                for t in full_cols
+            }
+            for f in as_completed(null_futures):
+                t = null_futures[f]
+                try:
+                    needs_fill = f.result()
+                except Exception as e:
+                    logger.warning("[%s] NULL pre-check failed (%s) — will process anyway", t, e)
+                    needs_fill = True
+                if needs_fill:
+                    dispatch_list.append(t)
+                else:
+                    logger.info("[%s] Skipped — all audit columns present and fully populated", t)
+
+    skip_count = len(tables) - len(dispatch_list)
     logger.info(
-        "Processing %d tables | workers=%d | extracted_date=%s | updated_at=%s",
-        len(tables), max_workers, extracted_date, updated_at,
+        "Processing %d tables (skipped %d already-complete) | workers=%d | "
+        "extracted_date=%s | updated_at=%s",
+        len(dispatch_list), skip_count, max_workers, extracted_date, updated_at,
     )
+
+    if not dispatch_list:
+        logger.info("Nothing to do — all tables are fully populated")
+        return
+
+    on_update_map = prefetch_on_update_cols(engine, prod_schema, dispatch_list)
 
     def _dispatch(table_list: list, workers: int) -> list:
         results = []
@@ -400,6 +492,7 @@ def run(
                     extracted_date,
                     updated_at,
                     existing_map.get(t.lower(), set()),
+                    on_update_map.get(t.lower(), []),
                 ): t
                 for t in table_list
             }
@@ -415,7 +508,7 @@ def run(
         return results
 
     # First pass — parallel
-    results = _dispatch(tables, max_workers)
+    results = _dispatch(dispatch_list, max_workers)
 
     # Retry failed tables sequentially
     failed_tables = [r["table"] for r in results if not r["success"]]
@@ -428,13 +521,15 @@ def run(
                 results[i] = retry_map[r["table"]]
 
     added   = sum(1 for r in results if r.get("action") == "added")
+    filled  = sum(1 for r in results if r.get("action") == "filled")
     skipped = sum(1 for r in results if r.get("action") == "skipped")
     failed  = sum(1 for r in results if not r["success"])
 
     logger.info("=" * 60)
     logger.info(
-        "Summary — total: %d | added: %d | skipped: %d | failed: %d",
-        len(results), added, skipped, failed,
+        "Summary — total: %d | added: %d | filled: %d | "
+        "skipped: %d (incl. %d pre-skipped) | failed: %d",
+        len(tables), added, filled, skipped + skip_count, skip_count, failed,
     )
     if failed:
         logger.error("Failed: %s", [r["table"] for r in results if not r["success"]])
@@ -503,11 +598,17 @@ def main():
         args.prod_schema, args.extracted_date, args.updated_at, args.max_workers,
     )
 
-    df = pd.read_csv("/Users/ndaidcnd/Desktop/Air_DEID/airflow-automation/Airflow/input/deid_runner.csv", header=None, names=['table_name'])
-    tables = df['table_name'].to_list()
+    engine = create_engine(_db_url(args.prod_schema), pool_recycle=3600, pool_pre_ping=True)
+    if args.cdc_schema and args.cdc_table:
+        logger.info("Table source: CDC log `%s`.`%s`", args.cdc_schema, args.cdc_table)
+        tables = get_tables_from_cdc(args.cdc_schema, args.cdc_table)
+    else:
+        logger.info("Table source: INFORMATION_SCHEMA (all base tables in '%s')", args.prod_schema)
+        tables = get_all_tables(engine, args.prod_schema)
+    # df = pd.read_csv("/Users/ndaidcnd/Desktop/Air_DEID/airflow-automation/Airflow/input/deid_runner.csv", header=None, names=['table_name'])
+    # tables = df['table_name'].to_list()
 
     # Resolve to exact DB case before any DDL/DML (required for case-sensitive GCP MySQL)
-    engine = create_engine(_db_url(args.prod_schema), pool_recycle=3600, pool_pre_ping=True)
     tables = resolve_table_names(engine, args.prod_schema, tables)
 
     run(args.prod_schema, args.extracted_date, args.updated_at, tables, args.max_workers)
