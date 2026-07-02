@@ -174,3 +174,67 @@ def test_format_text_summary(tmp_path):
     assert "Run Summary" in text
     assert "patients" in text
     collector.close()
+
+
+def test_log_collector_reconnects_after_connection_error(tmp_path):
+    """listen() retries after a ConnectionError and delivers messages from the second connection."""
+    import asyncio
+    import json
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from deid.orchestrator.log_collector import LogCollector
+
+    collector = LogCollector(log_dir=str(tmp_path), run_timestamp="2026-01-01_00-00-00")
+
+    record_payload = json.dumps({
+        "timestamp": "2026-01-01T00:00:00Z",
+        "level": "INFO",
+        "table": "patients",
+        "phase": "process",
+        "message": "batch processed",
+        "batch": 1,
+        "rows_in_batch": 10,
+        "rows_succeeded": 10,
+        "rows_failed": 0,
+        "duration_ms": 100,
+    })
+
+    subscribe_calls = [0]
+
+    async def fake_subscribe(channel):
+        subscribe_calls[0] += 1
+        if subscribe_calls[0] == 1:
+            raise ConnectionError("first attempt fails")
+
+    msgs_delivered = [0]
+
+    async def fake_get_message(**kwargs):
+        if msgs_delivered[0] == 0:
+            msgs_delivered[0] += 1
+            return {"type": "message", "data": record_payload.encode()}
+        collector.stop()
+        return None
+
+    mock_pubsub = MagicMock()
+    mock_pubsub.subscribe = fake_subscribe
+    mock_pubsub.get_message = fake_get_message
+    mock_pubsub.unsubscribe = AsyncMock()
+    mock_pubsub.aclose = AsyncMock()
+
+    mock_r = MagicMock()
+    mock_r.pubsub.return_value = mock_pubsub
+    mock_r.aclose = AsyncMock()
+
+    async def run():
+        with patch("redis.asyncio.from_url", return_value=mock_r), \
+             patch("asyncio.sleep", new_callable=AsyncMock):
+            await collector.listen("redis://localhost:6379/0")
+
+    asyncio.run(run())
+
+    # Must have tried twice: once failing, once succeeding.
+    assert subscribe_calls[0] == 2
+    # Message from the second connection must have been processed.
+    assert "patients" in collector._table_stats
+    assert collector._table_stats["patients"]["rows_succeeded"] == 10
+    collector.close()

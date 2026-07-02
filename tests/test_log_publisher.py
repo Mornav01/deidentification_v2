@@ -17,10 +17,13 @@ def _make_record(**overrides):
 
 
 def test_publish_log_publishes_to_redis():
-    from deid.core.log_publisher import publish_log
+    from deid.core.log_publisher import publish_log, _get_pool
 
     mock_redis = MagicMock()
-    with patch("deid.core.log_publisher.redis_lib.from_url", return_value=mock_redis):
+    mock_pool = MagicMock()
+    _get_pool.cache_clear()
+    with patch("deid.core.log_publisher._get_pool", return_value=mock_pool), \
+         patch("deid.core.log_publisher.redis_lib.Redis", return_value=mock_redis):
         record = _make_record()
         publish_log("redis://localhost:6379/0", record)
         mock_redis.publish.assert_called_once()
