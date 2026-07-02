@@ -98,3 +98,106 @@ def test_setup_phase_small_table(tmp_path):
         assert len(batches) == 1
         assert batches[0].start_id == 0
         assert batches[0].end_id == 9999
+
+
+def test_setup_phase_mixed_tables_passthrough_and_phi(tmp_path):
+    """
+    Verify table_batch_size=5 scenario: within one batch that contains both pass-through
+    (no PHI) and regular (PHI) tables, _setup_phase completes the pass-through tables
+    immediately (TableState=completed, no BatchState) and registers BatchState rows only
+    for the PHI tables.  The batch pipeline then runs only on the PHI tables.
+
+    Real scenario: 100 tables, table_batch_size=5.
+    cli/run.py splits all 100 into 20 sequential rounds of 5.
+    Each round calls _setup_phase → _deidentify_phase on exactly 5 tables.
+    Within a round:
+      - Tables with rules={} → copied in _setup_phase, never reach _deidentify_phase.
+      - Tables with rules    → BatchState rows created, dispatched through Celery pipeline.
+    No cross-round interleaving: round N+1 only starts after round N finishes.
+    """
+    import asyncio
+    from unittest.mock import patch, MagicMock
+    from deid.config.schema import TableConfig
+
+    # One batch of 5 tables (as cli/run.py would slice): 2 pass-through + 3 PHI.
+    config = _make_config(
+        state_db_path=str(tmp_path / "state.db"),
+        mappings_db_path=str(tmp_path / "mappings.db"),
+        tables=[
+            TableConfig(name="lookup_codes",   rules={}),          # pass-through
+            TableConfig(name="ref_providers",  rules={}),          # pass-through
+            TableConfig(name="patient_visits", rules={"pid": "PATIENT_PATIENTID"}),
+            TableConfig(name="orders",         rules={"enc": "ENCOUNTER_ID"}),
+            TableConfig(name="notes",          rules={"note": "NLP"}),
+        ],
+    )
+
+    mock_handler = MagicMock()
+    mock_handler.get_exact_row_count.return_value = 500
+    mock_handler.stream_table_as_dataframes.return_value = iter([])
+
+    from deid.models.base import create_state_engine, create_all_state_tables
+    state_engine = create_state_engine(str(tmp_path / "state.db"))
+    create_all_state_tables(state_engine)
+
+    with patch("deid.core.dbPkg.dbhandler.NDDBHandler", return_value=mock_handler):
+        from deid.orchestrator.async_runner import _setup_phase
+        asyncio.run(_setup_phase(config, state_engine))
+
+    from deid.models.state import BatchState, TableState
+    from sqlalchemy.orm import Session
+    with Session(state_engine) as s:
+        # Pass-through tables: completed immediately, no BatchState rows.
+        for tname in ("lookup_codes", "ref_providers"):
+            ts = s.query(TableState).filter_by(table_name=tname).first()
+            assert ts is not None, f"{tname}: TableState missing"
+            assert ts.status == "completed", f"{tname}: expected completed, got {ts.status}"
+            batches = s.query(BatchState).filter_by(table_name=tname).all()
+            assert len(batches) == 0, f"{tname}: should have 0 BatchState rows"
+
+        # PHI tables: BatchState rows created (pending), TableState is pending.
+        for tname in ("patient_visits", "orders", "notes"):
+            ts = s.query(TableState).filter_by(table_name=tname).first()
+            assert ts is not None, f"{tname}: TableState missing"
+            assert ts.status == "pending", f"{tname}: expected pending, got {ts.status}"
+            batches = s.query(BatchState).filter_by(table_name=tname).all()
+            assert len(batches) > 0, f"{tname}: should have BatchState rows for Celery pipeline"
+
+
+def test_setup_phase_passthrough_table_skips_batch_pipeline(tmp_path):
+    """A table with no PHI rules is copied directly in setup; no BatchState rows are created."""
+    import asyncio
+    from unittest.mock import patch, MagicMock
+    from deid.config.schema import TableConfig
+
+    # Cross-server topology: source MySQL 3306, dest PostgreSQL 5432 (different ports).
+    # This triggers the stream-copy path in _setup_phase.
+    config = _make_config(
+        state_db_path=str(tmp_path / "state.db"),
+        mappings_db_path=str(tmp_path / "mappings.db"),
+        tables=[TableConfig(name="ref_data", rules={})],  # no PHI rules
+    )
+
+    mock_handler = MagicMock()
+    mock_handler.get_exact_row_count.return_value = 200
+    mock_handler.stream_table_as_dataframes.return_value = iter([])
+
+    from deid.models.base import create_state_engine, create_all_state_tables
+    state_engine = create_state_engine(str(tmp_path / "state.db"))
+    create_all_state_tables(state_engine)
+
+    with patch("deid.core.dbPkg.dbhandler.NDDBHandler", return_value=mock_handler):
+        from deid.orchestrator.async_runner import _setup_phase
+        asyncio.run(_setup_phase(config, state_engine))
+
+    from deid.models.state import BatchState, TableState
+    from sqlalchemy.orm import Session
+    with Session(state_engine) as s:
+        # No batches — the batch pipeline was bypassed entirely.
+        batches = s.query(BatchState).filter_by(table_name="ref_data").all()
+        assert len(batches) == 0
+
+        # TableState is marked completed (not pending).
+        ts = s.query(TableState).filter_by(table_name="ref_data").first()
+        assert ts is not None
+        assert ts.status == "completed"
