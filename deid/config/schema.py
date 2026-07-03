@@ -81,6 +81,16 @@ class QCSettings(BaseModel):
     sample_size: int = 100
     scan_for_residual_pii: bool = True
     task_timeout: int = 7200
+    # QC Framework Part 2 — blocking mapping & count checks run before the pipeline.
+    # ``part2`` is the Part2Config dict (see deid/qc/mapping_count.py); empty → gate is a no-op.
+    part2_blocking: bool = True
+    part2: dict = {}
+    # Delta-identity QC (cross-env row-level diff, run on CDC delta). DeltaIdentityConfig dict.
+    delta_identity: dict = {}
+    # Part 3 master-referenced unstructured audit (deid qc-audit). Holds shared keys
+    # (pii_master_conn_str, pii_columns, facility_names, ...) + a ``tables`` list of per-table
+    # MasterPhiConfig dicts. See deid/qc/master_phi.py.
+    master_phi: dict = {}
 
 
 class ClinicalBinDocConfig(BaseModel):

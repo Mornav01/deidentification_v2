@@ -1,5 +1,7 @@
 from .base import Detector
 from .structured import (
+    SAppointmentIdDetector,
+    SChartIdDetector,
     SDateOffestDetector,
     SDobDetector,
     SEncounterIDDetector,
@@ -14,6 +16,8 @@ from .unstructured import UnstructuredDetector
 DectorMapping = {
     "PATIENT_ID": SPatientIdDetector,
     "ENCOUNTER_ID": SEncounterIDDetector,
+    "APPOINTMENT_ID": SAppointmentIdDetector,
+    "CHART_ID": SChartIdDetector,
     "PATIENT_DOB": SDobDetector,
     "MASK": SMaskDetector,
     "ZIP_CODE": SZipCodeDetector,

@@ -12,18 +12,43 @@ def _parse_date(value: Any) -> datetime | None:
     s = str(value).strip()
     if not s or s.lower() in ("none", "null", "nat", ""):
         return None
+    # Keep only the date part of a datetime string (e.g. "2020-01-01 00:00:00").
+    s = s.split(" ")[0]
     parts = s.split("-")
     if len(parts) != 3:
         return None
     if not all(p.isdigit() for p in parts):
         return None
-    return datetime(int(parts[0]), int(parts[1]), int(parts[2]))
+    try:
+        return datetime(int(parts[0]), int(parts[1]), int(parts[2]))
+    except ValueError:
+        return None
+
+
+# QC Framework Part 1 — DATE plausibility window: [1900-01-01, today].
+_PLAUSIBLE_MIN_DATE = datetime(1900, 1, 1)
+
+
+def _is_null_like(value: Any) -> bool:
+    return value is None or str(value).strip().lower() in ("", "none", "null", "nat")
+
+
+def _is_plausible_date(d: datetime | None, today: datetime) -> bool:
+    """A de-identified date must land within [1900-01-01, today] (doc Part 1 DATE value check)."""
+    if d is None:
+        return True  # unparseable handled separately by format check
+    return _PLAUSIBLE_MIN_DATE <= d <= today
 
 
 class SZipCodeDetector(Detector):
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
-        passed_count = sum(1 for row in after_rows if len(str(row[self.column_name])) <= 3 or str(row[self.column_name]).lower() in ["none", "null"])
+        # QC Framework Part 1 / Decision D2: ZIP must be exactly 3 chars (Safe-Harbor truncation),
+        # or null/empty. (Previously accepted len <= 3.)
+        passed_count = sum(
+            1 for row in after_rows
+            if _is_null_like(row[self.column_name]) or len(str(row[self.column_name]).strip()) == 3
+        )
         failed_count = len(after_rows) - passed_count
         return ColumnQCResult(passed_count=passed_count, failed_count=failed_count, remarks={})
 
@@ -50,10 +75,12 @@ class SStaticOffestDetector(Detector):
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
         column_qc_result = ColumnQCResult(passed_count=0, failed_count=0, remarks={})
         column_name = self.column_config["column_name"]
+        today = datetime.now()
 
         before_dict = {row['nd_auto_increment_id']: row for row in before_rows}
 
         remarks = []
+        format_remarks = []
 
         for after_row in after_rows:
             nd_id = after_row.get('nd_auto_increment_id')
@@ -62,8 +89,21 @@ class SStaticOffestDetector(Detector):
             if not before_row:
                 continue
 
+            after_raw = after_row.get(column_name, '')
+            after_date = _parse_date(after_raw)
+
+            # QC Framework Part 1 DATE check: format (YYYY-MM-DD) + plausibility [1900, today].
+            if not _is_null_like(after_raw):
+                if after_date is None:
+                    format_remarks.append({'nd_auto_increment_id': nd_id, 'value': str(after_raw), 'issue': 'bad_format'})
+                    column_qc_result['failed_count'] += 1
+                    continue
+                if not _is_plausible_date(after_date, today):
+                    format_remarks.append({'nd_auto_increment_id': nd_id, 'value': str(after_date), 'issue': 'implausible'})
+                    column_qc_result['failed_count'] += 1
+                    continue
+
             before_date = _parse_date(before_row.get(column_name, ''))
-            after_date = _parse_date(after_row.get(column_name, ''))
             if before_date is None or after_date is None:
                 continue
 
@@ -80,7 +120,7 @@ class SStaticOffestDetector(Detector):
                 })
                 column_qc_result['failed_count'] += 1
 
-        column_qc_result['remarks'] = {'remarks': remarks}
+        column_qc_result['remarks'] = {'remarks': remarks, 'format_remarks': format_remarks}
         return column_qc_result
 
 class SMaskDetector(Detector):
@@ -109,10 +149,12 @@ class SDateOffestDetector(Detector):
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
         column_qc_result = ColumnQCResult(passed_count=0, failed_count=0, remarks={})
         column_name = self.column_config["column_name"]
+        today = datetime.now()
 
         before_dict = {row['nd_auto_increment_id']: row for row in before_rows}
 
         remarks = []
+        format_remarks = []
 
         for after_row in after_rows:
             nd_id = after_row.get('nd_auto_increment_id')
@@ -121,8 +163,21 @@ class SDateOffestDetector(Detector):
             if not before_row:
                 continue
 
+            after_raw = after_row.get(column_name, '')
+            after_date = _parse_date(after_raw)
+
+            # QC Framework Part 1 DATE check: format (YYYY-MM-DD) + plausibility [1900, today].
+            if not _is_null_like(after_raw):
+                if after_date is None:
+                    format_remarks.append({'nd_auto_increment_id': nd_id, 'value': str(after_raw), 'issue': 'bad_format'})
+                    column_qc_result['failed_count'] += 1
+                    continue
+                if not _is_plausible_date(after_date, today):
+                    format_remarks.append({'nd_auto_increment_id': nd_id, 'value': str(after_date), 'issue': 'implausible'})
+                    column_qc_result['failed_count'] += 1
+                    continue
+
             before_date = _parse_date(before_row.get(column_name, ''))
-            after_date = _parse_date(after_row.get(column_name, ''))
             if before_date is None or after_date is None:
                 continue
 
@@ -139,7 +194,7 @@ class SDateOffestDetector(Detector):
                 })
                 column_qc_result['failed_count'] += 1
 
-        column_qc_result['remarks'] = {'remarks': remarks}
+        column_qc_result['remarks'] = {'remarks': remarks, 'format_remarks': format_remarks}
         return column_qc_result
 
 class SPatientIdDetector(Detector):
@@ -245,3 +300,62 @@ class SEncounterIDDetector(Detector):
                 column_qc_result["failed_count"] += 1
 
         return column_qc_result
+
+
+# ── Offender-capturing ID length/prefix base ───────────────────────────────────
+# QC Framework Part 1 failure action: "log row identifier, column name, actual length".
+# APPOINTMENT_ID and CHART_ID had no detector at all (KeyError risk in the scanner); these add
+# them and also record the offending nd_auto_increment_id + actual value (capped) in remarks.
+_MAX_OFFENDER_SAMPLES = 50
+
+
+class _SIdLengthPrefixDetector(Detector):
+    """Length + prefix check for an ID column, driven by ``qc_config[CONFIG_KEY]``."""
+    CONFIG_KEY: str = ""
+
+    def _rule(self) -> dict:
+        return self.qc_config.get(self.CONFIG_KEY, {}) or {}
+
+    @validate_call(config=dict(arbitrary_types_allowed=True))
+    def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
+        rule = self._rule()
+        length_of_value = rule.get("length_of_value", None)
+        prefix_value = rule.get("prefix_value", None)
+        column_name = self.column_config["column_name"]
+        result = ColumnQCResult(
+            passed_count=0, failed_count=0,
+            remarks={"length_verification_failed": 0, "prefix_verification_failed": 0, "offenders": []},
+        )
+        for row in after_rows:
+            val = row.get(column_name)
+            if val is None:
+                result["passed_count"] += 1
+                continue
+            sval = str(val)
+            ok = True
+            if length_of_value is not None and len(sval) != length_of_value:
+                ok = False
+                result["remarks"]["length_verification_failed"] += 1
+            if prefix_value is not None and not sval.startswith(str(prefix_value)):
+                ok = False
+                result["remarks"]["prefix_verification_failed"] += 1
+            if ok:
+                result["passed_count"] += 1
+            else:
+                result["failed_count"] += 1
+                if len(result["remarks"]["offenders"]) < _MAX_OFFENDER_SAMPLES:
+                    result["remarks"]["offenders"].append({
+                        "nd_auto_increment_id": row.get("nd_auto_increment_id"),
+                        "column": column_name,
+                        "value": sval,
+                        "length": len(sval),
+                    })
+        return result
+
+
+class SAppointmentIdDetector(_SIdLengthPrefixDetector):
+    CONFIG_KEY = "APPOINTMENT_ID"
+
+
+class SChartIdDetector(_SIdLengthPrefixDetector):
+    CONFIG_KEY = "CHART_ID"

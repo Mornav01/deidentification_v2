@@ -350,5 +350,37 @@ def main():
         f"{(datetime.now(UTC) - start).total_seconds():.2f}s"
     )
 
+    # Trigger A — delta-identity QC after the merge (opt-in via DEID_CDC_DELTA_QC=1).
+    _run_post_merge_delta_qc(tables)
+
+
+def _run_post_merge_delta_qc(tables):
+    """Run the delta-identity QC (source=prod ↔ dest=staging) after a CDC merge.
+
+    Opt-in and fail-soft: enabled only when ``DEID_CDC_DELTA_QC=1`` so existing CDC runs are
+    unaffected, and never raises (QC must not corrupt a completed merge). Results persist to
+    ``DEID_QC_RESULTS_DB`` (default ./cdc_delta_qc_results.db).
+    """
+    if os.environ.get("DEID_CDC_DELTA_QC", "").strip() not in ("1", "true", "True"):
+        return
+    try:
+        from deid.qc.delta_identity import DeltaIdentityConfig, run_delta_identity_qc
+
+        src = prod_engine.url.render_as_string(hide_password=False)
+        dst = staging_engine.url.render_as_string(hide_password=False)
+        cfg = DeltaIdentityConfig(
+            tables=list(tables),
+            delta_after=os.environ.get("DEID_CDC_DELTA_AFTER") or None,
+        )
+        results = run_delta_identity_qc(
+            source_conn_str=src, dest_conn_str=dst, cfg=cfg,
+            qc_results_db_url=os.environ.get("DEID_QC_RESULTS_DB", "./cdc_delta_qc_results.db"),
+        )
+        n_fail = sum(1 for r in results if not r["is_qc_passed"])
+        logger.info("[DeltaQC] Post-merge check: %d table(s), %d failing.", len(results), n_fail)
+    except Exception as exc:
+        logger.exception("[DeltaQC] Post-merge delta-identity QC errored (non-fatal): %s", exc)
+
+
 if __name__ == "__main__":
     main()

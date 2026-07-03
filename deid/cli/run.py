@@ -58,6 +58,9 @@ def run_command(
     if rerun:
         _rerun_cleanup(cfg)
 
+    # QC Framework Part 2 — blocking mapping & count gate (runs before any de-identification).
+    _run_part2_gate(cfg)
+
     configured_by_name = {t.name: t for t in cfg.tables}
 
     from deid.tasks.celery_app import create_celery_app, get_celery_app
@@ -138,6 +141,34 @@ def run_command(
 
     if not interrupted:
         typer.echo("De-identification completed successfully.")
+
+
+def _run_part2_gate(cfg):
+    """Run the QC Framework Part-2 mapping & count checks before the pipeline.
+
+    No-op unless ``qc.part2`` is configured. When ``qc.part2_blocking`` is True (default), any
+    failing/erroring blocking check halts the run (exit 1) — faithful to the document's requirement
+    that Part 2 completes successfully before de-identification is permitted to start.
+    """
+    if not getattr(cfg.qc, "part2", None):
+        return
+    from deid.qc.api import run_part2_from_config
+    from deid.qc.mapping_count import Part2Blocked
+
+    logger.info("Running Part 2 (mapping & count) pre-pipeline gate...")
+    try:
+        results = run_part2_from_config(cfg)
+    except Part2Blocked as exc:
+        for f in exc.failures:
+            typer.echo(
+                f"  [BLOCK] {f['check_name']} [{f['entity']}]: expected={f['expected']} "
+                f"actual={f['actual']} — {f['details']}",
+                err=True,
+            )
+        typer.echo(f"Part 2 QC failed — pipeline halted. {exc}", err=True)
+        raise typer.Exit(code=1)
+    n_fail = sum(1 for r in results if r["status"] in ("fail", "error"))
+    logger.info("Part 2 gate passed (%d check(s), %d non-blocking issue(s)).", len(results), n_fail)
 
 
 def _rerun_cleanup(cfg):

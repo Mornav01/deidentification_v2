@@ -73,8 +73,39 @@ class DbScanner:
         return detectors
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
-    def get_pii_info(self):
-        return {}
+    def get_pii_info(self, sample_data: list | None = None, table_config: dict | None = None) -> dict:
+        """Load master PHI values for the sampled patients (flat {value: value}) for the exact-match
+        scan. No-op ({}) unless ``qc_config['pii_master_conn_str']`` is set.
+
+        This is the in-pipeline scan's PHI feed (previously always empty, i.e. the master reference
+        was unwired). The precise per-patient, master-referenced Part-3 audit lives in
+        ``deid.qc.master_phi`` — this remains a conservative complement.
+        """
+        conn_str = (self.qc_config or {}).get("pii_master_conn_str")
+        if not conn_str or not sample_data or not table_config:
+            return {}
+        id_col = table_config.get("reference_patient_id_column")
+        if not id_col:
+            return {}
+        nd_ids = list({row[id_col] for row in sample_data if row.get(id_col) is not None})
+        if not nd_ids:
+            return {}
+        try:
+            from deid.qc.master_phi import make_pii_loader
+            loader = make_pii_loader(conn_str, self.qc_config.get("pii_columns"))
+            phi_by_nd = loader(nd_ids)
+        except Exception as exc:
+            logger.warning("[QC] get_pii_info could not load master PHI: %s", exc)
+            return {}
+        flat: dict = {}
+        for cols in phi_by_nd.values():
+            for val in cols.values():
+                if val is None:
+                    continue
+                s = str(val).strip()
+                if s:
+                    flat[s] = s
+        return flat
 
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
@@ -125,7 +156,7 @@ class DbScanner:
         unstructured_detectors = self.get_unstructured_detectors(sample_data, table_config)
         if unstructured_detectors:
             logger.info("[QC] [%s] Running %d unstructured detector(s)...", table_name, len(unstructured_detectors))
-            pii_info = self.get_pii_info()
+            pii_info = self.get_pii_info(sample_data, table_config)
             for i, (col_name, detector) in enumerate(unstructured_detectors, 1):
                 t2 = time.monotonic()
                 result = detector.is_deidentified(before_rows=source_data, after_rows=sample_data, ignore_condition=table_config.get("ignore_config", {}), pii_info=pii_info)
