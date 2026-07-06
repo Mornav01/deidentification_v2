@@ -67,6 +67,10 @@ class MasterPhiConfig:
     # notes that never referenced the patient); best when every note is known to mention its patient.
     expected_mask_tokens: list[str] = field(default_factory=list)
     require_mask_token: bool = False
+    # Optional residual-PII scan on top of the master/regex checks: 'none' (default), 'regex',
+    # or 'mlx' (local LLM, Apple Silicon). See deid/qc/llm_scan.py.
+    residual_pii_backend: str = "none"
+    mlx_model: str = "mlx-community/Llama-3.2-3B-Instruct-4bit"
     sample_size: int = 500
     max_failures: int = 200
 
@@ -189,11 +193,13 @@ def scan_mask_token(text_value: str, expected_tokens: list[str]) -> bool:
     return any(tok and tok.lower() in low for tok in expected_tokens)
 
 
-def audit_record(text_value: str, phi: dict, cfg: MasterPhiConfig, today: Optional[datetime] = None) -> dict:
+def audit_record(text_value: str, phi: dict, cfg: MasterPhiConfig, today: Optional[datetime] = None,
+                 scanner=None) -> dict:
     """Audit one record's text against its master PHI. Returns {passed, phi_hits, mask_hits}.
 
-    ``mask_hits`` aggregates all residual-pattern, dates-in-notes, and (opt-in) mask-token-missing
-    findings so the caller only needs the two lists.
+    ``mask_hits`` aggregates all residual-pattern, dates-in-notes, (opt-in) mask-token-missing, and
+    (opt-in) residual-PII-scan findings so the caller only needs the two lists. ``scanner`` is an
+    optional ``ResidualPIIScanner`` (regex/mlx) — pass one to add master-agnostic residual detection.
     """
     today = today or datetime.now()
     phi_hits = scan_phi_presence(text_value, phi, cfg.name_columns)
@@ -208,6 +214,11 @@ def audit_record(text_value: str, phi: dict, cfg: MasterPhiConfig, today: Option
         has_name = any(_is_name_col(col, cfg.name_columns) and v for col, v in phi.items())
         if has_name and not scan_mask_token(text_value, cfg.expected_mask_tokens):
             mask_hits.append({"kind": "mask_token_missing", "match": ""})
+
+    # Opt-in: master-agnostic residual-PII scan (regex/mlx).
+    if scanner is not None:
+        for ent in scanner.scan(text_value or ""):
+            mask_hits.append({"kind": f"residual:{ent['type']}", "match": ent["text"]})
 
     return {"passed": not phi_hits and not mask_hits, "phi_hits": phi_hits, "mask_hits": mask_hits}
 
@@ -273,6 +284,12 @@ def run_master_phi_audit(
     nd_ids = [r[cfg.nd_patient_id_col] for r in rows if r.get(cfg.nd_patient_id_col) is not None]
     phi_by_nd = phi_loader(list(dict.fromkeys(nd_ids)))
 
+    # Optional residual-PII scanner (regex/mlx) built once and reused across records.
+    scanner = None
+    if cfg.residual_pii_backend and cfg.residual_pii_backend != "none":
+        from deid.qc.llm_scan import ResidualPIIScanner
+        scanner = ResidualPIIScanner(backend=cfg.residual_pii_backend, model=cfg.mlx_model)
+
     total = len(rows)
     entities_checked = sum(len(v) for v in phi_by_nd.values())
     passed = 0
@@ -285,7 +302,7 @@ def run_master_phi_audit(
         if not combined:
             coverage_gaps += 1  # NULL/empty text where content was expected
         phi = phi_by_nd.get(nd, {})
-        res = audit_record(combined, phi, cfg)
+        res = audit_record(combined, phi, cfg, scanner=scanner)
 
         # Surrogate-present check (doc: MRN/IDs → surrogate substituted).
         surrogate_missing = False

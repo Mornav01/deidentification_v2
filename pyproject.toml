@@ -7,6 +7,13 @@ name = "deid"
 version = "1.0.0"
 requires-python = ">=3.11"
 
+[project.optional-dependencies]
+# QC residual-PII LLM backend — Apple Silicon only. Install on Macs with:
+#   pip install -e '.[mlx]'   (or: pip install mlx-lm)
+# Deliberately NOT in requirements.txt: mlx has no Linux/x86 wheels, so keeping it optional
+# lets the pipeline + QC install and run everywhere with the default regex backend.
+mlx = ["mlx-lm>=0.19.0"]
+
 [project.scripts]
 deid = "deid.cli.app:app"
 

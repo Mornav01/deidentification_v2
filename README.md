@@ -225,9 +225,16 @@ pip install -r requirements.txt
 
 # Install the package in development mode
 pip install -e .
+
+# Optional (Apple Silicon only): local-LLM residual-PII backend for QC notes
+pip install -e '.[mlx]'
 ```
 
 This registers the `deid` CLI command via the entry point defined in `pyproject.toml`.
+
+> The `mlx` extra installs `mlx-lm`, which has **no Linux/x86 wheels**. It is intentionally excluded
+> from `requirements.txt` so the pipeline and QC install and run everywhere with the default `regex`
+> residual-PII backend; enable `qc.residual_pii_backend: mlx` only where a Mac runs the QC task.
 
 ---
 
@@ -355,9 +362,15 @@ qc:
   scan_for_residual_pii: true         # Run NLP-based residual PII scan on notes
 
   # Optional: feed the in-pipeline notes scan real PHI values from the master table
-  # (without this, the notes exact-match set is empty and only Presidio NER runs).
+  # (without this, the notes exact-match set is empty and only the residual-PII scanner runs).
   pii_master_conn_str: mysql+pymysql://user:pass@host/master_db
   pii_columns: [users_ufname, users_ulname, users_upphone]   # default: all non-id cols
+
+  # Residual-PII scanner backend for the notes scan (replaces Presidio):
+  #   auto (default) — mlx on Apple Silicon when installed, else regex (ideal for mixed fleets)
+  #   regex — portable, dependency-free | mlx — local LLM, Apple Silicon | none — disable
+  residual_pii_backend: auto
+  mlx_model: mlx-community/Llama-3.2-3B-Instruct-4bit   # used only when backend resolves to mlx
 
   # Part 2 — mapping & count checks, run as a BLOCKING gate before de-identification.
   # Empty `part2` → gate is a no-op. See "Quality Control" section for all keys.
@@ -670,7 +683,7 @@ deid/
 │   │   ├── constants.py    #     Regex patterns (dates, ZIP codes)
 │   │   ├── rowhandler.py   #     InvalidRowHandler (filter/log null patient IDs)
 │   │   └── unstruct/       #     Unstructured text (clinical notes)
-│   │       ├── notes.py    #       NotesRule — NLP-based PII extraction (Presidio + Spacy)
+│   │       ├── notes.py    #       NotesRule — PII master lookup + regex text replacement
 │   │       └── genericnotes.py #   GenericNotesRule — regex-based masking
 │   ├── dbPkg/              #   Database abstraction layer
 │   │   ├── dbhandler.py    #     NDDBHandler (streaming reads, batch inserts, schema ops)
@@ -689,10 +702,11 @@ deid/
 │   ├── coverage.py         #   Part 3 — coverage check (count parity + NULL/empty)
 │   ├── report.py           #   Consolidated audit report across Parts 1–3
 │   ├── api.py              #   Public API — *_from_config task functions (Airflow entry point)
+│   ├── llm_scan.py         #   Residual-PII scanner: regex (default) | mlx local-LLM | none
 │   └── builders/           #   Part 1 detector classes
 │       ├── base.py         #     Abstract Detector interface
 │       ├── structured.py   #     ID (incl. APPOINTMENT/CHART), mask, date, ZIP, DOB detectors
-│       └── unstructured.py #     Residual PII scanner (Presidio + master exact-match)
+│       └── unstructured.py #     Notes scan: master exact-match + pluggable residual-PII scanner
 │
 └── cdc/                    # Change Data Capture utilities
     ├── mysql/              #   MySQL CDC parsers
@@ -775,7 +789,7 @@ Rules are assigned per-column in the `tables` section of `config.yaml`. The `DeI
 | `STATIC_OFFSET` | Shift date by global fixed offset | `2024-03-15` → `2024-04-18` |
 | `ZIP_CODE` | Truncate to 3 digits or mask | `90210` → `902` |
 | `PATIENT_DOB` | Replace with birth year only (`Int64`); columns with no recognised date pattern are nulled to prevent PHI leakage | `1985-06-15` → `1985` |
-| `NOTES` | NLP-based PII extraction and masking | Free-text clinical notes (Presidio + Spacy) |
+| `NOTES` | PII-master lookup + regex masking | Free-text clinical notes |
 | `GENERIC_NOTES` | Regex-based PII masking | Free-text with pattern-based replacement |
 
 ### Mask Values
@@ -798,14 +812,14 @@ The `STATIC_OFFSET` rule shifts all dates by the global `date_offset_days` value
 
 ### Unstructured Text (Clinical Notes)
 
-The `NOTES` rule uses a two-stage NLP pipeline:
+The `NOTES` rule de-identifies free text by combining:
 
-1. **Presidio + Spacy** (`en_core_web_lg`) — Detects entities: person names, phone numbers, email addresses, dates, locations, medical record numbers
-2. **PII table lookup** — Cross-references detected entities against the patient's known PII data (names, addresses, etc.) from the PHI staging table
+1. **PII master lookup** — the patient's known PHI values (names, addresses, contact info, identifiers) from the PHI master/staging table are located in the note and replaced with the de-identified surrogate.
+2. **Regex patterns** — dates, phone numbers, emails, and other common PII formats, plus structured-tag/XML handling.
 
-Detected PII is replaced with typed placeholders (e.g., `<<PERSON>>`, `<<PHONE_NUMBER>>`).
+The `GENERIC_NOTES` rule applies regex-based masking of dates, phone numbers, emails, addresses, and other common PII formats.
 
-The `GENERIC_NOTES` rule uses regex patterns for faster but less precise masking of dates, phone numbers, emails, addresses, and other common PII formats.
+> Note: the de-identification engine does **not** use Presidio (it was removed project-wide). QC's residual-PII scan uses the `regex`/`mlx` backend described under [Quality Control](#quality-control).
 
 ---
 
@@ -830,7 +844,7 @@ de-identified column with a rule-specific detector ([deid/qc/builders/structured
 - **Date offset** — the shift matches the patient's assigned offset, plus format (`YYYY-MM-DD`) and plausibility (`[1900, today]`) checks.
 - **ZIP** — truncated to exactly 3 chars (or null).
 - **DOB** — 4-digit birth year.
-- **Notes / generic notes** — routed to the unstructured scan (Presidio NER + master exact-match; wire `qc.pii_master_conn_str` to feed real PHI values).
+- **Notes / generic notes** — routed to the unstructured scan: a master exact-match (wire `qc.pii_master_conn_str` to feed real PHI values) plus a pluggable **residual-PII scanner** — `regex` by default (dependency-free, portable), or `mlx` (a local LLM via `mlx-lm`, Apple Silicon only) for stronger name/entity recall. Presidio has been removed from QC.
 
 Plus a row-count check (source == dest + ignored). Results persist per-table to `qc_results.db`.
 
@@ -964,5 +978,6 @@ python -m pytest tests/ -v
 | Config | Pydantic v2 + PyYAML | Validation, env var interpolation |
 | DataFrames | Polars | High-performance columnar processing |
 | Regex | `regex` (PyPI), with stdlib `re` fallback | High-performance regex engine. Note: `google-re2` is deliberately avoided — its Python bindings have ~50× overhead due to string marshalling. |
-| NLP | Presidio + Spacy | PII detection in unstructured text |
+| NLP (de-id) | regex + PII-master lookup | PII detection/replacement in unstructured text during de-identification (Presidio removed) |
+| QC residual-PII | `auto` → regex / `mlx-lm` | Residual-PII scan in QC notes; `auto` picks `mlx` (local LLM) on Apple Silicon when installed, else `regex`. `pip install -e '.[mlx]'` on Macs. |
 | Databases | SQLAlchemy | MySQL, MSSQL, PostgreSQL, Snowflake |

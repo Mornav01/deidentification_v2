@@ -25,7 +25,7 @@ through a Celery task queue: mapping joins resolve patient/encounter/appointment
 | `deid/core/process_df/base.py` | `DeIdentifier` — orchestrates all rules per batch |
 | `deid/core/process_df/rules.py` | `Rules` enum + all structured rule implementations |
 | `deid/core/process_df/unstruct/notes.py` | `NotesRule` — NLP notes de-id; PII lookup + text replacement |
-| `deid/core/process_df/unstruct/genericnotes.py` | `GenericNotesRule` — Spacy + Presidio generic PHI detection |
+| `deid/core/process_df/unstruct/genericnotes.py` | `GenericNotesRule` — regex-based generic PHI detection (`GENERIC_REGEX_DICT`) |
 | `deid/core/process_df/rowhandler.py` | `InvalidRowHandler` — rejects rows with null `_resolved_nd_patient_id` |
 | `deid/core/ops_df/utility.py` | `join_dataframes` — Polars left-join helper with right_suffix / drop support |
 | `docs/mapping_join_flow.md` | Step-by-step reference for how joins enrich `df` and how `_resolved_*` are built |

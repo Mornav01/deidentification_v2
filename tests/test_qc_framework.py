@@ -169,6 +169,47 @@ def test_mask_token_required_opt_in():
     assert not any(h["kind"] == "mask_token_missing" for h in res2["mask_hits"])
 
 
+def test_residual_scanner_regex_backend():
+    from deid.qc.llm_scan import ResidualPIIScanner, regex_scan
+    s = ResidualPIIScanner(backend="regex")
+    hits = {h["type"] for h in s.scan("call 555-123-4567 or a@b.com ssn 123-45-6789 www.x.com")}
+    assert {"PHONE_NUMBER", "EMAIL_ADDRESS", "US_SSN", "URL"} <= hits
+    assert ResidualPIIScanner(backend="none").scan("555-123-4567") == []
+    assert regex_scan("nothing here") == []
+
+
+def test_residual_scanner_llm_json_parsing():
+    from deid.qc.llm_scan import parse_llm_entities
+    # tolerant of code fences / prose around JSON
+    raw = 'Here you go:\n```json\n{"phi_found": true, "entities": [{"type":"PERSON","text":"Jane Roe"}]}\n```'
+    ents = parse_llm_entities(raw)
+    assert ents == [{"type": "PERSON", "text": "Jane Roe"}]
+    assert parse_llm_entities('{"phi_found": false, "entities": []}') == []
+    assert parse_llm_entities("not json") == []
+
+
+def test_mlx_backend_falls_back_when_unavailable():
+    # mlx-lm isn't installed here; scanner must degrade to regex, not crash.
+    from deid.qc.llm_scan import ResidualPIIScanner
+    s = ResidualPIIScanner(backend="mlx")
+    hits = {h["type"] for h in s.scan("call 555-123-4567")}
+    assert "PHONE_NUMBER" in hits  # regex fallback still catches it
+
+
+def test_unstructured_detector_uses_scanner_not_presidio():
+    from deid.qc.builders.unstructured import UnstructuredDetector
+    import deid.qc.builders.unstructured as u
+    assert not hasattr(u, "_get_analyzer") and "presidio" not in (u.__doc__ or "").lower()
+    d = UnstructuredDetector(patient_mapping_dict={}, enc_mapping_dict={},
+                             qc_config={"residual_pii_backend": "regex"},
+                             column_config={"column_name": "note"},
+                             patient_id_column=None, enc_id_column=None)
+    rows = [{"note": "clean text"}, {"note": "call 555-123-4567"}, {"note": None}]
+    r = d.is_deidentified(before_rows=[], after_rows=rows, ignore_condition={}, pii_info={})
+    assert r["passed_count"] == 2 and r["failed_count"] == 1
+    assert "residual_pii_remarks" in r["remarks"]
+
+
 def test_master_phi_audit_end_to_end(tmp_path):
     from deid.qc.master_phi import MasterPhiConfig, run_master_phi_audit
     tmp = str(tmp_path)
