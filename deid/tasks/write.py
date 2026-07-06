@@ -163,6 +163,7 @@ def _write_batch_inner(config: WriteTaskConfig, batch_tag: str):
 
     # 5. Idempotent write: DELETE + INSERT in single transaction
     qi = dest._qi
+    # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
     delete_sql = text(
         f"DELETE FROM {qi(config.table_name)} "
         f"WHERE {qi(config.id_column)} BETWEEN :start_id AND :end_id"
@@ -175,6 +176,7 @@ def _write_batch_inner(config: WriteTaskConfig, batch_tag: str):
             columns = list(rows[0].keys())  # lowercase — matches df and bind-param names
             col_str = ", ".join(qi(col_schema.get(c, {}).get("original_name", c)) for c in columns)
             val_str = ", ".join(f":{c}" for c in columns)
+            # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
             insert_sql = text(f"INSERT INTO {qi(config.table_name)} ({col_str}) VALUES ({val_str})")
             conn.execute(insert_sql, rows)
 

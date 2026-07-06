@@ -485,6 +485,14 @@ class JoinMapping:
             )
             .where(mapping_table.c[id_column].in_(ids))
         )
+        # Only carry forward ACTIVE mappings. After a transfer, the same
+        # encounter/appointment/chart id can have both an active ('Y') and a
+        # soft-deleted ('N') row; without this filter the left join fans out and
+        # duplicates source rows with conflicting nd_patient_id. Mirrors the
+        # preload path (celery_app._fetch_mapping_table). Guarded so tables that
+        # predate the column still work.
+        if "nd_ActiveFlag" in mapping_table.c:
+            stmt = stmt.where(mapping_table.c.nd_ActiveFlag == "Y")
         with self.engine.connect() as conn:
             df_mapping = _sql_result_to_polars(conn.execute(stmt))
 

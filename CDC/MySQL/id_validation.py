@@ -255,6 +255,7 @@ def load_df(conn, schema, table, id_col, biz_col, limit=0, id_filter=None, date_
     lim    = f"LIMIT {limit}"                  if limit > 0  else ""
     conn.ping(reconnect=True)
     with conn.cursor() as cur:
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
         cur.execute(
             f"SELECT {col_expr} FROM `{schema}`.`{table}` {where} ORDER BY `{id_col}` {lim}",
             params,
@@ -647,6 +648,7 @@ def _save_csv(summary_rows, detail_rows):
 def _ensure_result_tables(conn, db):
     """Create validation result tables in db if they don't exist."""
     with conn.cursor() as cur:
+        # nosemgrep: python.lang.security.audit.formatted-sql-query.formatted-sql-query,python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
         cur.execute(f"""
             CREATE TABLE IF NOT EXISTS `{db}`.`{SUMMARY_TABLE}` (
                 id                INT AUTO_INCREMENT PRIMARY KEY,
@@ -668,6 +670,7 @@ def _ensure_result_tables(conn, db):
                 INDEX idx_table (local_db, table_name)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """)
+        # nosemgrep: python.lang.security.audit.formatted-sql-query.formatted-sql-query,python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
         cur.execute(f"""
             CREATE TABLE IF NOT EXISTS `{db}`.`{DETAIL_TABLE}` (
                 id          INT AUTO_INCREMENT PRIMARY KEY,

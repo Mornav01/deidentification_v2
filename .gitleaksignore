@@ -1,0 +1,18 @@
+# Gitleaks allowlist — historical findings only.
+# All three files below were removed from the codebase in the current branch;
+# these fingerprints refer to secrets that exist only in old git history.
+#
+# ⚠️  Findings 1 and 2 are REAL credentials. They are exposed in git history and
+#     MUST be treated as compromised and ROTATED at the source (see PR notes).
+#     Ignoring them here only silences CI — it does NOT make them safe.
+#
+# Finding 3 is a false positive (a Django migration dependency name).
+
+# 1) MSSQL read-only DB password — ROTATE
+b8d047a5a1e8ec8b3170d8344d79bd27d0d46c45:NOTEBOOK/JWM/incremental_mapping_update.py:generic-api-key:11
+
+# 2) Keycloak client secret default in Django settings — ROTATE
+5719e02c56dd816dad95c3b12491cc9e533cfb03:deIdentification/deIdentification/settings.py:generic-api-key:205
+
+# 3) False positive — Django migration dependency tuple, not a secret
+5719e02c56dd816dad95c3b12491cc9e533cfb03:deIdentification/nd_api/migrations/0005_alter_ignorerowsdeidentificaiton_db_name_and_more.py:generic-api-key:9

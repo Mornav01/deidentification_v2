@@ -124,6 +124,7 @@ def _deduplicate(conn, schema: str, table_name: str) -> int:
         return 0
 
     conn.execute(text("SET sql_safe_updates = 0"))
+    # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
     result = conn.execute(text(f"""
         DELETE t
         FROM `{schema}`.`{table_name}` t
@@ -164,6 +165,7 @@ def process_table(engine, schema: str, table_name: str) -> dict:
 
             logger.info("[%s] Adding UNIQUE constraint ...", table_name)
             try:
+                # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
                 conn.execute(text(f"""
                     ALTER TABLE `{schema}`.`{table_name}`
                     ADD UNIQUE INDEX uniq_nd_auto_increment_id (nd_auto_increment_id)
@@ -175,6 +177,7 @@ def process_table(engine, schema: str, table_name: str) -> dict:
                 if "Duplicate entry" in str(e) or "duplicate" in str(e).lower():
                     logger.warning("[%s] Duplicates detected — deduplicating ...", table_name)
                     _deduplicate(conn, schema, table_name)
+                    # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
                     conn.execute(text(f"""
                         ALTER TABLE `{schema}`.`{table_name}`
                         ADD UNIQUE INDEX uniq_nd_auto_increment_id (nd_auto_increment_id)

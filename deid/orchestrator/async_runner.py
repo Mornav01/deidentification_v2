@@ -53,13 +53,15 @@ async def run(config: DeidConfig, config_path: str):
     # ── Load pii_config from file if needed ───────────────────────────────
     if config.pii_db and not config.pii_config and config.pii_config_path:
         import yaml as _yaml
+        from deid.config.loader import _interpolate_env_vars
         with open(config.pii_config_path) as f:
-            config.pii_config = _yaml.safe_load(f)
+            config.pii_config = _interpolate_env_vars(_yaml.safe_load(f))
 
     if not config.secondary_pii_configs and config.secondary_pii_config_path:
         import yaml as _yaml
+        from deid.config.loader import _interpolate_env_vars
         with open(config.secondary_pii_config_path) as f:
-            config.secondary_pii_configs = _yaml.safe_load(f)
+            config.secondary_pii_configs = _interpolate_env_vars(_yaml.safe_load(f))
 
     if config.table_overrides_path and not config.table_overrides:
         import yaml as _yaml
@@ -416,9 +418,11 @@ async def _setup_phase(config: DeidConfig, state_engine):
                         _qi = _dest._qi
                         with _dest.engine.begin() as _conn:
                             # Identifiers quoted via _qi (config-sourced, not user input).
+                            # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
                             _conn.execute(_sa_text(  # nosec
                                 f"DROP TABLE IF EXISTS {_qi(_dst_schema)}.{_qi(tname)}"
                             ))
+                            # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
                             _conn.execute(_sa_text(  # nosec
                                 f"CREATE TABLE {_qi(_dst_schema)}.{_qi(tname)} "
                                 f"AS SELECT * FROM {_qi(_src_schema)}.{_qi(tname)}"
@@ -433,6 +437,7 @@ async def _setup_phase(config: DeidConfig, state_engine):
                         _src = NDDBHandler(config.source_db.connection_string(), read_only=True)
                         _dest = NDDBHandler(config.destination_db.connection_string())
                         with _dest.engine.begin() as _conn:
+                            # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
                             _conn.execute(_sa_text(  # nosec
                                 f"DROP TABLE IF EXISTS {_dest._qi(tname)}"
                             ))

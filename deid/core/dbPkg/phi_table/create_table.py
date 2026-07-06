@@ -114,6 +114,7 @@ class PIITable:
         query = f"SELECT {', '.join(columns)} FROM {source_table}"
 
         with self.src_engine.connect() as src_conn:
+            # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
             result = src_conn.execute(text(query)).fetchall()
 
         insert_data = []

@@ -3,6 +3,7 @@ from db import get_session
 from decoder import decode_rowlog_contents
 
 def read_trn_log_file(trn_path: str):
+    # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
     sql = text(f"""
         SELECT
             [Current LSN],

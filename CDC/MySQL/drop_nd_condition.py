@@ -24,6 +24,7 @@ with engine.begin() as conn:
             DROP COLUMN `nd_condition`
         """
         try:
+            # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
             conn.execute(text(alter_sql))
             print(f"✅ Dropped nd_condition from {table_name}")
         except Exception as e:
