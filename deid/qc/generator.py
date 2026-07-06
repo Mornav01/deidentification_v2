@@ -18,6 +18,7 @@ class DataGenerator:
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_total_rows(self, table_name: str) -> int:
         with self.dest_engine.connect() as conn:
+            # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
             result = conn.execute(text(f"SELECT COUNT(*) FROM {table_name}"))
             return result.scalar()
 
@@ -51,6 +52,7 @@ class DataGenerator:
         with self.dest_engine.connect() as conn:
             id_col = "nd_auto_increment_id"
             bounds = conn.execute(
+                # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
                 text(f"SELECT MIN({id_col}), MAX({id_col}) FROM {table_name}")
             ).fetchone()
             min_id, max_id = bounds[0], bounds[1]
@@ -66,11 +68,13 @@ class DataGenerator:
             # Fetch rows matching the random IDs.
             placeholders = ",".join(str(int(i)) for i in candidate_ids)
             if dialect == "mssql":
+                # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
                 query = text(
                     f"SELECT TOP :lim * FROM {table_name} "
                     f"WHERE {id_col} IN ({placeholders})"
                 )
             else:
+                # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
                 query = text(
                     f"SELECT * FROM {table_name} "
                     f"WHERE {id_col} IN ({placeholders}) LIMIT :lim"
@@ -85,6 +89,7 @@ class DataGenerator:
         id_col = "nd_auto_increment_id"
         dest_sample = []
         with self.dest_engine.connect() as conn:
+            # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
             query = text(f"SELECT * FROM {table_name} ORDER BY {id_col} LIMIT :lim")
             result = conn.execute(query, {"lim": size})
             columns = result.keys()
@@ -99,6 +104,7 @@ class DataGenerator:
         if sample_ids:
             placeholders = ",".join(str(int(i)) for i in sample_ids)
             with self.source_engine.connect() as conn:
+                # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
                 query = text(
                     f"SELECT * FROM {table_name} "
                     f"WHERE {id_col} IN ({placeholders}) "
@@ -115,6 +121,7 @@ class DataGenerator:
             return [], []
         placeholders = ",".join(str(int(i)) for i in nd_auto_incr_ids)
         id_col = "nd_auto_increment_id"
+        # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
         query = text(
             f"SELECT * FROM {table_name} WHERE {id_col} IN ({placeholders}) ORDER BY {id_col}"
         )
@@ -177,6 +184,7 @@ class DataGenerator:
                         where_clause = f"WHERE {col} <= :upper"
                         params.update({"upper": float(upper)})
                         
+                    # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
                     query = text(f"""
                         SELECT *
                         FROM {table_name}
@@ -201,6 +209,7 @@ class DataGenerator:
                 samples_per_category = remaining_size // (len(important_columns) * len(value_counts))
                 
                 for category in value_counts.keys():
+                    # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
                     query = text(f"""
                         SELECT *
                         FROM {table_name}

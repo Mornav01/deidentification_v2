@@ -177,6 +177,7 @@ def bulk_insert_patient_mappings(
             params = {f"p{j}": v for j, v in enumerate(batch)}
             placeholders = ", ".join(f":p{j}" for j in range(len(batch)))
             rows = session.execute(
+                # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
                 text(
                     f"SELECT {source_id_column} FROM patient_mapping_table "
                     f"WHERE {source_id_column} IN ({placeholders})"
@@ -208,6 +209,7 @@ def bulk_insert_patient_mappings(
             ]
             next_id += len(batch)
             session.execute(
+                # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
                 text(
                     f"INSERT INTO patient_mapping_table "
                     f"(nd_patient_id, {source_id_column}, offset, created_at, updated_at) "

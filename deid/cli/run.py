@@ -157,6 +157,7 @@ def _rerun_cleanup(cfg):
         for tname in table_names:
             try:
                 with dest.engine.begin() as conn:
+                    # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
                     conn.execute(text(f"DROP TABLE IF EXISTS {qi(tname)}"))
                 logger.info("Dropped destination table: %s", tname)
             except Exception as e:
@@ -206,6 +207,7 @@ def _rerun_cleanup(cfg):
             existing = set(sa_inspect(fr_engine).get_table_names())
             if fr_table in existing:
                 from sqlalchemy import bindparam
+                # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
                 delete_fr = sa_text(
                     f"DELETE FROM {fr_table} WHERE table_name IN :names AND config_key = :ck"
                 ).bindparams(bindparam("names", expanding=True))

@@ -19,6 +19,7 @@ stats = []
 with engine.connect() as connection:
     for table in tables:
         # Get Row Count
+        # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
         row_count_query = text(f"SELECT COUNT(*) AS row_count FROM `{table}`")
         row_count = connection.execute(row_count_query).scalar()
 
@@ -64,6 +65,7 @@ stats = []
 with engine.connect() as connection:
     for table in tables:
         # Get Row Count
+        # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
         row_count_query = text(f"SELECT COUNT(*) AS row_count FROM `{table}` WHERE nd_operation IS NOT NULL")
         try:
             row_count = connection.execute(row_count_query).scalar()

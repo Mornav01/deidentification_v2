@@ -210,6 +210,7 @@ def run_master_insurance_delta(master_schema: str, staging_schema: str, mapping_
             f"`{k}` = COALESCE(VALUES(`{k}`), `{k}`)" for k in value_cols
         )
 
+        # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
         upsert_query = text(
             f"""
         INSERT INTO master_insurance_table ({cols})

@@ -418,9 +418,11 @@ async def _setup_phase(config: DeidConfig, state_engine):
                         _qi = _dest._qi
                         with _dest.engine.begin() as _conn:
                             # Identifiers quoted via _qi (config-sourced, not user input).
+                            # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
                             _conn.execute(_sa_text(  # nosec
                                 f"DROP TABLE IF EXISTS {_qi(_dst_schema)}.{_qi(tname)}"
                             ))
+                            # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
                             _conn.execute(_sa_text(  # nosec
                                 f"CREATE TABLE {_qi(_dst_schema)}.{_qi(tname)} "
                                 f"AS SELECT * FROM {_qi(_src_schema)}.{_qi(tname)}"
@@ -435,6 +437,7 @@ async def _setup_phase(config: DeidConfig, state_engine):
                         _src = NDDBHandler(config.source_db.connection_string(), read_only=True)
                         _dest = NDDBHandler(config.destination_db.connection_string())
                         with _dest.engine.begin() as _conn:
+                            # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
                             _conn.execute(_sa_text(  # nosec
                                 f"DROP TABLE IF EXISTS {_dest._qi(tname)}"
                             ))

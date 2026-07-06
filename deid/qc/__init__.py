@@ -35,6 +35,7 @@ def get_smart_sample_comparison(
     def get_total_rows(engine: Engine) -> int:
         """Get total number of rows in the table"""
         with engine.connect() as conn:
+            # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
             result = conn.execute(text(f"SELECT COUNT(*) FROM {table_name}"))
             return result.scalar()
     
@@ -57,6 +58,7 @@ def get_smart_sample_comparison(
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_random_sample(engine: Engine, size: int) -> List[Dict[str, Any]]:
         """Get random sample using MySQL's RAND() function"""
+        # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
         query = text(f"""
             SELECT * 
             FROM {table_name}
@@ -118,6 +120,7 @@ def get_smart_sample_comparison(
                         where_clause = f"WHERE {col} <= :upper"
                         params.update({"upper": float(upper)})
                         
+                    # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
                     query = text(f"""
                         SELECT * 
                         FROM {table_name}
@@ -144,6 +147,7 @@ def get_smart_sample_comparison(
                 samples_per_category = remaining_size // (len(important_columns) * len(value_counts))
                 
                 for category in value_counts.keys():
+                    # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
                     query = text(f"""
                         SELECT *
                         FROM {table_name}

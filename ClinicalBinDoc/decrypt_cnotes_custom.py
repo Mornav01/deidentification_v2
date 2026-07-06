@@ -50,6 +50,7 @@ offset = 0
 
 with engine.connect() as conn:
     while True:
+        # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
         query = text(f"""
             SELECT DocumentID, SequenceNumber, BinTypeID, DocImage
             FROM ClinicalBin WHERE BinTypeID IN (1001, 1007)

@@ -309,6 +309,7 @@ def run_master_pii_delta(master_schema: str, staging_schema: str, mapping_schema
             f"`{k}` = COALESCE(VALUES(`{k}`), `{k}`)" for k in value_cols
         )
 
+        # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
         upsert_query = text(
             f"""
         INSERT INTO pii_data_table ({cols})

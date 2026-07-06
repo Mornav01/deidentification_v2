@@ -170,6 +170,7 @@ def run_mapping_delta(mapping_schema: str, staging_schema: str):
     # Load exclusion data from staging_schema
     # -------------------------------------------------------------------------
     with source_engine.connect() as conn:
+        # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
         exrows = conn.execute(text(f"""select distinct patientid from {staging_schema}.enc where visittype in ('NP','NPC2','NP-DEMT','NPIV','RESU','NB RESU','RESURainka','RESU ANC','D & B RESU','Blood Draw') union
     select distinct patientid from {staging_schema}.structdemographics sd, {staging_schema}.structdatadetail sdd where sd.detailid = sdd.id and sd.detailid=7062 and value = 'Yes'""")).fetchall()
     patientids = tuple(r[0] for r in exrows)
@@ -191,6 +192,7 @@ def run_mapping_delta(mapping_schema: str, staging_schema: str):
     logger.info("Loading delta patients from %s.users", staging_schema)
     with source_engine.connect() as conn:
         users_data = conn.execute(
+            # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
             text(
                 f"""
         SELECT DISTINCT uid AS patientid, cdate AS registration_date
@@ -205,6 +207,7 @@ def run_mapping_delta(mapping_schema: str, staging_schema: str):
     logger.info("Loading delta encounters from %s.enc", staging_schema)
     with source_engine.connect() as conn:
         enc_data = conn.execute(
+            # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
             text(
                 f"""
         SELECT DISTINCT

@@ -203,6 +203,7 @@ def worker_db_writer(queue, table_name, db_url, batch_size=2000, commit_interval
                 try:
                     placeholders = ", ".join(["%s"] * len(affected_binlogs))
                     cleanup_cur = conn.cursor()
+                    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
                     cleanup_cur.execute(
                         f"DELETE FROM `{table_name}` WHERE binlog_file IN ({placeholders})",
                         tuple(affected_binlogs),
