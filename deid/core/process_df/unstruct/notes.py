@@ -1013,20 +1013,32 @@ class NotesRule(RuleBase):
         if not replace_rules:
             return masked_col
 
+        # Group old_values by their shared replacement so every term mapping to
+        # the same masking token collapses into ONE alternation regex → one
+        # Polars pass per distinct replacement instead of one pass per rule
+        # (mirrors the prebuilt-pattern approach in the mask/regex paths).
+        by_replacement: dict = {}  # new_value -> [old_value, ...]
         for rule in replace_rules:
             old_value = rule.get("old_value")
             new_value = rule.get("new_value")
             if old_value and new_value:
-                # \b is RE2-safe. The original (?<![A-Za-z0-9])…(?![A-Za-z0-9]) used
-                # lookbehind which is unsupported in both google-re2 AND Polars' Rust
-                # regex engine, so it was already silently failing via the except branch.
-                pattern = r"(?i)\b{}\b".format(re.escape(str(old_value)))
-                try:
-                    masked_col = masked_col.str.replace_all(pattern, new_value)
-                except Exception as e:
-                    nd_logger.warning(
-                        f"[{self.__class__.__name__}] Replace-value pattern failed: {e}"
-                    )
+                by_replacement.setdefault(new_value, []).append(str(old_value))
+
+        for new_value, old_values in by_replacement.items():
+            # Longer terms first so a fuller phrase ("Dent Institute") is
+            # preferred over a substring term ("DENT") sharing the same token.
+            terms = sorted(set(old_values), key=len, reverse=True)
+            # \b is RE2-safe. The original (?<![A-Za-z0-9])…(?![A-Za-z0-9]) used
+            # lookbehind which is unsupported in both google-re2 AND Polars' Rust
+            # regex engine, so it was already silently failing via the except branch.
+            alternation = "|".join(rf"\b{re.escape(t)}\b" for t in terms)
+            pattern = rf"(?i)(?:{alternation})"
+            try:
+                masked_col = masked_col.str.replace_all(pattern, new_value)
+            except Exception as e:
+                nd_logger.warning(
+                    f"[{self.__class__.__name__}] Replace-value pattern failed: {e}"
+                )
         return masked_col
 
     # ------------------------------------------------------------------
