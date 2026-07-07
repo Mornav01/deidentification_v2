@@ -449,8 +449,14 @@ async def _setup_phase(config: DeidConfig, state_engine):
                             _type_str = "VARCHAR(255)" if isinstance(_col_type, SAEnum) else (
                                 str(_col_type) if _col_type is not None else ""
                             )
-                            col_schema[_c["name"].lower()] = {
-                                "original_name": _c["name"],
+                            _lname = _c["name"].lower()
+                            col_schema[_lname] = {
+                                # Use lowercase for original_name so _create_dest_table
+                                # creates lowercase column names that match what
+                                # stream_table_as_dataframes yields (it lowercases all
+                                # column names).  Without this, insert_dataframe_in_batches
+                                # would find no column-name matches and insert NULL-only rows.
+                                "original_name": _lname,
                                 "type": _type_str,
                                 "length": int(_length) if _length else None,
                             }

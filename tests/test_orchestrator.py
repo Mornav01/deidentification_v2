@@ -273,3 +273,97 @@ def test_setup_phase_passthrough_copy_failure_marks_failed_not_celery(tmp_path):
             assert ts is not None
             assert ts.status == "pending", f"{tname}: expected pending, got {ts.status}"
             assert s.query(BatchState).filter_by(table_name=tname).count() > 0
+
+
+def test_setup_phase_passthrough_cross_server_lowercase_columns(tmp_path):
+    """
+    Regression test: MSSQL source columns may have mixed/upper case names (e.g.
+    'EXPIRATIONDATE').  stream_table_as_dataframes lowercases all column names in
+    the returned DataFrames.  _create_dest_table must therefore create the destination
+    table with lowercase column names so insert_dataframe_in_batches can match them.
+
+    If original_name were kept in original case, insert_dataframe_in_batches would find
+    select_cols=[] (case-sensitive mismatch) and MySQL would INSERT rows with all NULLs.
+    """
+    import asyncio
+    import polars as pl
+    from unittest.mock import patch, MagicMock, call
+    from deid.config.schema import TableConfig
+
+    # Cross-server: MSSQL source → MySQL dest (different host/port/type).
+    from deid.config.schema import DbConfig
+    config_kwargs = dict(
+        state_db_path=str(tmp_path / "state.db"),
+        mappings_db_path=str(tmp_path / "mappings.db"),
+        tables=[TableConfig(name="lab_codes", rules={})],  # pass-through
+        source_db=DbConfig(type="mssql", host="mssql-host", port=1433, database="src", username="u", password="p"),
+        destination_db=DbConfig(type="mysql", host="mysql-host", port=3306, database="dest", username="u", password="p"),
+    )
+    from deid.config.schema import DeidConfig, WorkerSettings, QCSettings
+    config = DeidConfig(workers=WorkerSettings(), qc=QCSettings(), mapping_tables={}, **config_kwargs)
+
+    # Source returns mixed-case column metadata (as MSSQL would).
+    from sqlalchemy import Integer, String
+    mock_col_type_int = MagicMock()
+    mock_col_type_int.__class__.__name__ = "INTEGER"
+    type(mock_col_type_int).__name__ = "INTEGER"
+    mock_col_type_str = MagicMock()
+    mock_col_type_str.__class__.__name__ = "VARCHAR"
+    type(mock_col_type_str).__name__ = "VARCHAR"
+
+    src_cols = [
+        {"name": "LabCodeID",      "type": mock_col_type_int},
+        {"name": "EXPIRATIONDATE", "type": mock_col_type_str},
+        {"name": "CodeDesc",       "type": mock_col_type_str},
+    ]
+
+    # DataFrame yielded by stream_table_as_dataframes already has lowercased columns.
+    streamed_df = pl.DataFrame({
+        "labcodeid":      [1, 2],
+        "expirationdate": ["2025-01-01", "2025-06-01"],
+        "codedesc":       ["A", "B"],
+    })
+
+    inserted_dfs = []
+
+    def _fake_insert(df, table_name, batch_size=10000):
+        inserted_dfs.append(df)
+
+    mock_src = MagicMock()
+    mock_src.get_exact_row_count.return_value = 2
+    mock_src.get_columns.return_value = src_cols
+    mock_src.stream_table_as_dataframes.return_value = iter([streamed_df])
+
+    mock_dest = MagicMock()
+    mock_dest._qi = lambda x: f"`{x}`"
+    mock_dest.engine.begin.return_value.__enter__ = MagicMock(return_value=MagicMock())
+    mock_dest.engine.begin.return_value.__exit__ = MagicMock(return_value=False)
+    mock_dest.insert_dataframe_in_batches.side_effect = _fake_insert
+
+    from deid.models.base import create_state_engine, create_all_state_tables
+    state_engine = create_state_engine(str(tmp_path / "state.db"))
+    create_all_state_tables(state_engine)
+
+    def _handler_factory(conn_str, **kw):
+        if "mssql" in conn_str or "1433" in conn_str:
+            return mock_src
+        return mock_dest
+
+    with patch("deid.core.dbPkg.dbhandler.NDDBHandler", side_effect=_handler_factory):
+        with patch("deid.tasks.write._create_dest_table") as mock_create_dest:
+            from deid.orchestrator.async_runner import _setup_phase
+            asyncio.run(_setup_phase(config, state_engine))
+
+    # _create_dest_table must have been called with lowercase original_names.
+    assert mock_create_dest.called, "_create_dest_table was not called"
+    _, _, col_schema_arg = mock_create_dest.call_args[0]
+    for key, info in col_schema_arg.items():
+        assert key == key.lower(), f"col_schema key not lowercase: {key!r}"
+        assert info["original_name"] == info["original_name"].lower(), (
+            f"original_name not lowercase for {key!r}: {info['original_name']!r}"
+        )
+
+    # insert_dataframe_in_batches was called with the streamed DataFrame (not empty).
+    assert len(inserted_dfs) == 1
+    assert inserted_dfs[0].height == 2, "Expected 2 rows, not empty/null rows"
+    assert set(inserted_dfs[0].columns) == {"labcodeid", "expirationdate", "codedesc"}
