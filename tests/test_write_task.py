@@ -121,3 +121,27 @@ def test_write_batch_failure_resets_batch_via_reset_or_fail(tmp_path, state_engi
         assert batch.status == "failed"
         assert batch.retry_count == 1
         assert "simulated write failure" in (batch.last_failed_reason or "")
+
+
+# ---------------------------------------------------------------------------
+# _clean_type_str — TEXT / TEXT(n) normalization for MSSQL→MySQL
+# ---------------------------------------------------------------------------
+
+def test_clean_type_str_bare_text_becomes_longtext():
+    from deid.tasks.write import _clean_type_str
+    assert _clean_type_str("TEXT") == "LONGTEXT"
+
+
+def test_clean_type_str_text_with_small_n_becomes_longtext():
+    from deid.tasks.write import _clean_type_str
+    assert _clean_type_str("TEXT(100)") == "LONGTEXT"
+
+
+def test_clean_type_str_text_with_large_n_becomes_longtext():
+    from deid.tasks.write import _clean_type_str
+    assert _clean_type_str("TEXT(8000)") == "LONGTEXT"
+
+
+def test_clean_type_str_ntext_still_longtext():
+    from deid.tasks.write import _clean_type_str
+    assert _clean_type_str("NTEXT") == "LONGTEXT"
