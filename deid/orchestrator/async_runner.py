@@ -449,14 +449,8 @@ async def _setup_phase(config: DeidConfig, state_engine):
                             _type_str = "VARCHAR(255)" if isinstance(_col_type, SAEnum) else (
                                 str(_col_type) if _col_type is not None else ""
                             )
-                            _lname = _c["name"].lower()
-                            col_schema[_lname] = {
-                                # Use lowercase for original_name so _create_dest_table
-                                # creates lowercase column names that match what
-                                # stream_table_as_dataframes yields (it lowercases all
-                                # column names).  Without this, insert_dataframe_in_batches
-                                # would find no column-name matches and insert NULL-only rows.
-                                "original_name": _lname,
+                            col_schema[_c["name"].lower()] = {
+                                "original_name": _c["name"],
                                 "type": _type_str,
                                 "length": int(_length) if _length else None,
                             }
@@ -466,7 +460,20 @@ async def _setup_phase(config: DeidConfig, state_engine):
                                 f"DROP TABLE IF EXISTS {_dest._qi(tname)}"
                             ))
                         _create_dest_table(_dest, tname, col_schema)
+                        # stream_table_as_dataframes lowercases all column names;
+                        # the dest DDL uses original_name (original DB case).
+                        # Rename df columns back to original case so
+                        # insert_dataframe_in_batches finds them in select_cols.
+                        _rename_map = {
+                            k: v["original_name"]
+                            for k, v in col_schema.items()
+                            if k != v["original_name"]
+                        }
                         for _chunk in _src.stream_table_as_dataframes(tname, _bs):
+                            if _rename_map:
+                                _chunk = _chunk.rename(
+                                    {k: v for k, v in _rename_map.items() if k in _chunk.columns}
+                                )
                             _dest.insert_dataframe_in_batches(_chunk, tname, _bs)
                         _src.close()
                         _dest.close()

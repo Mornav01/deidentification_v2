@@ -354,16 +354,19 @@ def test_setup_phase_passthrough_cross_server_lowercase_columns(tmp_path):
             from deid.orchestrator.async_runner import _setup_phase
             asyncio.run(_setup_phase(config, state_engine))
 
-    # _create_dest_table must have been called with lowercase original_names.
+    # _create_dest_table must have been called with original-case original_names.
     assert mock_create_dest.called, "_create_dest_table was not called"
     _, _, col_schema_arg = mock_create_dest.call_args[0]
     for key, info in col_schema_arg.items():
         assert key == key.lower(), f"col_schema key not lowercase: {key!r}"
-        assert info["original_name"] == info["original_name"].lower(), (
-            f"original_name not lowercase for {key!r}: {info['original_name']!r}"
+        # original_name must preserve source DB case — NOT forced lowercase.
+        # The destination DDL uses original_name, so it keeps the source casing.
+        assert info["original_name"] in {"LabCodeID", "EXPIRATIONDATE", "CodeDesc"}, (
+            f"original_name should be original case, got {info['original_name']!r}"
         )
 
-    # insert_dataframe_in_batches was called with the streamed DataFrame (not empty).
+    # insert_dataframe_in_batches was called with columns renamed to original case.
     assert len(inserted_dfs) == 1
     assert inserted_dfs[0].height == 2, "Expected 2 rows, not empty/null rows"
-    assert set(inserted_dfs[0].columns) == {"labcodeid", "expirationdate", "codedesc"}
+    # Columns must be in original case (matching the dest DDL) so select_cols matches.
+    assert set(inserted_dfs[0].columns) == {"LabCodeID", "EXPIRATIONDATE", "CodeDesc"}
