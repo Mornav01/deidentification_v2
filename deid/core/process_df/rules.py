@@ -277,9 +277,14 @@ class BaseDateOffsetRule(RuleBase):
                 nd_logger.warning(
                     f"[{self.__class__.__name__}] Date shift overflow: "
                     f"date_str={date_str!r}  parsed={parsed}  offset_days={offset_days} "
-                    f"— leaving original value unchanged"
+                    f"— clamping to MySQL max datetime 9999-12-31"
                 )
-                return date_str
+                _clamped = datetime(9999, 12, 31, 23, 59, 59)
+                if re.search(r"\d{2}:\d{2}:\d{2}", date_str):
+                    _clamped_str = _clamped.strftime("%Y-%m-%d %H:%M:%S")
+                else:
+                    _clamped_str = _clamped.strftime("%Y-%m-%d")
+                return f" {_clamped_str} " if self.is_notes else _clamped_str
             if re.search(r"\d{2}:\d{2}:\d{2}", date_str):
                 shifted_str = shifted.strftime("%Y-%m-%d %H:%M:%S")
             else:
@@ -335,7 +340,20 @@ class BaseDateOffsetRule(RuleBase):
             parsed - pl.duration(days=36524)  # subtract ~100 years (365.24 days × 100)
         ).otherwise(parsed)
 
-        shifted = (parsed + pl.duration(days=offset_expr)).dt.strftime(output_fmt)
+        shifted = parsed + pl.duration(days=offset_expr)
+        # Clamp to MySQL DATETIME range (1000-01-01 … 9999-12-31 23:59:59) before
+        # formatting. MSSQL source rows with far-future sentinel dates (e.g. year 10000)
+        # produce a shifted value that MySQL rejects with OperationalError 1292.
+        _mysql_max = datetime(9999, 12, 31, 23, 59, 59)
+        _mysql_min = datetime(1000, 1, 1, 0, 0, 0)
+        shifted = (
+            pl.when(shifted > pl.lit(_mysql_max, dtype=pl.Datetime))
+            .then(pl.lit(_mysql_max, dtype=pl.Datetime))
+            .when(shifted < pl.lit(_mysql_min, dtype=pl.Datetime))
+            .then(pl.lit(_mysql_min, dtype=pl.Datetime))
+            .otherwise(shifted)
+        )
+        shifted = shifted.dt.strftime(output_fmt)
 
         return df.with_columns(
             pl.when(null_or_empty)
