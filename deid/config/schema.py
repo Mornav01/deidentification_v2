@@ -9,6 +9,46 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, validate_call
 
 
+def validate_replace_value(pii_config, *, source: str = "pii_config") -> None:
+    """Validate the shape of ``pii_config['replace_value']``, raising ValueError
+    on malformed input so a bad ``REPLACE_VALUE_JSON`` fails at config-load time
+    rather than crashing mid-batch inside ``NotesRule._apply_replace_value``.
+
+    Accepted shapes (mirror what the runtime tolerates):
+      - a list of ``{old_value, new_value}`` dicts (canonical, from REPLACE_VALUE_JSON)
+      - an ``{old_value: new_value}`` mapping
+
+    ``source`` names the origin in error messages (e.g. ``secondary_pii_configs[0]``).
+    """
+    if not isinstance(pii_config, dict):
+        return
+    rv = pii_config.get("replace_value")
+    if rv is None:
+        return
+    hint = (
+        'Check REPLACE_VALUE_JSON — it must be a JSON list of '
+        '{"old_value": ..., "new_value": ...} objects.'
+    )
+    if isinstance(rv, dict):
+        return  # {old_value: new_value} mapping form
+    if not isinstance(rv, list):
+        raise ValueError(
+            f"{source}.replace_value must be a list of {{old_value, new_value}} dicts "
+            f"(or an {{old_value: new_value}} mapping), got {type(rv).__name__}. {hint}"
+        )
+    for i, entry in enumerate(rv):
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"{source}.replace_value[{i}] must be a {{old_value, new_value}} dict, "
+                f"got {type(entry).__name__}: {entry!r}. {hint}"
+            )
+        if "old_value" not in entry or "new_value" not in entry:
+            raise ValueError(
+                f"{source}.replace_value[{i}] is missing 'old_value' and/or 'new_value': "
+                f"{entry!r}. {hint}"
+            )
+
+
 class DbType(str, Enum):
     mysql = "mysql"
     mssql = "mssql"
@@ -149,6 +189,19 @@ class DeidConfig(BaseModel):
                     f"got {type(data).__name__}"
                 )
             self.reference_mappings = data
+        return self
+
+    @model_validator(mode="after")
+    def validate_pii_replace_value(self) -> "DeidConfig":
+        """Fail fast on a malformed inline ``replace_value``.
+
+        Configs that instead load pii_config from ``pii_config_path`` are
+        validated at their load site (async_runner / retry), since that
+        assignment happens after model construction.
+        """
+        validate_replace_value(self.pii_config)
+        for i, cfg in enumerate(self.secondary_pii_configs or []):
+            validate_replace_value(cfg, source=f"secondary_pii_configs[{i}]")
         return self
 
     @field_validator("config_key")

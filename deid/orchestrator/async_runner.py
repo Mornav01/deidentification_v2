@@ -54,14 +54,19 @@ async def run(config: DeidConfig, config_path: str):
     if config.pii_db and not config.pii_config and config.pii_config_path:
         import yaml as _yaml
         from deid.config.loader import _interpolate_env_vars
+        from deid.config.schema import validate_replace_value
         with open(config.pii_config_path) as f:
             config.pii_config = _interpolate_env_vars(_yaml.safe_load(f))
+        validate_replace_value(config.pii_config)
 
     if not config.secondary_pii_configs and config.secondary_pii_config_path:
         import yaml as _yaml
         from deid.config.loader import _interpolate_env_vars
+        from deid.config.schema import validate_replace_value
         with open(config.secondary_pii_config_path) as f:
             config.secondary_pii_configs = _interpolate_env_vars(_yaml.safe_load(f))
+        for _i, _cfg in enumerate(config.secondary_pii_configs or []):
+            validate_replace_value(_cfg, source=f"secondary_pii_configs[{_i}]")
 
     if config.table_overrides_path and not config.table_overrides:
         import yaml as _yaml

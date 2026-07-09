@@ -1013,14 +1013,41 @@ class NotesRule(RuleBase):
         if not replace_rules:
             return masked_col
 
+        # Normalize the configured shape into a list of (old_value, new_value)
+        # pairs. The canonical form (see docs/pii-config-reference.md and the
+        # REPLACE_VALUE_JSON env var) is a list of {old_value, new_value} dicts,
+        # but a malformed env var can yield a list containing bare strings or a
+        # plain {old: new} mapping. Tolerate those instead of crashing, and warn
+        # loudly on anything undropped — a silently skipped redaction term is a
+        # PHI-leak risk that must stay diagnosable.
+        pairs: list = []  # (old_value, new_value)
+        if isinstance(replace_rules, dict):
+            # {old_value: new_value} mapping form.
+            pairs = list(replace_rules.items())
+        elif isinstance(replace_rules, list):
+            for rule in replace_rules:
+                if isinstance(rule, dict):
+                    pairs.append((rule.get("old_value"), rule.get("new_value")))
+                else:
+                    nd_logger.warning(
+                        f"[{self.__class__.__name__}] Ignoring malformed replace_value "
+                        f"entry (expected {{old_value, new_value}} dict, got "
+                        f"{type(rule).__name__}): {rule!r}. Check REPLACE_VALUE_JSON."
+                    )
+        else:
+            nd_logger.warning(
+                f"[{self.__class__.__name__}] Ignoring malformed replace_value config "
+                f"(expected a list of {{old_value, new_value}} dicts, got "
+                f"{type(replace_rules).__name__}). Check REPLACE_VALUE_JSON."
+            )
+            return masked_col
+
         # Group old_values by their shared replacement so every term mapping to
         # the same masking token collapses into ONE alternation regex → one
         # Polars pass per distinct replacement instead of one pass per rule
         # (mirrors the prebuilt-pattern approach in the mask/regex paths).
         by_replacement: dict = {}  # new_value -> [old_value, ...]
-        for rule in replace_rules:
-            old_value = rule.get("old_value")
-            new_value = rule.get("new_value")
+        for old_value, new_value in pairs:
             if old_value and new_value:
                 by_replacement.setdefault(new_value, []).append(str(old_value))
 
