@@ -109,13 +109,30 @@ class RuleBase:
 # ID-replacement rules  (simple column alias — Polars expression, O(N))
 # ---------------------------------------------------------------------------
 
+def _resolved_ndpid_source(df: pl.DataFrame, column: str) -> str | None:
+    """Return the resolved nd_patient_id column to use for a given PHI column.
+
+    Prefers the per-column value ``_resolved_ndpid_col_{column}`` when present so that
+    tables with multiple patient-ID columns referring to *different* patients in the same
+    row (e.g. mergelogs FromID / ToID) each get their OWN de-identified value.  Falls back
+    to the row-level ``_resolved_nd_patient_id`` for the common single-patient case.
+    """
+    per_col = f"_resolved_ndpid_col_{column}"
+    if per_col in df.columns:
+        return per_col
+    if "_resolved_nd_patient_id" in df.columns:
+        return "_resolved_nd_patient_id"
+    return None
+
+
 class PatientIDRule(RuleBase):
 
     def apply(self, df: pl.DataFrame, column_config: Dict) -> pl.DataFrame:
         column = column_config["column_name"]
         nd_logger.info(f"[{self.__class__.__name__}] Applying PatientIDRule for column: {column}")
-        if "_resolved_nd_patient_id" in df.columns and column in df.columns:
-            df = df.with_columns(pl.col("_resolved_nd_patient_id").cast(pl.Int64, strict=False).alias(column))
+        source = _resolved_ndpid_source(df, column)
+        if source is not None and column in df.columns:
+            df = df.with_columns(pl.col(source).cast(pl.Int64, strict=False).alias(column))
         elif column in df.columns:
             nd_logger.warning(
                 f"[{self.__class__.__name__}] _resolved_nd_patient_id missing — "
@@ -146,8 +163,9 @@ class ReferencePIDRule(RuleBase):
     def apply(self, df: pl.DataFrame, column_config: Dict) -> pl.DataFrame:
         column = column_config["column_name"]
         nd_logger.info(f"[{self.__class__.__name__}] Applying ReferencePIDRule for column: {column}")
-        if "_resolved_nd_patient_id" in df.columns and column in df.columns:
-            df = df.with_columns(pl.col("_resolved_nd_patient_id").cast(pl.Int64, strict=False).alias(column))
+        source = _resolved_ndpid_source(df, column)
+        if source is not None and column in df.columns:
+            df = df.with_columns(pl.col(source).cast(pl.Int64, strict=False).alias(column))
         elif column in df.columns:
             nd_logger.warning(
                 f"[{self.__class__.__name__}] _resolved_nd_patient_id missing — "

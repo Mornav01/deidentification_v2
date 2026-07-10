@@ -231,18 +231,29 @@ def _process_batch_inner(config: ProcessTaskConfig, raw_config: dict):
                                  right_on="encounter_id", how="left", right_suffix="",
                                  drop_right_join_column=True)
 
-        # Direct patient mapping: one join per PATIENT_* rule, keyed by identifier column.
+        # Direct patient mapping: one join per PATIENT_* source column, keyed by identifier
+        # column. A rule may map several columns (e.g. mergelogs FromID/ToID, both patient IDs
+        # but referencing DIFFERENT patients); each is joined independently so it resolves to
+        # its own de-identified value. The first column keeps the identifier-keyed suffix for
+        # backward compatibility; the rest use a per-column suffix to avoid collisions.
         if pat_df is not None and key_phi_columns[1]:
             pat_cols = pat_df.columns
             for rule, columns in key_phi_columns[1].items():
                 if not columns:
                     continue
-                left_col = columns[0]
                 identifier_col = "patient_id" if rule == "PATIENT_ID" else rule.split("_")[-1].lower()
-                if identifier_col in pat_cols and left_col in df.columns:
+                if identifier_col not in pat_cols:
+                    continue
+                for idx, left_col in enumerate(columns):
+                    if left_col not in df.columns:
+                        continue
+                    right_suffix = (
+                        f"from_{identifier_col}_mapping" if idx == 0
+                        else f"from_col_{left_col}_mapping"
+                    )
                     df = join_dataframes(df, pat_df, left_on=left_col,
                                          right_on=identifier_col, how="left",
-                                         right_suffix=f"from_{identifier_col}_mapping",
+                                         right_suffix=right_suffix,
                                          drop_right_join_column=True)
 
         if pat_df is not None and key_phi_columns[2]:
