@@ -15,6 +15,11 @@ from deid.config.schema import DeidConfig
 from pydantic import validate_call
 
 _ENV_VAR_PATTERN = re.compile(r"\$\{(\w+)\}")
+# Whole-value token, optionally with a shell-style default: ${VAR} or ${VAR:-default}.
+# The default may itself contain ${...} tokens (e.g. ${SOURCE_DB_HOST:-${DB_HOST}})
+# and is resolved recursively. Greedy .* + trailing \} lets the nested closing
+# brace belong to the inner token rather than terminating the outer one.
+_WHOLE_TOKEN_PATTERN = re.compile(r"\$\{(\w+)(?::-(.*))?\}")
 
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
@@ -27,12 +32,23 @@ def _interpolate_env_vars(obj):
     supplied from one env var. Embedded/partial references and scalar values
     (ports, names, connection strings) fall back to plain string substitution,
     so existing configs are unaffected.
+
+    A whole-value token may carry a shell-style default: ``${VAR:-default}``
+    returns *default* when VAR is unset instead of raising. The default may be
+    a literal or itself a ``${OTHER}`` token (resolved recursively), e.g.
+    ``${SOURCE_DB_HOST:-${DB_HOST}}``.
     """
     if isinstance(obj, str):
-        whole = _ENV_VAR_PATTERN.fullmatch(obj)
+        whole = _WHOLE_TOKEN_PATTERN.fullmatch(obj)
         if whole is not None:
             var = whole.group(1)
+            default = whole.group(2)  # None when no ':-' is present
             val = os.environ.get(var)
+            # Shell ``:-`` semantics: fall back to the default when the var is
+            # unset OR empty ("" — how the .env parser stores a blank KEY=).
+            if default is not None and not val:
+                # Resolve the default (may contain its own ${...} tokens).
+                return _interpolate_env_vars(default)
             if val is None:
                 raise ValueError(f"Environment variable '{var}' not set (referenced in config)")
             try:

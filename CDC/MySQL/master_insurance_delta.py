@@ -164,9 +164,10 @@ def run_master_insurance_delta(master_schema: str, staging_schema: str, mapping_
     INSURANCE_VALUE_COLUMNS = [c for c in SOURCE_COLUMNS if c != "patient_id"]
 
     # -------------------------------------------------------------------------
-    # Resolve nd_patient_id, dedup to one row per patient (last wins), build payload
+    # Resolve nd_patient_id, keep ALL rows (insurance is multi-row per patient)
     # -------------------------------------------------------------------------
-    by_nd_patient: dict[int, dict] = {}
+    rows_to_insert = []
+    nd_patient_ids: set[int] = set()
     unmapped = 0
     for row in ins_data:
         source_record = dict(zip(SOURCE_COLUMNS, row))
@@ -175,18 +176,16 @@ def run_master_insurance_delta(master_schema: str, staging_schema: str, mapping_
         if nd_patient_id is None:
             unmapped += 1
             continue
-        # One row per patient (uq_nd_patient_id); later source rows overwrite earlier.
-        by_nd_patient[nd_patient_id] = {
-            "nd_patient_id": nd_patient_id,
-            "patientid": patient_id,
-            **source_record,
-        }
+        rows_to_insert.append(
+            {"nd_patient_id": nd_patient_id, "patientid": patient_id, **source_record}
+        )
+        nd_patient_ids.add(nd_patient_id)
 
-    data_for_upsert = list(by_nd_patient.values())
     logger.info(
-        "Insurance source rows: %d, distinct mapped patients: %d, unmapped (skipped): %d",
+        "Insurance source rows: %d, resolved rows: %d, distinct patients: %d, unmapped (skipped): %d",
         len(ins_data),
-        len(data_for_upsert),
+        len(rows_to_insert),
+        len(nd_patient_ids),
         unmapped,
     )
     if unmapped:
@@ -197,35 +196,35 @@ def run_master_insurance_delta(master_schema: str, staging_schema: str, mapping_
         )
 
     # -------------------------------------------------------------------------
-    # Upsert into master_insurance_table (keyed on uq_nd_patient_id)
+    # Refresh into master_insurance_table (multi-row): for every patient present
+    # in this delta, DELETE their existing rows then INSERT the fresh set. Patients
+    # not in the delta are untouched. One transaction.
     # -------------------------------------------------------------------------
-    if data_for_upsert:
-        # nd_patient_id is the upsert key; patientid + insurance columns are the values.
-        value_cols = ["patientid"] + INSURANCE_VALUE_COLUMNS
-        all_cols = ["nd_patient_id"] + value_cols
+    if rows_to_insert:
+        all_cols = ["nd_patient_id", "patientid"] + INSURANCE_VALUE_COLUMNS
         cols = ", ".join(f"`{k}`" for k in all_cols)
         params = ", ".join(f":{k}" for k in all_cols)
-        # NULL source values never clobber an existing stored value.
-        updates = ", ".join(
-            f"`{k}` = COALESCE(VALUES(`{k}`), `{k}`)" for k in value_cols
-        )
-
         # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
-        upsert_query = text(
-            f"""
-        INSERT INTO master_insurance_table ({cols})
-        VALUES ({params})
-        ON DUPLICATE KEY UPDATE {updates}
-        """
-        )
+        insert_query = text(f"INSERT INTO master_insurance_table ({cols}) VALUES ({params})")
 
+        ids = list(nd_patient_ids)
         with dest_engine.begin() as conn:
             conn.execute(text("SET SESSION sql_mode = '';"))
-            conn.execute(upsert_query, data_for_upsert)
+            for i in range(0, len(ids), 1000):
+                chunk = ids[i:i + 1000]
+                placeholders = ", ".join(f":p{j}" for j in range(len(chunk)))
+                # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
+                conn.execute(
+                    text(f"DELETE FROM master_insurance_table WHERE nd_patient_id IN ({placeholders})"),
+                    {f"p{j}": v for j, v in enumerate(chunk)},
+                )
+            conn.execute(insert_query, rows_to_insert)
 
-        logger.info("Upserted %d insurance records", len(data_for_upsert))
+        logger.info(
+            "Refreshed insurance for %d patients (%d rows)", len(ids), len(rows_to_insert)
+        )
     else:
-        logger.info("No insurance records to upsert")
+        logger.info("No insurance records to write")
 
     logger.info("Master insurance delta processing complete")
 
