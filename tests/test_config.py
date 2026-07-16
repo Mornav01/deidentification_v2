@@ -284,3 +284,39 @@ def test_qc_builders_do_not_use_presidio():
     assert not hasattr(unstructured, "_analyzer")
     assert not hasattr(unstructured, "_get_analyzer")
     assert "presidio_analyzer" not in sys.modules
+
+
+# ── JSON env-var parsing (new in mind-into-main) ─────────────────────────────
+
+def test_env_var_json_list_is_parsed(monkeypatch):
+    """A ${VAR} whose value is a JSON list is returned as a Python list."""
+    from deid.config.loader import _interpolate_env_vars
+
+    monkeypatch.setenv("DEID_TEST_LIST", '["a", "b", "c"]')
+    assert _interpolate_env_vars("${DEID_TEST_LIST}") == ["a", "b", "c"]
+
+
+def test_env_var_json_dict_is_parsed(monkeypatch):
+    """A ${VAR} whose value is a JSON object is returned as a Python dict."""
+    from deid.config.loader import _interpolate_env_vars
+
+    monkeypatch.setenv("DEID_TEST_DICT", '{"replace_value": "***", "n": 1}')
+    assert _interpolate_env_vars("${DEID_TEST_DICT}") == {"replace_value": "***", "n": 1}
+
+
+def test_env_var_json_scalar_stays_string(monkeypatch):
+    """A JSON number must NOT become an int — port numbers and names stay strings."""
+    from deid.config.loader import _interpolate_env_vars
+
+    monkeypatch.setenv("DEID_TEST_INT", "42")
+    result = _interpolate_env_vars("${DEID_TEST_INT}")
+    assert result == "42"
+    assert isinstance(result, str)
+
+
+def test_env_var_embedded_in_string_not_json_parsed(monkeypatch):
+    """${VAR} inside a larger string is plain-substituted, never JSON-parsed."""
+    from deid.config.loader import _interpolate_env_vars
+
+    monkeypatch.setenv("DEID_TEST_HOST", "localhost")
+    assert _interpolate_env_vars("mysql://${DEID_TEST_HOST}:3306") == "mysql://localhost:3306"

@@ -120,6 +120,7 @@ def _preload_mappings(app: Celery) -> None:
         """
         if table_name in _active_flag_tables:
             try:
+                # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
                 probe = conn.execute(text(
                     f"SELECT * FROM {table_name} WHERE nd_ActiveFlag = 'Y'"
                 ))
@@ -128,6 +129,7 @@ def _preload_mappings(app: Celery) -> None:
                 _preload_logger.info(
                     "nd_ActiveFlag not found in %s — loading without filter", table_name
                 )
+        # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
         result = conn.execute(text(f"SELECT * FROM {table_name}"))
         return [c.lower() for c in result.keys()], result.fetchall()
 

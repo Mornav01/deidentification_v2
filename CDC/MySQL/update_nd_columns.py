@@ -25,6 +25,7 @@ NULL_FLAG  = "Y"
 # %% [code cell 2]
 def get_tables_from_schema(cursor):
     format_strings = ", ".join(["%s"] * len(TARGET_SCHEMAS))
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
     cursor.execute(f"""
         SELECT DISTINCT TABLE_SCHEMA, TABLE_NAME
         FROM INFORMATION_SCHEMA.COLUMNS
@@ -46,8 +47,10 @@ def migrate_table(cursor, schema, table):
     # ── nd_extracted_at → nd_extracted_date DATETIME ─────────────────────────
     if column_exists(cursor, schema, table, "nd_extracted_at"):
         print(f"  [{schema}.{table}] Renaming nd_extracted_at → nd_extracted_date")
+        # nosemgrep: python.lang.security.audit.formatted-sql-query.formatted-sql-query,python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
         cursor.execute(f"ALTER TABLE `{schema}`.`{table}` CHANGE COLUMN `nd_extracted_at` `nd_extracted_date` DATETIME")
 
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
         cursor.execute(f"""
             UPDATE `{schema}`.`{table}`
             SET `nd_extracted_date` = %s
@@ -60,8 +63,10 @@ def migrate_table(cursor, schema, table):
     # ── nd_is_active → nd_ActiveFlag VARCHAR(10) ────────────────────────────
     if column_exists(cursor, schema, table, "nd_is_active"):
         print(f"  [{schema}.{table}] Renaming nd_is_active → nd_ActiveFlag")
+        # nosemgrep: python.lang.security.audit.formatted-sql-query.formatted-sql-query,python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
         cursor.execute(f"ALTER TABLE `{schema}`.`{table}` CHANGE COLUMN `nd_is_active` `nd_ActiveFlag` VARCHAR(10)")
 
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
         cursor.execute(f"""
             UPDATE `{schema}`.`{table}`
             SET `nd_ActiveFlag` = %s

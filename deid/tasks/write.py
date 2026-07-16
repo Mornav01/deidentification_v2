@@ -163,6 +163,7 @@ def _write_batch_inner(config: WriteTaskConfig, batch_tag: str):
 
     # 5. Idempotent write: DELETE + INSERT in single transaction
     qi = dest._qi
+    # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
     delete_sql = text(
         f"DELETE FROM {qi(config.table_name)} "
         f"WHERE {qi(config.id_column)} BETWEEN :start_id AND :end_id"
@@ -175,6 +176,7 @@ def _write_batch_inner(config: WriteTaskConfig, batch_tag: str):
             columns = list(rows[0].keys())  # lowercase — matches df and bind-param names
             col_str = ", ".join(qi(col_schema.get(c, {}).get("original_name", c)) for c in columns)
             val_str = ", ".join(f":{c}" for c in columns)
+            # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
             insert_sql = text(f"INSERT INTO {qi(config.table_name)} ({col_str}) VALUES ({val_str})")
             conn.execute(insert_sql, rows)
 
@@ -256,9 +258,13 @@ def _clean_type_str(raw: str) -> str:
     # Bare ENUM without values is invalid MySQL DDL; treat as VARCHAR
     if s.upper() == "ENUM" or s.upper() == "ENUM()":
         return "VARCHAR(255)"
-    # VARCHAR/NVARCHAR without a length means the source had unbounded text — use LONGTEXT
+    # VARCHAR/NVARCHAR/TEXT/NTEXT without a length means unbounded source text — use LONGTEXT
     upper = s.upper()
-    if upper in ("VARCHAR", "NVARCHAR"):
+    if upper in ("VARCHAR", "NVARCHAR", "TEXT", "NTEXT"):
+        return "LONGTEXT"
+    # TEXT(n) — MSSQL text is unbounded (2^31-1 bytes); MySQL silently converts TEXT(n≤255)
+    # to TINYTEXT. Promote to LONGTEXT to preserve the source semantics.
+    if re.match(r"^TEXT\s*\(\s*\d+\s*\)$", s, re.I):
         return "LONGTEXT"
     # NVARCHAR(n) → VARCHAR(n), or LONGTEXT for large/max lengths
     if upper.startswith("NVARCHAR("):

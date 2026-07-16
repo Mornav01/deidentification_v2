@@ -62,15 +62,18 @@ Built by `get_key_phi_column_list()` in `deid/core/process_df/main.py`.
 
 - **Step 1** — `_resolved_offset`: coalesce of all `offset_from_*_mapping` cols, falls back to `offset_days` config.
 - **Step 2** — `_resolved_nd_patient_id`: coalesce priority: referencepid > encounter > [PATIENT_* groups] > appointment > chart.
+- **Step 2b** — `_resolved_ndpid_col_{col}` for **each** PATIENT_* source column: that column's OWN de-identified value (from its own mapping join), *not* coalesced. This keeps two patient-ID columns in the same row that reference different patients (e.g. `mergelogs` FromID/ToID) from collapsing to one value. Consumed by `PatientIDRule` (falls back to `_resolved_nd_patient_id` when absent).
 - **Step 3** — `_resolved_{identifier}` for **every** identifier in `possible_patient_identifier_columns`, regardless of which rules the current table has. For a group's "own" identifier, uses the direct source column (the right join key was dropped).
 - **Step 4** — Drops all intermediate `*_from_*_mapping` columns.
+
+The identifier groups are **per source column**: the first column of each PATIENT_* rule keeps the identifier-keyed join suffix (`from_{identifier_col}_mapping`); additional columns use a per-column suffix (`from_col_{col}_mapping`) so their joins don't collide. Both mapping paths (`apply_patient_mappings` in `main.py` and the preloaded path in `process.py`) join **every** column of a rule, not just `columns[0]`.
 
 ### `_resolved_nd_patient_id`
 
 The de-identified patient ID. Used by:
 - `InvalidRowHandler` — null → row written to `failed_rows` SQLite table and excluded from output.
 - `NotesRule` — PII table lookup key (`PIITable._get_table` queries `pii_table.c.nd_patient_id`).
-- `DeIdentifier` / `PatientIDRule` — replacement value written to patient-ID columns.
+- `DeIdentifier` / `PatientIDRule` — replacement value written to patient-ID columns (per-column `_resolved_ndpid_col_{col}` takes precedence; see Step 2b).
 
 ### `_resolved_{identifier}` (e.g. `_resolved_patientid`, `_resolved_pid`)
 

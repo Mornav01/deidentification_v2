@@ -53,13 +53,20 @@ async def run(config: DeidConfig, config_path: str):
     # ── Load pii_config from file if needed ───────────────────────────────
     if config.pii_db and not config.pii_config and config.pii_config_path:
         import yaml as _yaml
+        from deid.config.loader import _interpolate_env_vars
+        from deid.config.schema import validate_replace_value
         with open(config.pii_config_path) as f:
-            config.pii_config = _yaml.safe_load(f)
+            config.pii_config = _interpolate_env_vars(_yaml.safe_load(f))
+        validate_replace_value(config.pii_config)
 
     if not config.secondary_pii_configs and config.secondary_pii_config_path:
         import yaml as _yaml
+        from deid.config.loader import _interpolate_env_vars
+        from deid.config.schema import validate_replace_value
         with open(config.secondary_pii_config_path) as f:
-            config.secondary_pii_configs = _yaml.safe_load(f)
+            config.secondary_pii_configs = _interpolate_env_vars(_yaml.safe_load(f))
+        for _i, _cfg in enumerate(config.secondary_pii_configs or []):
+            validate_replace_value(_cfg, source=f"secondary_pii_configs[{_i}]")
 
     if config.table_overrides_path and not config.table_overrides:
         import yaml as _yaml
@@ -396,15 +403,18 @@ async def _setup_phase(config: DeidConfig, state_engine):
             row_count = table_row_counts.get(tname, 0)
 
             # ── Pass-through: a table with no PHI rules needs no de-identification,
-            # so copy it straight to the (always-MySQL) destination and mark it
-            # completed — bypassing the fetch→process→write Celery/Redis pipeline.
-            #   • same MySQL server → server-side CREATE TABLE … AS SELECT (fast)
-            #   • cross-server (e.g. MSSQL source → MySQL dest) → create the dest
-            #     table from the source schema and stream the rows over directly
-            #     (server-side cursor, O(batch_size) memory; no tasks/queues).
-            # Falls through to the normal batch pipeline on any failure.
-            # (Backported from dent; cross-server streaming added for MSSQL sources.)
+            # so copy it straight to the destination and mark it completed —
+            # bypassing the fetch→process→write Celery/Redis pipeline.
+            #   • same server → server-side CREATE TABLE … AS SELECT (fast)
+            #   • cross-server → build col_schema from source columns (same as
+            #     fetch.py) and call _create_dest_table from write.py so the
+            #     identical type-normalization (_clean_type_str, MySQL row limit
+            #     adjustment) applies as in normal deidentification.
+            # On any failure: marks the table failed in state.db and continues —
+            # never falls through to the batch pipeline.
             if not table_cfg.rules:
+                import time as _time
+                _t0 = _time.monotonic()
                 ts = session.query(TableState).filter_by(
                     table_name=tname, config_key=config.config_key
                 ).first()
@@ -416,9 +426,11 @@ async def _setup_phase(config: DeidConfig, state_engine):
                         _qi = _dest._qi
                         with _dest.engine.begin() as _conn:
                             # Identifiers quoted via _qi (config-sourced, not user input).
+                            # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
                             _conn.execute(_sa_text(  # nosec
                                 f"DROP TABLE IF EXISTS {_qi(_dst_schema)}.{_qi(tname)}"
                             ))
+                            # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
                             _conn.execute(_sa_text(  # nosec
                                 f"CREATE TABLE {_qi(_dst_schema)}.{_qi(tname)} "
                                 f"AS SELECT * FROM {_qi(_src_schema)}.{_qi(tname)}"
@@ -426,18 +438,47 @@ async def _setup_phase(config: DeidConfig, state_engine):
                         _dest.close()
                         _how = "CREATE TABLE AS SELECT (same server)"
                     else:
-                        # Cross-server (source engine != dest MySQL): create the dest
-                        # table from the source schema (create_table_in_dest handles
-                        # MSSQL→MySQL type mapping) and stream rows over in chunks.
+                        # Cross-server (e.g. MSSQL source → MySQL dest): build
+                        # col_schema the same way fetch.py does so _create_dest_table
+                        # applies the full write.py type normalization pipeline.
+                        from sqlalchemy.types import Enum as SAEnum
+                        from deid.tasks.write import _create_dest_table
                         _bs = config.deidentification.batch_size
                         _src = NDDBHandler(config.source_db.connection_string(), read_only=True)
                         _dest = NDDBHandler(config.destination_db.connection_string())
+                        col_info = _src.get_columns(tname)
+                        col_schema = {}
+                        for _c in col_info:
+                            _col_type = _c.get("type")
+                            _length = getattr(_col_type, "length", None)
+                            _type_str = "VARCHAR(255)" if isinstance(_col_type, SAEnum) else (
+                                str(_col_type) if _col_type is not None else ""
+                            )
+                            col_schema[_c["name"].lower()] = {
+                                "original_name": _c["name"],
+                                "type": _type_str,
+                                "length": int(_length) if _length else None,
+                            }
                         with _dest.engine.begin() as _conn:
+                            # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
                             _conn.execute(_sa_text(  # nosec
                                 f"DROP TABLE IF EXISTS {_dest._qi(tname)}"
                             ))
-                        _src.create_table_in_dest(tname, _dest, dest_table_name=tname)
+                        _create_dest_table(_dest, tname, col_schema)
+                        # stream_table_as_dataframes lowercases all column names;
+                        # the dest DDL uses original_name (original DB case).
+                        # Rename df columns back to original case so
+                        # insert_dataframe_in_batches finds them in select_cols.
+                        _rename_map = {
+                            k: v["original_name"]
+                            for k, v in col_schema.items()
+                            if k != v["original_name"]
+                        }
                         for _chunk in _src.stream_table_as_dataframes(tname, _bs):
+                            if _rename_map:
+                                _chunk = _chunk.rename(
+                                    {k: v for k, v in _rename_map.items() if k in _chunk.columns}
+                                )
                             _dest.insert_dataframe_in_batches(_chunk, tname, _bs)
                         _src.close()
                         _dest.close()
@@ -449,12 +490,33 @@ async def _setup_phase(config: DeidConfig, state_engine):
                         "  %s: no PHI — copied directly via %s (%d rows, skipping batch pipeline).",
                         tname, _how, row_count,
                     )
+                    if config.redis_url:
+                        from deid.core.log_publisher import publish_log, make_log_record
+                        from deid.config.task_models import LogLevel
+                        publish_log(config.redis_url, make_log_record(
+                            LogLevel.INFO, tname, "copy",
+                            f"pass-through copy complete ({row_count} rows)",
+                            batch=0, rows_in_batch=row_count,
+                            rows_succeeded=row_count, rows_failed=0,
+                            duration_ms=int((_time.monotonic() - _t0) * 1000),
+                        ))
                     continue
                 except Exception as _e:
                     logger.warning(
-                        "  %s: direct copy failed (%s) — falling through to batch pipeline.",
-                        tname, _e,
+                        "  %s: direct copy failed — %s", tname, _e, exc_info=True,
                     )
+                    if ts:
+                        ts.status = "failed"
+                        ts.failure_remarks = f"{type(_e).__name__}: {_e}"
+                    if config.redis_url:
+                        from deid.core.log_publisher import publish_log, make_log_record
+                        from deid.config.task_models import LogLevel
+                        publish_log(config.redis_url, make_log_record(
+                            LogLevel.ERROR, tname, "copy",
+                            f"pass-through copy failed: {_e}",
+                            error=f"{type(_e).__name__}: {_e}",
+                        ))
+                    continue
 
             if row_count == 0:
                 # Mark 0-row tables as completed immediately — nothing to process.

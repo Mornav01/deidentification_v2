@@ -624,6 +624,9 @@ deid decrypt-notes --input ./encrypted_notes --output ./decrypted_notes
 
 ```
 deid/
+├── __main__.py             # `python -m deid` entry point
+├── staging.py              # Arrow IPC staging-directory helpers + crash-recovery reconciliation
+│
 ├── cli/                    # Typer CLI commands
 │   ├── app.py              #   Main entry point, command registration
 │   ├── run.py              #   deid run — orchestrate full pipeline
@@ -636,14 +639,15 @@ deid/
 │   ├── qc_delta.py         #   deid qc-delta — Part 2 row-level source↔dest diff
 │   ├── qc_audit.py         #   deid qc-audit — Part 3 master-referenced notes audit
 │   ├── cdc.py              #   deid cdc — change data capture
-│   └── decrypt_notes.py    #   deid decrypt-notes
+│   └── decrypt_notes.py    #   deid decrypt-notes — decrypt ClinicalBin documents
 │
 ├── config/                 # Configuration layer
-│   ├── schema.py           #   Pydantic v2 models (DeidConfig, DbConfig, etc.)
+│   ├── schema.py           #   Pydantic v2 models for config.yaml validation
 │   ├── loader.py           #   YAML loading + ${ENV_VAR} interpolation
 │   ├── rules_generator.py  #   Auto-assign rules from DB schema (used by generate-config)
-│   ├── pii_generator.py    #   Auto-generate PII table config + masking rules
-│   └── table_schemas.py    #   TypedDicts for runtime table/column config
+│   ├── pii_generator.py    #   Auto-generate PII table config + column mask values
+│   ├── table_schemas.py    #   TypedDicts for runtime table/column config (UI schemas)
+│   └── task_models.py      #   Pydantic models for task/orchestrator/QC boundaries + LogLevel
 │
 ├── models/                 # SQLAlchemy 2.0 models (SQLite)
 │   ├── base.py             #   Engine factories with WAL + busy_timeout=5000;
@@ -658,6 +662,7 @@ deid/
 ├── orchestrator/           # Async pipeline orchestrator
 │   ├── async_runner.py     #   Drives setup → deidentify phases; polls BatchState;
 │   │                       #   watchdog re-dispatches stalled table chains
+│   ├── task_graph.py       #   Builds Celery Canvas task graphs from config
 │   ├── log_collector.py    #   Async Redis pub/sub log aggregation + summary
 │   └── progress.py         #   Redis pub/sub listener for progress events
 │
@@ -670,48 +675,64 @@ deid/
 │   │                       #   de-identification → Arrow IPC; idempotent on re-delivery
 │   ├── write.py            #   write_batch — Arrow IPC → idempotent dest DELETE+INSERT;
 │   │                       #   per-process _created_dest_tables guard skips DDL
+│   ├── batch_utils.py      #   Shared BatchState helpers used by fetch/process/write
 │   ├── qc.py               #   run_qc — dispatches DbScanner; results to qc_results.db
 │   └── deidentify.py       #   Legacy single-task path
 │
 ├── core/                   # Core de-identification engine
-│   ├── logger.py           #   Logging setup
+│   ├── logger.py           #   Logging setup (nd_logger)
+│   ├── log_publisher.py    #   Structured log records → Redis; peak-memory sampling
+│   ├── mapping_populator.py #  Scan rule configs for ID columns; bulk-insert patient mappings
 │   ├── process_df/         #   De-identification logic
-│   │   ├── main.py         #     Batch orchestrator (stream → join → rules → write)
-│   │   ├── base.py         #     DeIdentifier class, rule dispatcher
-│   │   ├── rules.py        #     10+ rule classes (PatientID, Mask, DateOffset, etc.)
-│   │   ├── config.py       #     Column-name → mask-value mappings
+│   │   ├── main.py         #     Batch orchestrator (stream → join → resolve → rules → write);
+│   │   │                   #     PatientIdentifierResolver, JoinMapping, get_key_phi_column_list
+│   │   ├── base.py         #     DeIdentifier class, RULE_DISPATCHER
+│   │   ├── rules.py        #     Rules enum + structured rule classes (PatientID, Mask, …)
+│   │   ├── columns_type_detector.py # Map rules → destination column SQL types
 │   │   ├── constants.py    #     Regex patterns (dates, ZIP codes)
-│   │   ├── rowhandler.py   #     InvalidRowHandler (filter/log null patient IDs)
+│   │   ├── rowhandler.py   #     InvalidRowHandler (filter/log null _resolved_nd_patient_id)
+│   │   ├── exception.py    #     Custom exceptions
 │   │   └── unstruct/       #     Unstructured text (clinical notes)
-│   │       ├── notes.py    #       NotesRule — PII master lookup + regex text replacement
-│   │       └── genericnotes.py #   GenericNotesRule — regex-based masking
+│   │       ├── notes.py    #       NotesRule — NLP-based PII extraction (Presidio + Spacy)
+│   │       ├── genericnotes.py #   GenericNotesRule — Spacy/Presidio generic PHI detection
+│   │       ├── xml.py      #       XML/SOAP note de-identification
+│   │       ├── xml_utils.py #      XML parsing/serialization helpers
+│   │       └── utils.py    #       Shared notes helpers
 │   ├── dbPkg/              #   Database abstraction layer
 │   │   ├── dbhandler.py    #     NDDBHandler (streaming reads, batch inserts, schema ops)
+│   │   ├── type_mapping.py #     MSSQL → MySQL type mapping
+│   │   ├── schemas.py      #     DB-layer schema helpers
 │   │   ├── mapping_loader.py #   Load patient/encounter mapping tables
-│   │   └── pii_loader.py   #    Load PII staging tables
+│   │   ├── pii_loader.py   #     Load PII staging tables
+│   │   ├── mapping_table/  #     Mapping-table DDL/helpers
+│   │   └── phi_table/      #     PHI/PII table creation (create_table.py)
 │   └── ops_df/             #   DataFrame operations
-│       └── jointables.py   #     Multi-hop reference table joining
+│       ├── jointables.py   #     Multi-hop reference table joining (ReferenceMappingDataFrameJoiner)
+│       └── utility.py      #     join_dataframes (Polars left-join helper), DistinctValueFetcher
 │
-├── qc/                     # Quality control (3-part QC Framework)
-│   ├── scanner.py          #   DbScanner — Part 1/3 in-pipeline scan; get_pii_info loads master PHI
-│   ├── generator.py        #   DataGenerator — stratified sampling from databases
-│   ├── schema.py           #   Output schemas (ColumnQCResult, FinalQCResult)
-│   ├── mapping_count.py    #   Part 2 — mapping/count checks + blocking pre-run gate
-│   ├── delta_identity.py   #   Part 2 — polars row-level source↔dest diff (cdc_id_validation port)
-│   ├── master_phi.py       #   Part 3 — master-referenced unstructured PHI audit
-│   ├── coverage.py         #   Part 3 — coverage check (count parity + NULL/empty)
-│   ├── report.py           #   Consolidated audit report across Parts 1–3
-│   ├── api.py              #   Public API — *_from_config task functions (Airflow entry point)
-│   ├── llm_scan.py         #   Residual-PII scanner: regex (default) | mlx local-LLM | none
-│   └── builders/           #   Part 1 detector classes
-│       ├── base.py         #     Abstract Detector interface
-│       ├── structured.py   #     ID (incl. APPOINTMENT/CHART), mask, date, ZIP, DOB detectors
-│       └── unstructured.py #     Notes scan: master exact-match + pluggable residual-PII scanner
+├── clinical_bin_doc/       # ClinicalBin (MSSQL) binary document extraction
+│   └── extractor.py        #   Extract + decrypt clinical binary documents
 │
-└── cdc/                    # Change Data Capture utilities
-    ├── mysql/              #   MySQL CDC parsers
-    └── mssql/              #   MSSQL CDC parsers
+└── qc/                     # Quality control (3-part QC Framework)
+    ├── scanner.py          #   DbScanner — Part 1/3 in-pipeline scan; get_pii_info loads master PHI
+    ├── generator.py        #   DataGenerator — stratified sampling from databases
+    ├── schema.py           #   Output schemas (ColumnQCResult, FinalQCResult)
+    ├── mapping_count.py    #   Part 2 — mapping/count checks + blocking pre-run gate
+    ├── delta_identity.py   #   Part 2 — polars row-level source↔dest diff (cdc_id_validation port)
+    ├── master_phi.py       #   Part 3 — master-referenced unstructured PHI audit
+    ├── coverage.py         #   Part 3 — coverage check (count parity + NULL/empty)
+    ├── report.py           #   Consolidated audit report across Parts 1–3
+    ├── api.py              #   Public API — *_from_config task functions (Airflow entry point)
+    ├── llm_scan.py         #   Residual-PII scanner: regex (default) | mlx local-LLM | none
+    └── builders/           #   Part 1 detector classes
+        ├── base.py         #     Abstract Detector interface
+        ├── structured.py   #     ID (incl. APPOINTMENT/CHART), mask, date, ZIP, DOB detectors
+        └── unstructured.py #     Notes scan: master exact-match + pluggable residual-PII scanner
 ```
+
+> Change Data Capture lives at the **repo root** (not inside the `deid/` package): `CDC/MySQL/`
+> and `CDC/MSSQL/` hold the CDC SQL/parsers driven by `deid cdc` (`deid/cli/cdc.py`).
+> `ClinicalBinDoc/` at the repo root accompanies `deid/clinical_bin_doc/`.
 
 ### State Management
 
@@ -760,6 +781,46 @@ During **deidentify**, each `fetch_batch` keyset-paginates a chunk from the sour
 
 If a worker crashes mid-task, `task_acks_late=True` causes Celery to re-deliver the message. Idempotency guards at the top of each task's inner function check `BatchState.status` and skip the work (or re-dispatch the next stage) when the batch is already past the current stage. Non-retry failures reset the batch to `pending` and the orchestrator's watchdog re-dispatches it within 2 seconds.
 
+### Mapping Joins & Patient Identifier Resolution
+
+The heart of `process_batch` is turning raw source IDs into de-identified ones. This happens in
+`deid/core/process_df/main.py` (`JoinMapping`, `PatientIdentifierResolver`) and the equivalent
+preloaded-mapping path in `deid/tasks/process.py`.
+
+1. **Categorise columns** — `get_key_phi_column_list()` returns a 5-tuple:
+   `(encounter_id_cols, patient_id_cols_by_rule, reference_pid_cols, appointment_id_cols, chart_id_cols)`.
+   Patient-ID columns are grouped as a dict `{rule_name: [columns]}`, supporting **dynamic
+   `PATIENT_*` rules** (e.g. `PATIENT_PATIENTID`, `PATIENT_CHARTID`) in addition to the legacy
+   `PATIENT_ID`. The rule-name suffix selects which identifier column of the patient mapping
+   table to join on.
+
+2. **Join mapping tables** — each secondary mapping (encounter, appointment, chart) is enriched
+   with the patient mapping via `nd_patient_id`, then left-joined into the batch. Every PATIENT_*
+   **source column** is joined to the patient mapping independently.
+
+3. **Resolve canonical columns** — `PatientIdentifierResolver.transform()` builds:
+   - `_resolved_offset` — coalesced per-patient date offset (falls back to `date_offset_days`).
+   - `_resolved_nd_patient_id` — the row-level de-identified patient ID (coalesce priority:
+     referencepid > encounter > patient groups > appointment > chart). Used by
+     `InvalidRowHandler` (null ⇒ row rejected to `failed_rows.db`), `NotesRule` (PII lookup key),
+     and as the fallback replacement value.
+   - `_resolved_ndpid_col_{col}` — a **per-column** de-identified value for each patient-ID
+     column, taken from that column's own join.
+   - `_resolved_{identifier}` — the coalesced raw identifier value per project identifier, used
+     by `NotesRule` to find-and-replace identifiers embedded in free-text notes.
+
+4. **Apply rules** — `DeIdentifier` runs `NOTES` rules first (before any column is overwritten),
+   then structured rules. `PatientIDRule` writes each column's `_resolved_ndpid_col_{col}` when
+   present, falling back to `_resolved_nd_patient_id`.
+
+**Multiple distinct patients per row.** Some tables carry two patient-ID columns that reference
+*different* patients in the same row — e.g. a `mergelogs` table with `FromID` and `ToID`. Because
+each patient-ID column is joined and resolved independently (`_resolved_ndpid_col_{col}`), each is
+de-identified to its own value rather than both collapsing to a single `_resolved_nd_patient_id`.
+The first column of a rule keeps the identifier-keyed join suffix (`from_{identifier_col}_mapping`)
+for backward compatibility; additional columns use a per-column suffix (`from_col_{col}_mapping`)
+so their joins never collide. See `docs/mapping_join_flow.md` for the step-by-step reference.
+
 ### Progress Monitoring
 
 Workers publish progress events to Redis channel `deid:progress`:
@@ -779,11 +840,13 @@ Rules are assigned per-column in the `tables` section of `config.yaml`. The `DeI
 
 | Rule | Effect | Example |
 |------|--------|---------|
-| `PATIENT_ID` | Replace with anonymized ID from mapping table | `PAT001` → `10000042` |
+| `PATIENT_ID` | Replace with anonymized ID from patient mapping (joins on `patient_id`) | `PAT001` → `10000042` |
+| `PATIENT_*` (dynamic, e.g. `PATIENT_PATIENTID`, `PATIENT_CHARTID`) | Same as `PATIENT_ID`, but the rule-name suffix selects which patient-mapping identifier column to join on | column-specific |
 | `ENCOUNTER_ID` | Replace with anonymized encounter ID | `ENC789` → `20000015` |
-| `REFERENCE_PID` | Replace reference patient ID via mapping | Indirect patient ID columns |
+| `REFERENCE_PID` | Replace reference patient ID via mapping (indirect / reference-mapping columns) | indirect patient ID |
 | `APPOINTMENT_ID` | Replace with anonymized appointment ID | `APT456` → `30000008` |
 | `CHART_ID` | Replace with anonymized chart ID via chart mapping | `CHT321` → `40000005` |
+| `CHART_ID` | Replace with anonymized chart ID (joins via chart mapping) | `CHT321` → `40000012` |
 | `MASK` | Replace with fixed placeholder | `John Smith` → `<<PATIENT_NAME>>` |
 | `DATE_OFFSET` | Shift date by per-patient offset (days) | `2024-03-15` → `2024-04-18` |
 | `STATIC_OFFSET` | Shift date by global fixed offset | `2024-03-15` → `2024-04-18` |
@@ -791,6 +854,15 @@ Rules are assigned per-column in the `tables` section of `config.yaml`. The `DeI
 | `PATIENT_DOB` | Replace with birth year only (`Int64`); columns with no recognised date pattern are nulled to prevent PHI leakage | `1985-06-15` → `1985` |
 | `NOTES` | PII-master lookup + regex masking | Free-text clinical notes |
 | `GENERIC_NOTES` | Regex-based PII masking | Free-text with pattern-based replacement |
+| `DOB` / `PATIENT_DOB` | Replace with birth year only (`Int64`); columns with no recognised date pattern are nulled to prevent PHI leakage | `1985-06-15` → `1985` |
+| `NOTES` | NLP-based PII extraction and masking | Free-text clinical notes (Presidio + Spacy) |
+| `GENERIC_NOTES` | Regex/Spacy/Presidio generic PHI masking | Free-text with pattern-based replacement |
+
+> **Multiple patient-ID columns per row.** When a table has two patient-ID columns that reference
+> *different* patients in the same row (e.g. `mergelogs` `FromID`/`ToID`), assign each the
+> appropriate `PATIENT_*` rule. Each column is joined and resolved independently, so each is
+> de-identified to its own value rather than both collapsing to one. See
+> [Architecture → Mapping Joins & Patient Identifier Resolution](#mapping-joins--patient-identifier-resolution).
 
 ### Mask Values
 
@@ -953,16 +1025,27 @@ python -m pytest tests/ -v
 | `test_config.py` | Config loading, validation, env var interpolation |
 | `test_models.py` | SQLAlchemy model creation, insert/query, mapping helpers |
 | `test_batch_state.py` | `BatchState` CRUD, unique constraints, status transitions |
+| `test_batch_utils.py` | Shared batch-state helper functions (claim/advance/reset) |
 | `test_staging.py` | Arrow IPC staging directory helpers, crash-recovery reconciliation |
+| `test_ipc_cache.py` | IPC cache streaming (`stream_from_ipc_cache`) |
 | `test_celery_tasks.py` | Celery app creation, task registration |
+| `test_task_models.py` | Pydantic task/orchestrator/QC boundary models |
 | `test_fetch_task.py` | `fetch_batch` task — keyset pagination, status updates, self-chaining |
-| `test_process_task.py` | `process_batch` task — Arrow read/write, mapping joins, status updates |
+| `test_process_task.py` | `process_batch` task — Arrow read/write, mapping joins, preloaded vs SQL-fallback paths |
+| `test_process_main.py` | `get_key_phi_column_list`, `PatientIdentifierResolver` (incl. per-column resolution), `PatientIDRule` |
+| `test_mappings.py` | Mapping-table join helpers |
 | `test_write_task.py` | `write_batch` task — idempotent DELETE+INSERT, status updates |
 | `test_pipeline_integration.py` | End-to-end fetch → process → write chain with real Arrow IPC files |
 | `test_orchestrator.py` | `_setup_phase` — exact row count, BatchState creation |
 | `test_orchestrator_extended.py` | RunLog status, credential stripping, dispatch helpers |
+| `test_run_batching.py` | Table batch splitting, worker dispatch, unmatched-table handling |
+| `test_retry_logic.py` | `deid retry` — picks up pending/dispatched/failed batches, skips done |
+| `test_single_identifier_bypass.py` | Single-identifier fast path (PATIENT_ID → PATIENT_PATIENTID remap) |
+| `test_table_overrides.py` | Per-table config overrides |
 | `test_cli.py` | CLI help output, command registration, error handling for missing files |
 | `test_mapping_populator.py` | Mapping population: rule scanning, bulk inserts, idempotency |
+| `test_clinical_bin_doc/` | ClinicalBin document extractor + imports |
+| `test_migration.py` | Schema/state migration behavior |
 | `test_core_imports.py` | Zero Django/legacy imports in core engine |
 | `test_qc_imports.py` | Zero Django/legacy imports in QC package |
 | `test_log_publisher.py`, `test_log_collector.py`, `test_logging_integration.py` | Redis pub/sub log aggregation and run-summary file output |

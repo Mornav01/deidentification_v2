@@ -96,34 +96,52 @@ class PatientIdentifierResolver:
         self.identifier_groups = self._create_dynamic_identifier_groups()
 
     def _create_dynamic_identifier_groups(self) -> list[dict]:
-        """One group per PATIENT_* rule — keys the lookup suffix used during mapping joins."""
+        """One group per PATIENT_* **source column** — keys the join suffix used during mapping.
+
+        Most tables have a single patient-ID column per rule, but some (e.g. mergelogs, whose
+        FromID and ToID reference two *different* patients) carry several.  Each source column
+        is joined independently so it resolves to its own de-identified value.
+
+        The first column of a rule keeps the identifier-keyed suffix
+        (``from_{identifier_col}_mapping``) for backward compatibility; additional columns use a
+        per-column suffix (``from_col_{col}_mapping``) so their joins do not collide.
+        """
         groups = []
-        for rule_name in self.key_phi_columns[1]:
+        for rule_name, columns in self.key_phi_columns[1].items():
             if rule_name == "PATIENT_ID":
                 identifier_col = "patient_id"
             else:
                 identifier_col = rule_name.split("_")[-1].lower()
-            groups.append({
-                "identifier_col": identifier_col,
-                "nd_patient_id": f"nd_patient_id_from_{identifier_col}_mapping",
-                "offset": f"offset_from_{identifier_col}_mapping",
-            })
+            for idx, col in enumerate(columns or []):
+                suffix = (
+                    f"from_{identifier_col}_mapping" if idx == 0
+                    else f"from_col_{col}_mapping"
+                )
+                groups.append({
+                    "identifier_col": identifier_col,
+                    "source_col": col,
+                    "suffix": suffix,
+                    "nd_patient_id": f"nd_patient_id_{suffix}",
+                    "offset": f"offset_{suffix}",
+                })
         return groups
 
     def _identifier_candidates(self, x: str) -> list[str]:
         """Candidate columns for _resolved_{x}, following all_groups priority order.
 
-        For the group whose identifier_col == x: the right join key x_from_x_mapping was
-        dropped during the mapping join, so use the direct source column x instead.
-        For all other groups: use x_from_{id_col}_mapping (non-key, survives the join).
+        For the group whose identifier_col == x: the right join key was dropped during the
+        mapping join, so use that group's direct source column instead.
+        For all other groups: use x_{suffix} (non-key column, survives the join).
         """
         candidates = [
             f"{x}_from_referencepid_mapping",
             f"{x}_from_encounter_mapping",
         ]
         for g in self.identifier_groups:
-            id_col = g["identifier_col"]
-            candidates.append(x if id_col == x else f"{x}_from_{id_col}_mapping")
+            if g["identifier_col"] == x:
+                candidates.append(g["source_col"])
+            else:
+                candidates.append(f"{x}_{g['suffix']}")
         candidates += [
             f"{x}_from_appointment_mapping",
             f"{x}_from_chart_mapping",
@@ -168,6 +186,18 @@ class PatientIdentifierResolver:
                 f"[{self.__class__.__name__}] No columns found for _resolved_nd_patient_id. Skipping."
             )
 
+        # --- Step 2b: per-column _resolved_ndpid_col_{col} ---
+        # Each patient-ID PHI column resolves to its OWN de-identified value (from its own
+        # mapping join), independent of the coalesced row-level _resolved_nd_patient_id.
+        # This keeps distinct-patient columns in the same row (e.g. mergelogs FromID/ToID)
+        # from being overwritten with the same value.  Consumed by PatientIDRule.
+        for g in self.identifier_groups:
+            nd_col = g["nd_patient_id"]
+            if nd_col in df.columns:
+                df = df.with_columns(
+                    pl.col(nd_col).alias(f"_resolved_ndpid_col_{g['source_col']}")
+                )
+
         # --- Step 3: _resolved_{identifier} for every project identifier ---
         # Generated for ALL identifiers in possible_patient_identifier_columns regardless of
         # which PATIENT_* rules are present in this table's config.
@@ -183,16 +213,18 @@ class PatientIdentifierResolver:
         # --- Step 4: drop intermediate mapping columns ---
         all_join_suffixes = (
             ["from_referencepid_mapping", "from_encounter_mapping"]
-            + [f"from_{g['identifier_col']}_mapping" for g in self.identifier_groups]
+            + [g["suffix"] for g in self.identifier_groups]
             + ["from_appointment_mapping", "from_chart_mapping"]
         )
 
-        # Keep original source PHI columns and the newly generated _resolved_{x} columns.
+        # Keep original source PHI columns and the newly generated _resolved_* columns.
         preserved: set[str] = set()
         for rule_cols in self.key_phi_columns[1].values():
             preserved.update(rule_cols)
         for x in self.possible_patient_identifier_columns:
             preserved.add(f"_resolved_{x}")
+        for g in self.identifier_groups:
+            preserved.add(f"_resolved_ndpid_col_{g['source_col']}")
 
         nd_offset_intermediates = set(filter(None, offset_candidates + nd_patient_id_candidates))
         cross_join_cols = {
@@ -393,16 +425,10 @@ class JoinMapping:
             if not columns:
                 continue
 
-            left_col = columns[0]
             if rule == "PATIENT_ID":
                 identifier_col = "patient_id"
             else:
                 identifier_col = rule.split("_")[-1].lower()
-
-            nd_logger.info(
-                f"[{self.__class__.__name__}] Processing rule '{rule}' — "
-                f"source col '{left_col}' mapped via '{identifier_col}'"
-            )
 
             if identifier_col not in all_mapping_cols:
                 nd_logger.warning(
@@ -411,47 +437,63 @@ class JoinMapping:
                 )
                 continue
 
-            distinct_values = DistinctValueFetcher(self.df).get_distinct_values(left_col)
-            if not distinct_values:
-                nd_logger.warning(
-                    f"[{self.__class__.__name__}] No values in column '{left_col}'. Skipping."
+            # A rule may map several source columns (e.g. mergelogs FromID/ToID, both patient
+            # IDs but referencing DIFFERENT patients). Join each independently so each resolves
+            # to its own de-identified value. The first column keeps the identifier-keyed suffix
+            # for backward compatibility; the rest use a per-column suffix to avoid collisions.
+            for idx, left_col in enumerate(columns):
+                right_suffix = (
+                    f"from_{identifier_col}_mapping" if idx == 0
+                    else f"from_col_{left_col}_mapping"
                 )
-                continue
-
-            other_cols = [
-                patient_mapping_table.c[c]
-                for c in possible_patient_identifier_columns
-                if c != identifier_col and c in all_mapping_cols
-            ]
-            cols_to_select = (
-                [patient_mapping_table.c[identifier_col]]
-                + other_cols
-                + [patient_mapping_table.c.nd_patient_id, patient_mapping_table.c.offset]
-            )
-            stmt = select(*cols_to_select).where(
-                patient_mapping_table.c[identifier_col].in_(distinct_values)
-            )
-            with self.engine.connect() as conn:
-                df_mapping = _sql_result_to_polars(conn.execute(stmt))
-
-            nd_logger.info(
-                f"[{self.__class__.__name__}] Retrieved {df_mapping.height} rows for rule '{rule}'."
-            )
-
-            if df_mapping.height > 0:
-                self.df = join_dataframes(
-                    self.df,
-                    df_mapping,
-                    left_on=left_col,
-                    right_on=identifier_col,
-                    how="left",
-                    right_suffix=f"from_{identifier_col}_mapping",
-                    drop_right_join_column=True,
+                nd_logger.info(
+                    f"[{self.__class__.__name__}] Processing rule '{rule}' — "
+                    f"source col '{left_col}' mapped via '{identifier_col}' "
+                    f"(suffix '{right_suffix}')"
                 )
-            else:
-                nd_logger.warning(
-                    f"[{self.__class__.__name__}] No mappings found for column '{left_col}'."
+
+                distinct_values = DistinctValueFetcher(self.df).get_distinct_values(left_col)
+                if not distinct_values:
+                    nd_logger.warning(
+                        f"[{self.__class__.__name__}] No values in column '{left_col}'. Skipping."
+                    )
+                    continue
+
+                other_cols = [
+                    patient_mapping_table.c[c]
+                    for c in possible_patient_identifier_columns
+                    if c != identifier_col and c in all_mapping_cols
+                ]
+                cols_to_select = (
+                    [patient_mapping_table.c[identifier_col]]
+                    + other_cols
+                    + [patient_mapping_table.c.nd_patient_id, patient_mapping_table.c.offset]
                 )
+                stmt = select(*cols_to_select).where(
+                    patient_mapping_table.c[identifier_col].in_(distinct_values)
+                )
+                with self.engine.connect() as conn:
+                    df_mapping = _sql_result_to_polars(conn.execute(stmt))
+
+                nd_logger.info(
+                    f"[{self.__class__.__name__}] Retrieved {df_mapping.height} rows for "
+                    f"rule '{rule}' column '{left_col}'."
+                )
+
+                if df_mapping.height > 0:
+                    self.df = join_dataframes(
+                        self.df,
+                        df_mapping,
+                        left_on=left_col,
+                        right_on=identifier_col,
+                        how="left",
+                        right_suffix=right_suffix,
+                        drop_right_join_column=True,
+                    )
+                else:
+                    nd_logger.warning(
+                        f"[{self.__class__.__name__}] No mappings found for column '{left_col}'."
+                    )
 
     def _get_mapping_with_patient_join(
         self,
@@ -485,6 +527,14 @@ class JoinMapping:
             )
             .where(mapping_table.c[id_column].in_(ids))
         )
+        # Only carry forward ACTIVE mappings. After a transfer, the same
+        # encounter/appointment/chart id can have both an active ('Y') and a
+        # soft-deleted ('N') row; without this filter the left join fans out and
+        # duplicates source rows with conflicting nd_patient_id. Mirrors the
+        # preload path (celery_app._fetch_mapping_table). Guarded so tables that
+        # predate the column still work.
+        if "nd_ActiveFlag" in mapping_table.c:
+            stmt = stmt.where(mapping_table.c.nd_ActiveFlag == "Y")
         with self.engine.connect() as conn:
             df_mapping = _sql_result_to_polars(conn.execute(stmt))
 

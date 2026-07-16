@@ -83,12 +83,19 @@ def retry_command(
     # Without this, cfg.pii_config is None and notes de-identification crashes.
     if cfg.pii_db and not cfg.pii_config and cfg.pii_config_path:
         import yaml as _yaml
+        from deid.config.loader import _interpolate_env_vars
+        from deid.config.schema import validate_replace_value
         with open(cfg.pii_config_path) as _f:
-            cfg.pii_config = _yaml.safe_load(_f)
+            cfg.pii_config = _interpolate_env_vars(_yaml.safe_load(_f))
+        validate_replace_value(cfg.pii_config)
     if not cfg.secondary_pii_configs and cfg.secondary_pii_config_path:
         import yaml as _yaml
+        from deid.config.loader import _interpolate_env_vars
+        from deid.config.schema import validate_replace_value
         with open(cfg.secondary_pii_config_path) as _f:
-            cfg.secondary_pii_configs = _yaml.safe_load(_f)
+            cfg.secondary_pii_configs = _interpolate_env_vars(_yaml.safe_load(_f))
+        for _i, _cfg in enumerate(cfg.secondary_pii_configs or []):
+            validate_replace_value(_cfg, source=f"secondary_pii_configs[{_i}]")
 
     if cfg.table_overrides_path and not cfg.table_overrides:
         import yaml as _yaml

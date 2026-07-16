@@ -64,7 +64,7 @@ def test_fetch_process_write_chain(pipeline_env):
         "staging_root": staging_root,
         # Extra keys forwarded to process_batch:
         "mapping_db_config": {"connection_str": "sqlite:///m.db"},
-        "table_details": {"columns_details": []},
+        "table_details": {"columns_details": [{"column_name": "col1", "de_identification_rule": "HASH", "is_phi": False}]},
         "offset_days": 34,
         # Extra key forwarded to write_batch:
         "dest_conn_str": "sqlite:///d.db",

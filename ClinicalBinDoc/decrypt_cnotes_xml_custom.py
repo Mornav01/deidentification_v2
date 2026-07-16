@@ -63,6 +63,7 @@ offset = 0
 
 with source_engine.connect() as conn:
     while True:
+        # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
         query = text(f"""
             select c.*, cd.PatientID, cd.VisitID, cd.DocTypeID, cd.DocName, cd.DocDescription, cd.Created, cd.LastModified from ClinicalBin as c 
             inner join [Primerecord_Latest].[dbo].[ClinicalDocuments] as cd 

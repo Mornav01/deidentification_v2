@@ -125,6 +125,61 @@ class TestPatientIdentifierResolver:
         result = resolver.transform(df)
         assert result["_resolved_nd_patient_id"].to_list() == [999]
 
+    def test_multiple_patient_columns_resolve_independently(self):
+        """Two patient-ID columns in one row (e.g. mergelogs FromID/ToID) that reference
+        DIFFERENT patients must each get their own per-column de-identified value.
+
+        Simulates the DataFrame after apply_patient_mappings has joined each column:
+        the first column keeps the identifier-keyed suffix, the second uses the
+        per-column suffix.
+        """
+        from deid.core.process_df.main import PatientIdentifierResolver
+        df = pl.DataFrame({
+            "fromid": [1, 2],
+            "toid": [10, 20],
+            "nd_patient_id_from_patient_id_mapping": [111, 222],       # from fromid join
+            "nd_patient_id_from_col_toid_mapping": [910, 920],          # from toid join
+        })
+        key_phi_columns = ([], {"PATIENT_ID": ["fromid", "toid"]}, [], [], [])
+        resolver = PatientIdentifierResolver(key_phi_columns)
+        result = resolver.transform(df)
+
+        # Per-column resolved values are distinct and match their own source column's mapping.
+        assert result["_resolved_ndpid_col_fromid"].to_list() == [111, 222]
+        assert result["_resolved_ndpid_col_toid"].to_list() == [910, 920]
+        # Row-level fallback still coalesces to the primary (first) column.
+        assert result["_resolved_nd_patient_id"].to_list() == [111, 222]
+
+    def test_patient_id_rule_uses_per_column_value(self):
+        """PatientIDRule must write each patient-ID column's OWN de-identified value,
+        not the single coalesced _resolved_nd_patient_id (mergelogs FromID/ToID bug)."""
+        from deid.core.process_df.rules import PatientIDRule
+        df = pl.DataFrame({
+            "fromid": [1, 2],
+            "toid": [10, 20],
+            "_resolved_nd_patient_id": [111, 222],
+            "_resolved_ndpid_col_fromid": [111, 222],
+            "_resolved_ndpid_col_toid": [910, 920],
+        })
+        rule = PatientIDRule()
+        df = rule.apply(df, {"column_name": "fromid"})
+        df = rule.apply(df, {"column_name": "toid"})
+
+        assert df["fromid"].to_list() == [111, 222]
+        assert df["toid"].to_list() == [910, 920]          # NOT [111, 222]
+        # The two distinct patients stay distinct after de-identification.
+        assert df["fromid"].to_list() != df["toid"].to_list()
+
+    def test_patient_id_rule_falls_back_to_row_level(self):
+        """Single-patient tables (no per-column value) keep using _resolved_nd_patient_id."""
+        from deid.core.process_df.rules import PatientIDRule
+        df = pl.DataFrame({
+            "patient_id": [1, 2],
+            "_resolved_nd_patient_id": [111, 222],
+        })
+        df = PatientIDRule().apply(df, {"column_name": "patient_id"})
+        assert df["patient_id"].to_list() == [111, 222]
+
 
 # ---------------------------------------------------------------------------
 # _serialize_dict_values

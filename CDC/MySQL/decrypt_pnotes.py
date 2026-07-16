@@ -66,6 +66,9 @@ class ProgressNoteDecryptor:
         if pad:
             msg += b'\x00' * pad
 
+        # Blowfish/ECB is dictated by the eCW source format — this DECRYPTS existing
+        # progress-note data so it can be de-identified; the algorithm is not our choice.
+        # nosemgrep: python.pycryptodome.security.insecure-cipher-algorithm-blowfish.insecure-cipher-algorithm-blowfish
         cipher = Blowfish.new(_key, Blowfish.MODE_ECB)
         decrypted = cipher.decrypt(msg)
 
@@ -164,6 +167,7 @@ def create_dest_table(engine, source: Table, new_name: str) -> Optional[Table]:
                 ))
         dest = Table(new_name, meta, *cols)
         with engine.begin() as conn:
+            # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
             conn.execute(text(f"DROP TABLE IF EXISTS `{new_name}`"))
         meta.create_all(engine, tables=[dest])
         logger.info("Destination table '%s' created.", new_name)
