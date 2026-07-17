@@ -11,13 +11,13 @@ class UnstructuredDetector(Detector):
     Two complementary checks per note:
     1. **Master exact-match** — any known PHI value (from ``pii_info``, loaded from the PHI master)
        still present in the text.
-    2. **Residual-PII scan** — a pluggable backend (regex by default; ``mlx`` local-LLM opt-in)
+    2. **Residual-PII scan** — a pluggable backend (regex by default; ``none`` to disable)
        that flags residual PHI regardless of the master. Replaces the former Presidio dependency;
        backend is chosen via ``qc_config['residual_pii_backend']`` (see deid/qc/llm_scan.py).
     """
 
     def _scanner(self) -> ResidualPIIScanner:
-        # Built once per detector instance from qc_config; caches the mlx model process-wide.
+        # Built once per detector instance from qc_config.
         if not hasattr(self, "_residual_scanner"):
             self._residual_scanner = ResidualPIIScanner.from_qc_config(self.qc_config)
         return self._residual_scanner

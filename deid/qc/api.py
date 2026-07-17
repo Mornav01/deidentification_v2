@@ -47,9 +47,11 @@ from deid.qc.delta_identity import DeltaIdentityConfig, run_delta_identity_qc
 from deid.qc.master_phi import MasterPhiConfig, make_pii_loader, run_master_phi_audit
 from deid.qc.coverage import CoverageConfig, check_coverage
 from deid.qc.report import build_audit_report, render_markdown
+from deid.qc.auto_qc import run_auto_qc
 
 __all__ = [
     # config-driven task functions (recommended for orchestrators)
+    "run_auto_qc_from_config",
     "run_part2_from_config",
     "run_delta_identity_from_config",
     "run_master_phi_from_config",
@@ -60,7 +62,42 @@ __all__ = [
     "DeltaIdentityConfig", "run_delta_identity_qc",
     "MasterPhiConfig", "make_pii_loader", "run_master_phi_audit",
     "CoverageConfig", "check_coverage",
+    "run_auto_qc",
 ]
+
+
+# ── Auto-QC — run all parts over a table list, emit CSVs ─────────────────────────
+
+
+def run_auto_qc_from_config(
+    cfg,
+    rules_csv: str,
+    tables: Optional[list[str]] = None,
+    *,
+    out_dir: str = ".",
+    max_workers: int = 1,
+    pii_master_conn_str: Optional[str] = None,
+    residual_pii_backend: str = "regex",
+    delta_after: Optional[str] = None,
+    include_gate: bool = True,
+    timestamp: str = "",
+) -> dict:
+    """Run the whole QC framework over ``tables`` (roles from ``rules_csv``) and write two CSVs.
+
+    Thin wrapper over ``deid.qc.auto_qc.run_auto_qc`` — the recommended single entry point for an
+    Airflow DAG. ``max_workers`` > 1 QCs tables concurrently. Returns a dict with ``summary_csv`` /
+    ``findings_csv`` paths + the in-memory rows.
+    """
+    return run_auto_qc(
+        cfg, rules_csv, tables,
+        out_dir=out_dir,
+        max_workers=max_workers,
+        pii_master_conn_str=pii_master_conn_str,
+        residual_pii_backend=residual_pii_backend,
+        delta_after=delta_after,
+        include_gate=include_gate,
+        timestamp=timestamp,
+    )
 
 
 # ── Part 2 — mapping & count gate ───────────────────────────────────────────────

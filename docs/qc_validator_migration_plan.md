@@ -71,13 +71,11 @@ registered in `cli/app.py`.
   **addresses**, **dates-in-notes** (raw master-date leak + implausible dates), and — opt-in via
   `require_mask_token`/`expected_mask_tokens` — **mask-token-present**.
 - **Presidio removed project-wide → pluggable residual-PII scanner** (`deid/qc/llm_scan.py`):
-  `auto` (default) | `regex` | `mlx` (local LLM via `mlx-lm`, **Apple Silicon only**) | `none`.
-  `auto` picks mlx on Apple Silicon when installed, else regex — one shared config for the mixed
-  Apple/Windows fleet. Wired into the Part-1 unstructured detector and, opt-in, the Part-3 audit
-  (`MasterPhiConfig.residual_pii_backend`). mlx is an optional extra (`pip install -e '.[mlx]'`),
-  **not** in `requirements.txt` (no Linux/Windows wheels); the scanner fails open to regex if mlx is
-  absent. Presidio was not actually imported by the de-id engine either (docs were stale), so
-  `presidio-analyzer`/`presidio-anonymizer` were dropped from `requirements.txt` entirely.
+  `regex` (default) | `none`. The `regex` backend is dependency-free and runs everywhere. Wired
+  into the Part-1 unstructured detector and, opt-in, the Part-3 audit
+  (`MasterPhiConfig.residual_pii_backend`). Presidio was not actually imported by the de-id engine
+  either (docs were stale), so `presidio-analyzer`/`presidio-anonymizer` were dropped from
+  `requirements.txt` entirely.
 - **Parked:** auto-discovery of encounter-FK tables (Part 2) and quarantine *enforcement* (currently
   recorded only); real-DB end-to-end test (owner will run).
 

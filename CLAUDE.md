@@ -11,7 +11,7 @@ through a Celery task queue: mapping joins resolve patient/encounter/appointment
 
 ```bash
 # Python 3.12 conda env with requirements.txt installed
-/Users/karanchilwal/miniconda3/envs/new_deid/bin/python -m pytest -q
+/opt/miniconda3/envs/venv/bin/python -m pytest -q
 ```
 
 ---

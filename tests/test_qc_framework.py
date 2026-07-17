@@ -178,22 +178,13 @@ def test_residual_scanner_regex_backend():
     assert regex_scan("nothing here") == []
 
 
-def test_residual_scanner_llm_json_parsing():
-    from deid.qc.llm_scan import parse_llm_entities
-    # tolerant of code fences / prose around JSON
-    raw = 'Here you go:\n```json\n{"phi_found": true, "entities": [{"type":"PERSON","text":"Jane Roe"}]}\n```'
-    ents = parse_llm_entities(raw)
-    assert ents == [{"type": "PERSON", "text": "Jane Roe"}]
-    assert parse_llm_entities('{"phi_found": false, "entities": []}') == []
-    assert parse_llm_entities("not json") == []
-
-
-def test_mlx_backend_falls_back_when_unavailable():
-    # mlx-lm isn't installed here; scanner must degrade to regex, not crash.
+def test_unknown_backend_falls_back_to_regex():
+    # An unsupported backend name must degrade to regex, not crash.
     from deid.qc.llm_scan import ResidualPIIScanner
-    s = ResidualPIIScanner(backend="mlx")
+    s = ResidualPIIScanner(backend="something-else")
+    assert s.backend == "regex"
     hits = {h["type"] for h in s.scan("call 555-123-4567")}
-    assert "PHONE_NUMBER" in hits  # regex fallback still catches it
+    assert "PHONE_NUMBER" in hits
 
 
 def test_unstructured_detector_uses_scanner_not_presidio():
