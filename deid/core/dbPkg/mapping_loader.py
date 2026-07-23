@@ -108,11 +108,18 @@ class MappingDb:
         with self.engine.connect() as conn:
             rows = conn.execute(stmt).fetchall()
 
+        # The encounter → patient link used for the DATE_OFFSET chain must be the ``nd_patient_id``
+        # bridge (encounter_mapping_table carries nd_patient_id in the modernized schema), because
+        # the caller keys the patient reverse dict — which holds the offset — by nd_patient_id.
+        # ``.get`` so a legacy table without an nd_patient_id column degrades to None, not KeyError.
         mapping_dict = {}
         for row in rows:
             row_dict = row._asdict()
             mapping_dict[row_dict["nd_encounter_id"]] = {
-                "encounter_id": row_dict["encounter_id"],
-                "patient_id": row_dict["patient_id"],
+                "encounter_id": row_dict.get("encounter_id"),
+                # Kept under 'patient_id' for the detector contract. Prefer the modernized
+                # nd_patient_id bridge (keys the patient reverse dict → offset); fall back to the
+                # legacy source patient_id column for the old fixed-schema mapping table.
+                "patient_id": row_dict.get("nd_patient_id", row_dict.get("patient_id")),
             }
         return mapping_dict

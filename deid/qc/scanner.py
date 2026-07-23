@@ -22,18 +22,28 @@ class LoadMappingData:
 
         patient_dict, enc_dict = {}, {}
         available = set(sample_data[0].keys()) if sample_data else set()
+        mdb: MappingDb | None = None
         pat_col = table_config["reference_patient_id_column"]
         if pat_col is not None and pat_col in available:
             # These dest columns hold the ND id value (the deid pipeline wrote the surrogate
             # into the reference column), so we reverse-map them back to source id + offset.
             nd_patient_ids = [row[pat_col] for row in sample_data if row.get(pat_col) is not None]
-            patient_dict = MappingDb(mapping_db_config).get_reverse_patients_dict(nd_patient_ids)
+            mdb = MappingDb(mapping_db_config)
+            patient_dict = mdb.get_reverse_patients_dict(nd_patient_ids)
         elif pat_col is not None:
             logger.warning("[QC] reference_patient_id_column '%s' not in dest sample — skipping patient mapping", pat_col)
         enc_col = table_config["reference_enc_id_column"]
         if enc_col is not None and enc_col in available:
             nd_enc_ids = [row[enc_col] for row in sample_data if row.get(enc_col) is not None]
-            enc_dict = MappingDb(mapping_db_config).get_reverse_encounter_dict(nd_enc_ids)
+            mdb = mdb or MappingDb(mapping_db_config)
+            enc_dict = mdb.get_reverse_encounter_dict(nd_enc_ids)
+            # DATE_OFFSET via the encounter route needs the offset of each encounter's patient.
+            # enc_dict maps nd_encounter_id → {'patient_id': nd_patient_id}; make sure those
+            # nd_patient_ids are in patient_dict (they won't be for an encounter-only table).
+            enc_nd_pids = [v["patient_id"] for v in enc_dict.values() if v.get("patient_id") is not None]
+            missing = [p for p in enc_nd_pids if p not in patient_dict]
+            if missing:
+                patient_dict.update(mdb.get_reverse_patients_dict(missing))
         elif enc_col is not None:
             logger.warning("[QC] reference_enc_id_column '%s' not in dest sample — skipping encounter mapping", enc_col)
         return patient_dict, enc_dict

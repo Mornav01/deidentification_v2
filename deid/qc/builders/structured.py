@@ -135,15 +135,20 @@ class SMaskDetector(Detector):
 class SDateOffestDetector(Detector):
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_offset(self, row: dict):
-        enc_id, patient_id = None, None
+        # Resolve the patient's date offset from patient_mapping_table, reached either directly
+        # via the PATIENT_ID column (dest value = nd_patient_id) or via the ENCOUNTER_ID column
+        # (dest value = nd_encounter_id → encounter's nd_patient_id bridge). A missing mapping row
+        # falls back to the default offset rather than aborting the whole table's scan.
+        default = self.qc_config.get("default_offset_value", DEFAULT_OFFSET_VALUE)
         if self.patient_id_column is not None:
-            pid = row[self.patient_id_column]
-            return self.patient_mapping_dict[pid]['offset']
+            entry = self.patient_mapping_dict.get(row.get(self.patient_id_column))
+            return entry["offset"] if entry else default
         elif self.enc_id_column is not None:
-            encid = row[self.enc_id_column]
-            pid = self.enc_mapping_dict[encid]['patient_id']
-            return  self.patient_mapping_dict[pid]['offset']
-        return self.qc_config.get("default_offset_value", DEFAULT_OFFSET_VALUE)
+            enc = self.enc_mapping_dict.get(row.get(self.enc_id_column))
+            nd_pid = enc.get("patient_id") if enc else None
+            entry = self.patient_mapping_dict.get(nd_pid)
+            return entry["offset"] if entry else default
+        return default
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
