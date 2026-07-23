@@ -95,11 +95,13 @@ def parse_rules_csv(rules_csv: str, tables: Optional[list[str]] = None) -> dict[
                 roles.patient_id_col = col
             elif rule == "ENCOUNTER_ID" and roles.encounter_id_col is None:
                 roles.encounter_id_col = col
-            if rule in _NOTE_RULES:
+            # Guard against duplicate CSV rows for the same column (e.g. 'notes' listed twice)
+            # so we never emit `SELECT notes, notes` downstream.
+            if rule in _NOTE_RULES and col not in roles.note_cols:
                 roles.note_cols.append(col)
-            if rule == "MASK":
+            if rule == "MASK" and col not in roles.name_cols:
                 roles.name_cols.append(col)
-            if rule in _DATE_RULES:
+            if rule in _DATE_RULES and col not in roles.date_cols:
                 roles.date_cols.append(col)
 
     if tables:
@@ -182,9 +184,13 @@ def run_delta(cfg, roles: TableRoles, delta_after: Optional[str] = None) -> dict
 
     d = dict(getattr(cfg.qc, "delta_identity", {}) or {})
     d["tables"] = [roles.table]
-    biz = roles.patient_id_col or roles.encounter_id_col
-    if biz and not d.get("biz_key_col"):
-        d["biz_key_col"] = biz
+    # Row-presence (missing/extra on the stable row id) is the meaningful cross-env check for
+    # prod↔de-identified output. The patient/encounter business key is REPLACED by de-identification,
+    # so comparing its value would flag every de-identified row as a mismatch. Only compare values
+    # when the user explicitly configured a (preserved) biz_key_col in qc.delta_identity; otherwise
+    # disable value comparison by clearing the auto-discovery patterns (→ biz_col resolves to None).
+    if not d.get("biz_key_col"):
+        d["biz_key_patterns"] = []
     if delta_after:
         d["delta_after"] = delta_after
     # qc_results_db_url="" → don't persist to qc_results.db: the CSVs are auto-QC's deliverable, and
@@ -207,12 +213,21 @@ def run_master(cfg, roles: TableRoles, pii_master_conn_str: Optional[str], resid
 
     if not roles.note_cols:
         return {"status": "SKIPPED", "reason": "no note/content columns", "result": None}
+    # The join key to the PHI master (pii_data_table.nd_patient_id) is the dest table's
+    # patient-reference column — the deid pipeline wrote the ND surrogate into it. Dest tables
+    # never carry a literal ``nd_patient_id`` column, so without a patient reference we cannot
+    # link a note to its patient's PHI and must skip.
+    join_col = roles.patient_id_col
+    if not join_col:
+        return {"status": "SKIPPED", "reason": "no patient-reference column to join to pii_data_table", "result": None}
     shared = dict(getattr(cfg.qc, "master_phi", {}) or {})
     shared.pop("tables", None)
     conn = pii_master_conn_str or shared.pop("pii_master_conn_str", None)
-    merged = {**shared, "dest_table": roles.table, "content_cols": list(roles.note_cols)}
+    content_cols = list(dict.fromkeys(roles.note_cols))  # dedup, preserve order
+    merged = {**shared, "dest_table": roles.table, "content_cols": content_cols,
+              "nd_patient_id_col": join_col}
     if roles.name_cols and not merged.get("name_columns"):
-        merged["name_columns"] = list(roles.name_cols)
+        merged["name_columns"] = list(dict.fromkeys(roles.name_cols))
     if residual_backend and not merged.get("residual_pii_backend"):
         merged["residual_pii_backend"] = residual_backend
     mcfg = MasterPhiConfig.from_dict(merged)
@@ -250,6 +265,32 @@ def _safe(fn: Callable, *args, **kwargs) -> dict:
     except Exception as exc:  # a single check must never abort the whole run
         logger.exception("[auto-qc] check %s errored: %s", getattr(fn, "__name__", fn), exc)
         return {"status": "ERROR", "reason": str(exc), "result": None}
+
+
+def _existing_dest_tables(cfg) -> Optional[set]:
+    """Lowercased names of tables present in the destination DB, or None if it can't be determined.
+
+    Returning None (on any reflection error) means "don't skip anything" — the per-check ``_safe``
+    wrappers still guard against a genuinely missing table.
+    """
+    try:
+        from sqlalchemy import create_engine, inspect
+        engine = create_engine(cfg.destination_db.connection_string())
+        try:
+            names = {t.lower() for t in inspect(engine).get_table_names()}
+        finally:
+            engine.dispose()
+        # An empty reflection is ambiguous (truly empty vs. couldn't reflect) — treat as
+        # "unknown" and skip nothing, so we never skip every table on a reflection hiccup.
+        return names or None
+    except Exception as exc:
+        logger.warning("[auto-qc] could not list destination tables (%s) — running all", exc)
+        return None
+
+
+def _skipped_table_record(roles: TableRoles, reason: str) -> dict:
+    skip = {"status": "SKIPPED", "reason": reason, "result": None}
+    return {"roles": roles, "part1": dict(skip), "delta": dict(skip), "master": dict(skip)}
 
 
 def _qc_one_table(cfg, roles: TableRoles, qc_config: dict, mapping_db_config: dict, *,
@@ -440,8 +481,12 @@ def run_auto_qc(
 
     qc_config = _build_qc_config(cfg, pii_master_conn_str, residual_pii_backend)
     mapping_db_config = _mapping_db_config(cfg)
+    existing = _existing_dest_tables(cfg)
 
-    def _one(roles):
+    def _one(table, roles):
+        if existing is not None and table.lower() not in existing:
+            logger.warning("[auto-qc] %s: not present in destination — skipping", table)
+            return _skipped_table_record(roles, "table not present in destination")
         return _qc_one_table(
             cfg, roles, qc_config, mapping_db_config,
             delta_after=delta_after, pii_master_conn_str=pii_master_conn_str,
@@ -457,11 +502,11 @@ def run_auto_qc(
         with ThreadPoolExecutor(max_workers=workers) as ex:
             results = dict(zip(
                 (t for t, _ in items),
-                ex.map(lambda kv: _one(kv[1]), items),
+                ex.map(lambda kv: _one(kv[0], kv[1]), items),
             ))
         per_table = {t: results[t] for t, _ in items}  # restore input order
     else:
-        per_table = {t: _one(roles) for t, roles in items}
+        per_table = {t: _one(t, roles) for t, roles in items}
 
     gate = _safe(run_gate, cfg) if include_gate else {"status": "SKIPPED", "reason": "gate disabled", "checks": []}
 

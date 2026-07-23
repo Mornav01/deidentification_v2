@@ -21,14 +21,21 @@ class LoadMappingData:
         assert isinstance(table_config, dict), "table_config must be a dict"
 
         patient_dict, enc_dict = {}, {}
-        if table_config["reference_patient_id_column"] is not None:
-            col_name = table_config["reference_patient_id_column"]
-            nd_patient_ids = [row[col_name] for row in sample_data]
+        available = set(sample_data[0].keys()) if sample_data else set()
+        pat_col = table_config["reference_patient_id_column"]
+        if pat_col is not None and pat_col in available:
+            # These dest columns hold the ND id value (the deid pipeline wrote the surrogate
+            # into the reference column), so we reverse-map them back to source id + offset.
+            nd_patient_ids = [row[pat_col] for row in sample_data if row.get(pat_col) is not None]
             patient_dict = MappingDb(mapping_db_config).get_reverse_patients_dict(nd_patient_ids)
-        if table_config["reference_enc_id_column"] is not None:
-            col_name = table_config["reference_enc_id_column"]
-            nd_enc_ids = [row[col_name] for row in sample_data]
+        elif pat_col is not None:
+            logger.warning("[QC] reference_patient_id_column '%s' not in dest sample — skipping patient mapping", pat_col)
+        enc_col = table_config["reference_enc_id_column"]
+        if enc_col is not None and enc_col in available:
+            nd_enc_ids = [row[enc_col] for row in sample_data if row.get(enc_col) is not None]
             enc_dict = MappingDb(mapping_db_config).get_reverse_encounter_dict(nd_enc_ids)
+        elif enc_col is not None:
+            logger.warning("[QC] reference_enc_id_column '%s' not in dest sample — skipping encounter mapping", enc_col)
         return patient_dict, enc_dict
 
 
@@ -108,6 +115,19 @@ class DbScanner:
         return flat
 
 
+    @staticmethod
+    def _prune_config_to_available(table_config: dict, available: set, table_name: str) -> None:
+        """Drop configured columns / reference columns not present in the dest sample (in place)."""
+        cols = table_config.get("columns_details", [])
+        kept = [c for c in cols if c["column_name"] in available]
+        dropped = [c["column_name"] for c in cols if c["column_name"] not in available]
+        if dropped:
+            logger.warning("[QC] [%s] columns in rules but not in dest — skipped: %s", table_name, dropped)
+        table_config["columns_details"] = kept
+        for ref_key in ("reference_patient_id_column", "reference_enc_id_column"):
+            if table_config.get(ref_key) is not None and table_config[ref_key] not in available:
+                table_config[ref_key] = None
+
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def scan_table(self, table_name: str, table_config: dict, ignore_row_count: int = 0) -> OutputSchemaForTable:
         assert table_name, "table_name must not be empty"
@@ -128,6 +148,12 @@ class DbScanner:
             "[QC] [%s] Structured sample ready: %d rows (%.1fs)",
             table_name, len(sample_data), time.monotonic() - t1,
         )
+
+        # Prune config to columns that actually exist in the dest sample. The rules CSV can
+        # reference columns absent from a given dest table (stale/over-broad rules); a detector
+        # reading such a column would KeyError. Only prune when we have a non-empty sample.
+        if sample_data:
+            self._prune_config_to_available(table_config, set(sample_data[0].keys()), table_name)
 
         detectors = self.get_structured_detectors(sample_data, table_config)
         logger.info("[QC] [%s] Running %d structured detector(s)...", table_name, len(detectors))
