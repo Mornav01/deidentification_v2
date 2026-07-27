@@ -252,3 +252,22 @@ def test_audit_report_builds(tmp_path):
     report = build_audit_report(qc_db)
     assert report["delta_identity"]["tables_checked"] == 1
     assert isinstance(render_markdown(report), str)
+
+
+def test_prune_config_remaps_to_actual_dest_casing():
+    """Case-insensitive match + remap to the real dest column casing; unmatched dropped."""
+    from deid.qc.scanner import DbScanner
+    tc = {
+        "columns_details": [
+            {"column_name": "encounterid", "is_phi": True, "de_identification_rule": "ENCOUNTER_ID"},
+            {"column_name": "modifydate", "is_phi": True, "de_identification_rule": "DATE_OFFSET"},
+            {"column_name": "ghost", "is_phi": True, "de_identification_rule": "MASK"},
+        ],
+        "reference_patient_id_column": "patientid",
+        "reference_enc_id_column": "encounterid",
+    }
+    available = {"encounterID", "ModifyDate", "PatientID", "nd_auto_increment_id"}
+    DbScanner._prune_config_to_available(tc, available, "t")
+    assert {c["column_name"] for c in tc["columns_details"]} == {"encounterID", "ModifyDate"}
+    assert tc["reference_patient_id_column"] == "PatientID"   # remapped to real casing
+    assert tc["reference_enc_id_column"] == "encounterID"

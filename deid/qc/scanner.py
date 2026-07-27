@@ -127,16 +127,30 @@ class DbScanner:
 
     @staticmethod
     def _prune_config_to_available(table_config: dict, available: set, table_name: str) -> None:
-        """Drop configured columns / reference columns not present in the dest sample (in place)."""
+        """Reconcile configured columns with the dest sample's *actual* columns (in place).
+
+        Dest column casing is not guaranteed (the main deid path lowercases, but decrypt/
+        pass-through tables preserve source case), so match case-INSENSITIVELY and rewrite each
+        kept column to the real dest casing — detectors read ``row[column_name]``, whose keys are
+        the actual dest column names. Columns with no case-insensitive match are dropped.
+        """
+        by_lower = {c.lower(): c for c in available}
         cols = table_config.get("columns_details", [])
-        kept = [c for c in cols if c["column_name"] in available]
-        dropped = [c["column_name"] for c in cols if c["column_name"] not in available]
+        kept, dropped = [], []
+        for c in cols:
+            actual = by_lower.get(str(c["column_name"]).lower())
+            if actual is None:
+                dropped.append(c["column_name"])
+            else:
+                c["column_name"] = actual  # remap to the real dest casing for row access
+                kept.append(c)
         if dropped:
             logger.warning("[QC] [%s] columns in rules but not in dest — skipped: %s", table_name, dropped)
         table_config["columns_details"] = kept
         for ref_key in ("reference_patient_id_column", "reference_enc_id_column"):
-            if table_config.get(ref_key) is not None and table_config[ref_key] not in available:
-                table_config[ref_key] = None
+            v = table_config.get(ref_key)
+            if v is not None:
+                table_config[ref_key] = by_lower.get(str(v).lower())  # actual casing, or None if absent
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def scan_table(self, table_name: str, table_config: dict, ignore_row_count: int = 0) -> OutputSchemaForTable:

@@ -164,6 +164,24 @@ def _mapping_db_config(cfg) -> dict:
     }
 
 
+def _dest_columns_by_lower(cfg, table: str) -> dict:
+    """{lowercased column name -> actual dest column name} for ``table``, or {} if unavailable.
+
+    Dest column casing isn't guaranteed (decrypt/pass-through tables keep source case), so callers
+    that build SQL from config column names must resolve them to the real casing first.
+    """
+    try:
+        from sqlalchemy import create_engine, inspect
+        engine = create_engine(cfg.destination_db.connection_string())
+        try:
+            return {c["name"].lower(): c["name"] for c in inspect(engine).get_columns(table)}
+        finally:
+            engine.dispose()
+    except Exception as exc:
+        logger.warning("[auto-qc] could not reflect columns of %s (%s)", table, exc)
+        return {}
+
+
 def run_part1(cfg, roles: TableRoles, qc_config: dict, mapping_db_config: dict) -> dict:
     """Part-1 structured/unstructured scan for one table."""
     from deid.qc.scanner import DbScanner
@@ -224,10 +242,20 @@ def run_master(cfg, roles: TableRoles, pii_master_conn_str: Optional[str], resid
     join_col = roles.patient_id_col
     if not join_col:
         return {"status": "SKIPPED", "reason": "no patient-reference column to join to pii_data_table", "result": None}
+    # Resolve config column names to the dest table's ACTUAL casing (it builds SQL from them).
+    dest_cols = _dest_columns_by_lower(cfg, roles.table)
+    if dest_cols:
+        join_col = dest_cols.get(join_col.lower(), join_col)
+        if join_col.lower() not in dest_cols:
+            return {"status": "SKIPPED", "reason": f"join column '{join_col}' not in dest table", "result": None}
+        content_cols = [dest_cols[c.lower()] for c in dict.fromkeys(roles.note_cols) if c.lower() in dest_cols]
+        if not content_cols:
+            return {"status": "SKIPPED", "reason": "no note/content columns present in dest table", "result": None}
+    else:
+        content_cols = list(dict.fromkeys(roles.note_cols))  # dedup, preserve order (reflection unavailable)
     shared = dict(getattr(cfg.qc, "master_phi", {}) or {})
     shared.pop("tables", None)
     conn = pii_master_conn_str or shared.pop("pii_master_conn_str", None)
-    content_cols = list(dict.fromkeys(roles.note_cols))  # dedup, preserve order
     merged = {**shared, "dest_table": roles.table, "content_cols": content_cols,
               "nd_patient_id_col": join_col}
     if roles.name_cols and not merged.get("name_columns"):
