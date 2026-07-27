@@ -285,3 +285,19 @@ def test_date_offset_reads_source_column_case_insensitively():
     after = [{"nd_auto_increment_id": 1, "ModifyDate": "2020-01-11", "patientid": 100}]
     r = d.is_deidentified(before_rows=before, after_rows=after, ignore_condition={})
     assert r["passed_count"] == 1 and r["failed_count"] == 0   # 10-day shift == offset
+
+
+def test_date_offset_future_shifted_date_passes_not_implausible():
+    """A positive offset can push a de-identified date past 'today'; if dest == source+offset it
+    must PASS (regression: was wrongly flagged 'implausible' by the [1900, today] window)."""
+    from deid.qc.builders.structured import SDateOffestDetector
+    d = SDateOffestDetector(
+        patient_mapping_dict={500: {"offset": 34}}, enc_mapping_dict={},
+        qc_config={}, column_config={"column_name": "ModifyDate"},
+        patient_id_column="patientid", enc_id_column=None,
+    )
+    # source 2026-07-07 + 34d == dest 2026-08-10 (in the future relative to a 'today' of ~2026-07-27)
+    before = [{"nd_auto_increment_id": 7921387, "modifydate": "2026-07-07 16:53:45"}]
+    after = [{"nd_auto_increment_id": 7921387, "ModifyDate": "2026-08-10 00:00:00", "patientid": 500}]
+    r = d.is_deidentified(before_rows=before, after_rows=after, ignore_condition={})
+    assert r["passed_count"] == 1 and r["failed_count"] == 0

@@ -104,35 +104,42 @@ class SStaticOffestDetector(Detector):
                 continue
 
             after_raw = after_row.get(column_name, '')
-            after_date = _parse_date(after_raw)
-
-            # QC Framework Part 1 DATE check: format (YYYY-MM-DD) + plausibility [1900, today].
-            if not _is_null_like(after_raw):
-                if after_date is None:
-                    format_remarks.append({'nd_auto_increment_id': nd_id, 'value': str(after_raw), 'issue': 'bad_format'})
-                    column_qc_result['failed_count'] += 1
-                    continue
-                if not _is_plausible_date(after_date, today):
-                    format_remarks.append({'nd_auto_increment_id': nd_id, 'value': str(after_date), 'issue': 'implausible'})
-                    column_qc_result['failed_count'] += 1
-                    continue
-
-            before_date = _parse_date(_row_get_ci(before_row, column_name, ''))
-            if before_date is None or after_date is None:
+            if _is_null_like(after_raw):
                 continue
 
-            offset_value = self.get_offset(after_row)
-            date_diff = (after_date - before_date).days
-
-            if date_diff == offset_value:
-                column_qc_result['passed_count'] += 1
-            else:
-                remarks.append({
-                    'nd_auto_increment_id': nd_id,
-                    'source date': str(before_date),
-                    'dest date': str(after_date)
-                })
+            after_date = _parse_date(after_raw)
+            if after_date is None:
+                format_remarks.append({'nd_auto_increment_id': nd_id, 'value': str(after_raw), 'issue': 'bad_format'})
                 column_qc_result['failed_count'] += 1
+                continue
+
+            before_date = _parse_date(_row_get_ci(before_row, column_name, ''))
+            offset_value = self.get_offset(after_row)
+
+            if before_date is not None:
+                # Ground truth for a de-identified date: dest == source shifted by the offset. When the
+                # source date is available this is authoritative — a matching offset PASSES even if the
+                # shifted date lands in the near future (a positive offset legitimately does), which the
+                # [1900, today] plausibility window would otherwise wrongly flag as 'implausible'.
+                if (after_date - before_date).days == offset_value:
+                    column_qc_result['passed_count'] += 1
+                else:
+                    remarks.append({
+                        'nd_auto_increment_id': nd_id,
+                        'source date': str(before_date),
+                        'dest date': str(after_date),
+                        'expected_offset': offset_value,
+                    })
+                    column_qc_result['failed_count'] += 1
+                continue
+
+            # No source date to compare against — fall back to a plausibility sanity check, widening the
+            # upper bound by the (positive) offset so a correctly future-shifted date isn't false-flagged.
+            if not _is_plausible_date(after_date, today + timedelta(days=max(0, offset_value))):
+                format_remarks.append({'nd_auto_increment_id': nd_id, 'value': str(after_date), 'issue': 'implausible'})
+                column_qc_result['failed_count'] += 1
+            else:
+                column_qc_result['passed_count'] += 1
 
         column_qc_result['remarks'] = {'remarks': remarks, 'format_remarks': format_remarks}
         return column_qc_result
@@ -183,35 +190,42 @@ class SDateOffestDetector(Detector):
                 continue
 
             after_raw = after_row.get(column_name, '')
-            after_date = _parse_date(after_raw)
-
-            # QC Framework Part 1 DATE check: format (YYYY-MM-DD) + plausibility [1900, today].
-            if not _is_null_like(after_raw):
-                if after_date is None:
-                    format_remarks.append({'nd_auto_increment_id': nd_id, 'value': str(after_raw), 'issue': 'bad_format'})
-                    column_qc_result['failed_count'] += 1
-                    continue
-                if not _is_plausible_date(after_date, today):
-                    format_remarks.append({'nd_auto_increment_id': nd_id, 'value': str(after_date), 'issue': 'implausible'})
-                    column_qc_result['failed_count'] += 1
-                    continue
-
-            before_date = _parse_date(_row_get_ci(before_row, column_name, ''))
-            if before_date is None or after_date is None:
+            if _is_null_like(after_raw):
                 continue
 
-            offset_value = self.get_offset(after_row)
-            date_diff = (after_date - before_date).days
-
-            if date_diff == offset_value:
-                column_qc_result['passed_count'] += 1
-            else:
-                remarks.append({
-                    'nd_auto_increment_id': nd_id,
-                    'source date': str(before_date),
-                    'dest date': str(after_date)
-                })
+            after_date = _parse_date(after_raw)
+            if after_date is None:
+                format_remarks.append({'nd_auto_increment_id': nd_id, 'value': str(after_raw), 'issue': 'bad_format'})
                 column_qc_result['failed_count'] += 1
+                continue
+
+            before_date = _parse_date(_row_get_ci(before_row, column_name, ''))
+            offset_value = self.get_offset(after_row)
+
+            if before_date is not None:
+                # Ground truth for a de-identified date: dest == source shifted by the offset. When the
+                # source date is available this is authoritative — a matching offset PASSES even if the
+                # shifted date lands in the near future (a positive offset legitimately does), which the
+                # [1900, today] plausibility window would otherwise wrongly flag as 'implausible'.
+                if (after_date - before_date).days == offset_value:
+                    column_qc_result['passed_count'] += 1
+                else:
+                    remarks.append({
+                        'nd_auto_increment_id': nd_id,
+                        'source date': str(before_date),
+                        'dest date': str(after_date),
+                        'expected_offset': offset_value,
+                    })
+                    column_qc_result['failed_count'] += 1
+                continue
+
+            # No source date to compare against — fall back to a plausibility sanity check, widening the
+            # upper bound by the (positive) offset so a correctly future-shifted date isn't false-flagged.
+            if not _is_plausible_date(after_date, today + timedelta(days=max(0, offset_value))):
+                format_remarks.append({'nd_auto_increment_id': nd_id, 'value': str(after_date), 'issue': 'implausible'})
+                column_qc_result['failed_count'] += 1
+            else:
+                column_qc_result['passed_count'] += 1
 
         column_qc_result['remarks'] = {'remarks': remarks, 'format_remarks': format_remarks}
         return column_qc_result
