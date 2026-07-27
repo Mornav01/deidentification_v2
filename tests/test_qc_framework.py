@@ -195,10 +195,33 @@ def test_unstructured_detector_uses_scanner_not_presidio():
                              qc_config={"residual_pii_backend": "regex"},
                              column_config={"column_name": "note"},
                              patient_id_column=None, enc_id_column=None)
-    rows = [{"note": "clean text"}, {"note": "call 555-123-4567"}, {"note": None}]
+    rows = [
+        {"nd_auto_increment_id": 1, "note": "clean text"},
+        {"nd_auto_increment_id": 2, "note": "call 555-123-4567"},
+        {"nd_auto_increment_id": 3, "note": None},
+    ]
     r = d.is_deidentified(before_rows=[], after_rows=rows, ignore_condition={}, pii_info={})
-    assert r["passed_count"] == 2 and r["failed_count"] == 1
-    assert "residual_pii_remarks" in r["remarks"]
+    # Residual-regex hits are advisory only — pass/fail is gated on the master exact-match.
+    assert r["passed_count"] == 3 and r["failed_count"] == 0
+    assert "residual_advisory" in r["remarks"]
+    assert [x["nd_auto_increment_id"] for x in r["remarks"]["residual_advisory"]] == [2]
+
+
+def test_unstructured_detector_fails_only_on_master_exact_match():
+    from deid.qc.builders.unstructured import UnstructuredDetector
+    d = UnstructuredDetector(patient_mapping_dict={}, enc_mapping_dict={},
+                             qc_config={"residual_pii_backend": "none"},
+                             column_config={"column_name": "note"},
+                             patient_id_column=None, enc_id_column=None)
+    rows = [
+        {"nd_auto_increment_id": 10, "note": "patient John Doe seen today"},
+        {"nd_auto_increment_id": 11, "note": "clean"},
+    ]
+    r = d.is_deidentified(before_rows=[], after_rows=rows, ignore_condition={},
+                          pii_info={"John Doe": "John Doe"})
+    assert r["passed_count"] == 1 and r["failed_count"] == 1
+    # The failing row carries its nd_auto_increment_id for manual review.
+    assert [x["nd_auto_increment_id"] for x in r["remarks"]["exact_match_failures"]] == [10]
 
 
 def test_master_phi_audit_end_to_end(tmp_path):

@@ -38,8 +38,13 @@ class UnstructuredDetector(Detector):
 
         scanner = self._scanner()
         column_qc_result = ColumnQCResult(passed_count=0, failed_count=0, remarks={})
-        all_failed_remarks = {"exact_match_remarks": [], "residual_pii_remarks": []}
+        # Pass/fail is gated ONLY on the master exact-match (ground truth). Residual-regex hits are
+        # advisory — recorded for manual review but never a FAIL (regex over-flags free-text notes).
+        # Each entry carries nd_auto_increment_id so a reviewer can pull the exact row.
+        exact_match_failures = []
+        residual_advisory = []
         for row in after_rows:
+            row_id = row.get("nd_auto_increment_id")
             cell_value = row.get(self.column_name)
             if cell_value is None:
                 column_qc_result["passed_count"] += 1
@@ -47,14 +52,18 @@ class UnstructuredDetector(Detector):
             cell_value = str(cell_value)
             exact_entities_found = self._exact_match(cell_value, pii_info)
             residual_found = scanner.scan(cell_value)  # [{'type','text'}]
-            if len(exact_entities_found) > 0 or len(residual_found) > 0:
+            if exact_entities_found:
                 column_qc_result["failed_count"] += 1
+                exact_match_failures.append({"nd_auto_increment_id": row_id, "values": exact_entities_found})
             else:
                 column_qc_result["passed_count"] += 1
-            all_failed_remarks["exact_match_remarks"].extend(exact_entities_found)
-            all_failed_remarks["residual_pii_remarks"].extend(
-                (e["type"], e["text"]) for e in residual_found
-            )
-        all_failed_remarks["residual_pii_remarks"] = list(set(all_failed_remarks["residual_pii_remarks"]))
-        column_qc_result['remarks'] = all_failed_remarks
+            if residual_found:
+                residual_advisory.append({
+                    "nd_auto_increment_id": row_id,
+                    "residual": sorted({(e["type"], e["text"]) for e in residual_found}),
+                })
+        column_qc_result['remarks'] = {
+            "exact_match_failures": exact_match_failures,
+            "residual_advisory": residual_advisory,
+        }
         return column_qc_result

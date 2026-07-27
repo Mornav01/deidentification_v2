@@ -397,9 +397,23 @@ def build_findings_rows(per_table: dict, gate: dict) -> list[dict]:
                 rows.append(_finding(table, "part1_rowcount", "row_count", "", "FAIL", src,
                                      f"source={src} dest={dst} ignored={ignored}"))
             for col, r in (res.get("ColumnsQCResult", {}) or {}).items():
+                remarks = r.get("remarks", {}) or {}
                 if r.get("failed_count", 0) > 0:
+                    # For unstructured notes, lead with the failing row ids so a reviewer can pull them.
+                    exact_fail = remarks.get("exact_match_failures") if isinstance(remarks, dict) else None
+                    if exact_fail:
+                        ids = ", ".join(str(x.get("nd_auto_increment_id")) for x in exact_fail[:50])
+                        detail = f"nd_auto_increment_id=[{ids}]"
+                    else:
+                        detail = _remarks_str(remarks)
                     rows.append(_finding(table, _part_label(roles, col), "phi_detected", col,
-                                         "FAIL", r["failed_count"], _remarks_str(r.get("remarks", {}))))
+                                         "FAIL", r["failed_count"], detail))
+                # Residual-regex hits are advisory (never a FAIL) — list the row ids for manual review.
+                advisory = remarks.get("residual_advisory") if isinstance(remarks, dict) else None
+                if advisory:
+                    ids = ", ".join(str(x.get("nd_auto_increment_id")) for x in advisory[:50])
+                    rows.append(_finding(table, _part_label(roles, col), "residual_pii_advisory", col,
+                                         "ADVISORY", len(advisory), f"nd_auto_increment_id=[{ids}]"))
 
         d = rec["delta"]
         dr = d.get("result")

@@ -250,8 +250,7 @@ class DbScanner:
         for colname, result in columns_qc_result.items():
             if result["failed_count"] > 0:
                 final_qc_result["is_qc_passed"] = False
-                for key, value in result.get("remarks", {}).items():
-                    columns_failed.append(colname)
+                columns_failed.append(colname)
         if len(columns_failed)>0:
             final_qc_result["reason"] += "QC Failed on columns: " + ", ".join(columns_failed)
 
