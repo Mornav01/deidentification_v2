@@ -69,6 +69,23 @@ def test_parse_rules_csv_derives_roles(tmp_path):
     assert "visit_date" in enc.date_cols
 
 
+def test_parse_rules_csv_lowercases_columns_not_tables(tmp_path):
+    # Mixed-case source columns (e.g. MSSQL) must be lowercased to match the deid pipeline's
+    # lowercased dest columns; the table name is preserved for case-sensitive dest lookups.
+    rules = _write_rules_csv(tmp_path, rows=[
+        ("MyTable", "EncounterID", "ENCOUNTER_ID"),
+        ("MyTable", "Notes", "NOTES"),
+        ("MyTable", "PatientID", "PATIENT_ID"),
+    ])
+    roles = parse_rules_csv(rules)
+    assert set(roles) == {"MyTable"}           # table case preserved
+    r = roles["MyTable"]
+    assert r.encounter_id_col == "encounterid"  # column lowercased
+    assert r.patient_id_col == "patientid"
+    assert r.note_cols == ["notes"]
+    assert set(r.columns) == {"encounterid", "notes", "patientid"}
+
+
 def test_parse_rules_csv_filters_and_orders(tmp_path):
     roles = parse_rules_csv(_write_rules_csv(tmp_path), tables=["encounters", "patients"])
     assert list(roles) == ["encounters", "patients"]   # order preserved

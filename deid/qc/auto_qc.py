@@ -85,7 +85,11 @@ def parse_rules_csv(rules_csv: str, tables: Optional[list[str]] = None) -> dict[
             raise ValueError(f"rules CSV missing columns: {sorted(missing)} (got {reader.fieldnames})")
         for row in reader:
             table = (row.get("table_name") or "").strip()
-            col = (row.get("column_name") or "").strip()
+            # The deid pipeline force-lowercases every dest column (process.py), so match that:
+            # lowercase the rules-CSV column names here to stay consistent for mixed-case sources
+            # (e.g. MSSQL). Table name is left as-is — the pipeline preserves its case for the dest
+            # table, so QC must query it with the same case (matters on case-sensitive MySQL/Linux).
+            col = (row.get("column_name") or "").strip().lower()
             rule = (row.get("rule") or "").strip().upper()
             if not table or not col or not rule:
                 continue
