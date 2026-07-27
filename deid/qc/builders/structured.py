@@ -33,6 +33,20 @@ def _is_null_like(value: Any) -> bool:
     return value is None or str(value).strip().lower() in ("", "none", "null", "nat")
 
 
+def _row_get_ci(row: dict, col: str, default: Any = None) -> Any:
+    """Case-insensitive column read. Source and dest tables can differ in column casing
+    (dest is remapped to its own casing during QC), so cross-table comparisons — e.g. the
+    DATE_OFFSET check reading the same column from both the source and dest row — must not
+    assume the casings match."""
+    if col in row:
+        return row[col]
+    low = col.lower()
+    for k, v in row.items():
+        if k.lower() == low:
+            return v
+    return default
+
+
 def _is_plausible_date(d: datetime | None, today: datetime) -> bool:
     """A de-identified date must land within [1900-01-01, today] (doc Part 1 DATE value check)."""
     if d is None:
@@ -103,7 +117,7 @@ class SStaticOffestDetector(Detector):
                     column_qc_result['failed_count'] += 1
                     continue
 
-            before_date = _parse_date(before_row.get(column_name, ''))
+            before_date = _parse_date(_row_get_ci(before_row, column_name, ''))
             if before_date is None or after_date is None:
                 continue
 
@@ -182,7 +196,7 @@ class SDateOffestDetector(Detector):
                     column_qc_result['failed_count'] += 1
                     continue
 
-            before_date = _parse_date(before_row.get(column_name, ''))
+            before_date = _parse_date(_row_get_ci(before_row, column_name, ''))
             if before_date is None or after_date is None:
                 continue
 

@@ -271,3 +271,17 @@ def test_prune_config_remaps_to_actual_dest_casing():
     assert {c["column_name"] for c in tc["columns_details"]} == {"encounterID", "ModifyDate"}
     assert tc["reference_patient_id_column"] == "PatientID"   # remapped to real casing
     assert tc["reference_enc_id_column"] == "encounterID"
+
+
+def test_date_offset_reads_source_column_case_insensitively():
+    """Source and dest may differ in column casing; the offset check must still align them."""
+    from deid.qc.builders.structured import SDateOffestDetector
+    d = SDateOffestDetector(
+        patient_mapping_dict={100: {"offset": 10}}, enc_mapping_dict={},
+        qc_config={}, column_config={"column_name": "ModifyDate"},   # dest casing
+        patient_id_column="patientid", enc_id_column=None,
+    )
+    before = [{"nd_auto_increment_id": 1, "modifydate": "2020-01-01"}]   # source lowercase
+    after = [{"nd_auto_increment_id": 1, "ModifyDate": "2020-01-11", "patientid": 100}]
+    r = d.is_deidentified(before_rows=before, after_rows=after, ignore_condition={})
+    assert r["passed_count"] == 1 and r["failed_count"] == 0   # 10-day shift == offset
