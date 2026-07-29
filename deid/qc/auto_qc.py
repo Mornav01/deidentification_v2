@@ -281,19 +281,24 @@ _ID_RULES = ("PATIENT_ID", "REFERENCE_PID", "ENCOUNTER_ID", "APPOINTMENT_ID", "C
 
 def _fill_counts(conn_str: str, table: str, wanted_lower: list[str]) -> tuple[int, dict, dict]:
     """(total_rows, {lower_col: non_null_count}, {lower_col: actual_col_name}) for the wanted columns
-    present in ``table``. One aggregate query; column casing resolved case-insensitively."""
-    from sqlalchemy import create_engine, inspect, func, select, Table, MetaData
+    present in ``table``. One aggregate ``COUNT`` query; column casing resolved case-insensitively.
+
+    Uses ``inspect().get_columns`` (column reflection only) + a hand-built quoted SQL query — NOT
+    ``Table(autoload_with=...)``, whose full reflection (indexes/FKs) can raise on messy client
+    schemas (e.g. KeyError during FK/index reflection).
+    """
+    from sqlalchemy import create_engine, inspect, text
     engine = create_engine(conn_str)
     try:
         actual = {c["name"].lower(): c["name"] for c in inspect(engine).get_columns(table)}
         present = {low: actual[low] for low in wanted_lower if low in actual}
-        md = MetaData()
-        t = Table(table, md, autoload_with=engine)
-        selects = [func.count().label("t__total")] + [func.count(t.c[name]).label(low) for low, name in present.items()]
+        prep = engine.dialect.identifier_preparer
+        cols_sql = ", ".join(f"COUNT({prep.quote(name)})" for name in present.values())
+        sql = f"SELECT COUNT(*){(', ' + cols_sql) if cols_sql else ''} FROM {prep.quote(table)}"
         with engine.connect() as conn:
-            row = conn.execute(select(*selects)).mappings().fetchone()
-        total = int(row["t__total"] or 0)
-        counts = {low: int(row[low] or 0) for low in present}
+            row = conn.execute(text(sql)).fetchone()
+        total = int(row[0] or 0)
+        counts = {low: int(row[i] or 0) for i, low in enumerate(present.keys(), start=1)}
         return total, counts, present
     finally:
         engine.dispose()
