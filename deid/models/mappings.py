@@ -1,7 +1,9 @@
 """Mapping database models (mappings.db) — replaces Django PatientMappingTable, etc."""
 from __future__ import annotations
 
+import random
 from datetime import datetime, timezone
+from typing import Optional
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import JSON, DateTime, Integer, String, func
@@ -61,18 +63,25 @@ class PhiStaging(MappingsBase):
 
 @validate_call(config=dict(arbitrary_types_allowed=True))
 def get_or_create_patient_mapping(
-    session: Session, patient_id: str, id_prefix: int
+    session: Session, patient_id: str, id_prefix: int, offset: Optional[int] = None
 ) -> int:
-    """Return nd_patient_id for a patient, creating mapping if it doesn't exist."""
+    """Return nd_patient_id for a patient, creating mapping if it doesn't exist.
+
+    New mappings get a signed banded date offset (magnitude 30-38, random sign) by default —
+    matching ``mapping_populator``/the CDC path and the auto-QC offset-band validation — rather
+    than the ORM's ``offset=0`` default (which would fail that validation).
+    """
     existing = session.query(PatientMapping).filter_by(patient_id=patient_id).first()
     if existing:
         return existing.nd_patient_id
 
     max_id = session.query(func.max(PatientMapping.nd_patient_id)).scalar()
     new_nd_id = (max_id or id_prefix) + 1
+    if offset is None:
+        offset = random.choice((-1, 1)) * random.randint(30, 38)
 
     try:
-        mapping = PatientMapping(patient_id=patient_id, nd_patient_id=new_nd_id)
+        mapping = PatientMapping(patient_id=patient_id, nd_patient_id=new_nd_id, offset=offset)
         session.add(mapping)
         session.commit()
     except IntegrityError:

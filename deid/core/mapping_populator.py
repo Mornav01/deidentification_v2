@@ -138,6 +138,18 @@ def _bulk_insert_mappings(
     return total_new
 
 
+def _random_banded_offset(rng: random.Random, abs_min: int, abs_max: int) -> int:
+    """Random non-zero date offset with magnitude in [abs_min, abs_max] and a random sign.
+
+    Matches the CDC path (``CDC/MySQL/mapping_delta.py``) band — [-38,-30] U [30,38] by default —
+    so offsets are never 0 and never a small (easily-reversible) shift. The auto-QC gate's
+    ``offset_range`` check validates the same band.
+    """
+    lo, hi = (abs_min, abs_max) if abs_min <= abs_max else (abs_max, abs_min)
+    lo = max(1, lo)
+    return rng.choice((-1, 1)) * rng.randint(lo, hi)
+
+
 def bulk_insert_patient_mappings(
     mappings_engine,
     patient_ids: list[str],
@@ -145,6 +157,7 @@ def bulk_insert_patient_mappings(
     max_offset: int,
     random_seed: int = 42,
     source_id_column: str = "patient_id",
+    offset_abs_min: int = 30,
 ) -> int:
     """Bulk-insert new patient mappings using raw SQL with a configurable identifier column.
 
@@ -202,7 +215,7 @@ def bulk_insert_patient_mappings(
                 {
                     "nd_patient_id": next_id + j,
                     "src_id": pid,
-                    "offset_val": rng.randint(1, max_offset),
+                    "offset_val": _random_banded_offset(rng, offset_abs_min, max_offset),
                     "now": now,
                 }
                 for j, pid in enumerate(batch)
@@ -281,9 +294,10 @@ def populate_mappings(
     tables: list[TableConfig],
     mappings_engine,
     patient_id_prefix: int = 10000000,
-    max_offset: int = 34,
+    max_offset: int = 38,
     random_seed: int = 42,
     source_id_column: str = "patient_id",
+    offset_abs_min: int = 30,
 ) -> dict:
     """Top-level orchestration: scan rules, fetch IDs from source, insert mappings.
 
@@ -293,8 +307,11 @@ def populate_mappings(
         tables: List of ``TableConfig`` objects describing every table to process.
         mappings_engine: SQLAlchemy engine for the mappings database.
         patient_id_prefix: Base value for ``nd_patient_id`` when the table is empty.
-        max_offset: Upper bound (inclusive) for random date-offset per patient.
+        max_offset: Upper bound (inclusive) for the offset MAGNITUDE. Offsets are signed and banded:
+            magnitude in [offset_abs_min, max_offset], random sign (default band [-38,-30] U [30,38]).
         random_seed: Seed for reproducible offset generation (default 42).
+        offset_abs_min: Lower bound (inclusive) for the offset magnitude (default 30) — keeps offsets
+            away from 0 / small easily-reversible shifts.
 
     Returns:
         Summary dict with counts: patients_found, patients_created,
@@ -328,6 +345,7 @@ def populate_mappings(
         max_offset,
         random_seed,
         source_id_column=source_id_column,
+        offset_abs_min=offset_abs_min,
     )
 
     # ── 2. Encounters ─────────────────────────────────────────────────────

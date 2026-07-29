@@ -301,3 +301,162 @@ def test_date_offset_future_shifted_date_passes_not_implausible():
     after = [{"nd_auto_increment_id": 7921387, "ModifyDate": "2026-08-10 00:00:00", "patientid": 500}]
     r = d.is_deidentified(before_rows=before, after_rows=after, ignore_condition={})
     assert r["passed_count"] == 1 and r["failed_count"] == 0
+
+
+def test_encounter_id_must_be_prefixed_by_patient_id():
+    """nd_encounter_id must start with its row's nd_patient_id (left(enc,len(pat))==pat)."""
+    from deid.qc.builders.structured import SEncounterIDDetector
+    d = SEncounterIDDetector(
+        patient_mapping_dict={}, enc_mapping_dict={}, qc_config={},
+        column_config={"column_name": "encounterid"},
+        patient_id_column="patientid", enc_id_column="encounterid",
+    )
+    rows = [
+        {"nd_auto_increment_id": 1, "patientid": 10001, "encounterid": 10001001},  # ok: starts with 10001
+        {"nd_auto_increment_id": 2, "patientid": 10001, "encounterid": 20002001},  # bad: wrong patient prefix
+        {"nd_auto_increment_id": 3, "patientid": None, "encounterid": 99},          # no patient → skip seq check
+    ]
+    r = d.is_deidentified(before_rows=[], after_rows=rows, ignore_condition={})
+    assert r["passed_count"] == 2 and r["failed_count"] == 1
+    assert r["remarks"]["patient_prefix_verification_failed"] == 1
+    assert r["remarks"]["offenders"][0]["nd_auto_increment_id"] == 2
+
+
+def test_offset_band_validation_rejects_zero_and_small(tmp_path):
+    """Offsets must be non-zero and banded [-38,-30] U [30,38]; 0, |o|<30, |o|>38 are violations."""
+    from deid.qc.mapping_count import Part2Config, check_offset_range
+    from deid.core.dbPkg.dbhandler import NDDBHandler
+    tmp = str(tmp_path)
+    map_url = _sqlite(tmp, "map", [
+        "CREATE TABLE patient_mapping_table (nd_patient_id INTEGER, offset INTEGER)",
+        # valid: 34, -30, 38, -38 ;  invalid: 0, 10, 40
+        "INSERT INTO patient_mapping_table VALUES (1,34),(2,-30),(3,38),(4,-38),(5,0),(6,10),(7,40)",
+    ])
+    h = NDDBHandler(map_url, read_only=True)
+    try:
+        r = check_offset_range(h, Part2Config())[0]   # defaults: abs_min=30, [-38,38]
+    finally:
+        h.close()
+    assert r["status"] == "fail"
+    assert r["actual"] == "3"          # 0, 10, 40
+    assert "nd_patient_id:offset" in r["details"]
+
+
+def test_offset_band_validation_passes_when_all_in_band(tmp_path):
+    from deid.qc.mapping_count import Part2Config, check_offset_range
+    from deid.core.dbPkg.dbhandler import NDDBHandler
+    tmp = str(tmp_path)
+    map_url = _sqlite(tmp, "map2", [
+        "CREATE TABLE patient_mapping_table (nd_patient_id INTEGER, offset INTEGER)",
+        "INSERT INTO patient_mapping_table VALUES (1,30),(2,-38),(3,35),(4,-31)",
+    ])
+    h = NDDBHandler(map_url, read_only=True)
+    try:
+        r = check_offset_range(h, Part2Config())[0]
+    finally:
+        h.close()
+    assert r["status"] == "pass"
+
+
+def test_mapping_uniqueness_one_patient_one_ndid(tmp_path):
+    """Each source patientid must map to exactly one nd_patient_id (renamed src col honored)."""
+    from deid.qc.mapping_count import Part2Config, check_mapping_uniqueness
+    from deid.core.dbPkg.dbhandler import NDDBHandler
+    tmp = str(tmp_path)
+    map_url = _sqlite(tmp, "uniq", [
+        "CREATE TABLE patient_mapping_table (patientid TEXT, nd_patient_id INTEGER)",
+        "INSERT INTO patient_mapping_table VALUES ('P1',1),('P1',2),('P2',3)",   # P1 -> 2 nd ids
+        "CREATE TABLE encounter_mapping_table (encounter_id TEXT, nd_encounter_id INTEGER)",
+        "INSERT INTO encounter_mapping_table VALUES ('E1',10),('E2',20)",
+    ])
+    h = NDDBHandler(map_url, read_only=True)
+    try:
+        res = {r["entity"]: r for r in check_mapping_uniqueness(h, Part2Config(patient_map_src_col="patientid"))}
+    finally:
+        h.close()
+    assert res["patient:patient_mapping_table"]["status"] == "fail"
+    assert res["patient:patient_mapping_table"]["actual"] == "1"     # one offending patientid (P1)
+    assert res["encounter:encounter_mapping_table"]["status"] == "pass"
+
+
+def test_fill_rate_parity_check(tmp_path, monkeypatch):
+    """Identifier fill-rate must match source vs dest; a drop (id nulled out) FAILs."""
+    from types import SimpleNamespace
+    import deid.qc.auto_qc as aq
+    from deid.qc.auto_qc import run_fill_rate, TableRoles
+    tmp = str(tmp_path)
+    # source: encounterid 100% filled (3/3); dest: 66% (2/3) -> one id lost -> FAIL
+    src = _sqlite(tmp, "s", [
+        "CREATE TABLE enc (nd_auto_increment_id INTEGER, encounterid INTEGER)",
+        "INSERT INTO enc VALUES (1,100010001),(2,100010002),(3,100020001)",
+    ])
+    dst = _sqlite(tmp, "d", [
+        "CREATE TABLE enc (nd_auto_increment_id INTEGER, encounterid INTEGER)",
+        "INSERT INTO enc VALUES (1,100010001),(2,100010002),(3,NULL)",
+    ])
+    cfg = SimpleNamespace(
+        qc=SimpleNamespace(fillrate_tolerance_pct=1.0),
+        source_db=SimpleNamespace(connection_string=lambda: src),
+        destination_db=SimpleNamespace(connection_string=lambda: dst),
+    )
+    roles = TableRoles(table="enc", columns={"encounterid": "ENCOUNTER_ID"}, encounter_id_col="encounterid")
+    r = run_fill_rate(cfg, roles)
+    assert r["status"] == "FAIL"
+    col = r["result"]["columns"][0]
+    assert col["source_fill_pct"] == 100.0 and col["dest_fill_pct"] == round(2/3*100, 2)
+    assert col["passed"] is False
+
+
+def test_patient_id_mapping_correctness():
+    """Dest patient id must equal the mapping table's nd id for the row's source patient id."""
+    from deid.qc.builders.structured import SPatientIdDetector
+    # reverse map: nd_patient_id -> source patient_id
+    d = SPatientIdDetector(
+        patient_mapping_dict={1001: {"patient_id": "1", "offset": 34}, 1002: {"patient_id": "2", "offset": 31}},
+        enc_mapping_dict={}, qc_config={}, column_config={"column_name": "patientid"},
+        patient_id_column="patientid", enc_id_column=None,
+    )
+    before = [
+        {"nd_auto_increment_id": 1, "patientid": "1"},   # source pid 1
+        {"nd_auto_increment_id": 2, "patientid": "2"},   # source pid 2
+    ]
+    after = [
+        {"nd_auto_increment_id": 1, "patientid": 1001},  # correct: 1 -> 1001
+        {"nd_auto_increment_id": 2, "patientid": 1001},  # WRONG: pid 2 should be 1002, got 1001
+    ]
+    r = d.is_deidentified(before_rows=before, after_rows=after, ignore_condition={})
+    assert r["passed_count"] == 1 and r["failed_count"] == 1
+    assert r["remarks"]["mapping_mismatch"] == 1
+    off = r["remarks"]["mapping_offenders"][0]
+    assert off["nd_auto_increment_id"] == 2 and off["mapped_source_id"] == "1"
+
+
+def test_load_mapping_covers_all_patient_columns(tmp_path):
+    """A table with two patient columns (e.g. From/To) reverse-maps BOTH, not just the primary."""
+    from deid.qc.scanner import LoadMappingData
+    tmp = str(tmp_path)
+    map_url = _sqlite(tmp, "mm", [
+        "CREATE TABLE patient_mapping_table (patient_id TEXT, nd_patient_id INTEGER, offset INTEGER)",
+        "INSERT INTO patient_mapping_table VALUES ('A',1001,34),('B',1002,31)",
+    ])
+    sample = [{"nd_auto_increment_id": 1, "fromid": 1001, "toid": 1002}]
+    table_config = {
+        "columns_details": [
+            {"column_name": "fromid", "de_identification_rule": "PATIENT_ID"},
+            {"column_name": "toid", "de_identification_rule": "PATIENT_ID"},
+        ],
+        "reference_patient_id_column": "fromid",
+        "reference_enc_id_column": None,
+    }
+    pdict, _ = LoadMappingData.load(sample, table_config, {"connection_str": map_url})
+    assert set(pdict) == {1001, 1002}   # both columns' nd ids present
+
+
+def test_offender_ids_collects_uniform_list():
+    from deid.qc.auto_qc import _offender_ids
+    remarks = {
+        "mapping_offenders": [{"nd_auto_increment_id": 5}, {"nd_auto_increment_id": 6}],
+        "offenders": [{"nd_auto_increment_id": 6}, {"nd_auto_increment_id": 7}],  # 6 deduped
+        "length_verification_failed": 3,  # non-list counter — ignored
+    }
+    assert _offender_ids(remarks) == "5, 6, 7"

@@ -23,15 +23,25 @@ class LoadMappingData:
         patient_dict, enc_dict = {}, {}
         available = set(sample_data[0].keys()) if sample_data else set()
         mdb: MappingDb | None = None
+        # Reverse-map ALL patient-rule columns present in the dest sample, not just the primary
+        # reference column — a table may carry more than one patient id (e.g. mergelogs From/To),
+        # and each must be verifiable by the id mapping-correctness detector.
+        patient_cols = [c["column_name"] for c in table_config.get("columns_details", [])
+                        if c.get("de_identification_rule") in ("PATIENT_ID", "REFERENCE_PID")]
         pat_col = table_config["reference_patient_id_column"]
-        if pat_col is not None and pat_col in available:
-            # These dest columns hold the ND id value (the deid pipeline wrote the surrogate
-            # into the reference column), so we reverse-map them back to source id + offset.
-            nd_patient_ids = [row[pat_col] for row in sample_data if row.get(pat_col) is not None]
-            mdb = MappingDb(mapping_db_config)
-            patient_dict = mdb.get_reverse_patients_dict(nd_patient_ids)
-        elif pat_col is not None:
-            logger.warning("[QC] reference_patient_id_column '%s' not in dest sample — skipping patient mapping", pat_col)
+        if pat_col and pat_col not in patient_cols:
+            patient_cols.append(pat_col)
+        for c in patient_cols:
+            if c not in available:
+                logger.warning("[QC] patient column '%s' not in dest sample — skipping its mapping", c)
+        present_pat_cols = [c for c in patient_cols if c in available]
+        if present_pat_cols:
+            # These dest columns hold the ND id value (the deid pipeline wrote the surrogate into
+            # each), so we reverse-map them back to source id + offset.
+            nd_patient_ids = [row[c] for c in present_pat_cols for row in sample_data if row.get(c) is not None]
+            if nd_patient_ids:
+                mdb = MappingDb(mapping_db_config)
+                patient_dict = mdb.get_reverse_patients_dict(list(dict.fromkeys(nd_patient_ids)))
         enc_col = table_config["reference_enc_id_column"]
         if enc_col is not None and enc_col in available:
             nd_enc_ids = [row[enc_col] for row in sample_data if row.get(enc_col) is not None]

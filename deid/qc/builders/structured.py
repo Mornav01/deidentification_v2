@@ -47,6 +47,33 @@ def _row_get_ci(row: dict, col: str, default: Any = None) -> Any:
     return default
 
 
+def _check_id_mapping(after_row: dict, before_dict: dict, column_name: str,
+                      mapping_dict: dict, mapped_field: str):
+    """Verify a row's de-identified id maps back to its source id per the mapping table.
+
+    ``mapping_dict`` is the reverse map (nd id -> {mapped_field: source id, ...}) built for the
+    sample. Returns None when OK or not verifiable (nd id absent from the sampled map, or no aligned
+    source row), else an offender dict describing the mismatch for manual review.
+    """
+    dest_nd = after_row.get(column_name)
+    if dest_nd is None or not mapping_dict:
+        return None
+    entry = mapping_dict.get(dest_nd)
+    if entry is None:
+        return None  # nd id not in the sampled reverse map — can't verify; don't false-fail
+    src_row = before_dict.get(after_row.get("nd_auto_increment_id"))
+    if src_row is None:
+        return None
+    src_id = _row_get_ci(src_row, column_name)
+    mapped = entry.get(mapped_field)
+    if src_id is None or mapped is None:
+        return None
+    if str(mapped).strip() != str(src_id).strip():
+        return {"nd_auto_increment_id": after_row.get("nd_auto_increment_id"),
+                "source_id": src_id, "dest_nd_id": dest_nd, "mapped_source_id": mapped}
+    return None
+
+
 def _is_plausible_date(d: datetime | None, today: datetime) -> bool:
     """A de-identified date must land within [1900-01-01, today] (doc Part 1 DATE value check)."""
     if d is None:
@@ -248,16 +275,27 @@ class SPatientIdDetector(Detector):
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
-        column_qc_result = ColumnQCResult(passed_count=0, failed_count=0, remarks={"length_verification_failed": 0, "prefix_verification_failed": 0})
+        column_qc_result = ColumnQCResult(passed_count=0, failed_count=0, remarks={
+            "length_verification_failed": 0, "prefix_verification_failed": 0,
+            "mapping_mismatch": 0, "mapping_offenders": []})
         column_name = self.column_config["column_name"]
+        before_dict = {r.get("nd_auto_increment_id"): r for r in before_rows}
         for row in after_rows:
             is_deidentify = True
-            if row[column_name] is not None and not self._verify_length(row[column_name], ignore_condition):
+            val = row.get(column_name)
+            if val is not None and not self._verify_length(val, ignore_condition):
                 is_deidentify = False
                 column_qc_result["remarks"]["length_verification_failed"] += 1
-            if row[column_name] is not None and  not self._verify_prefix(row[column_name], ignore_condition):
+            if val is not None and not self._verify_prefix(val, ignore_condition):
                 is_deidentify = False
                 column_qc_result["remarks"]["prefix_verification_failed"] += 1
+            # Mapping correctness: this row's de-identified id must map back to its source id.
+            offender = _check_id_mapping(row, before_dict, column_name, self.patient_mapping_dict, "patient_id")
+            if offender is not None:
+                is_deidentify = False
+                column_qc_result["remarks"]["mapping_mismatch"] += 1
+                if len(column_qc_result["remarks"]["mapping_offenders"]) < 50:
+                    column_qc_result["remarks"]["mapping_offenders"].append(offender)
             if is_deidentify:
                 column_qc_result["passed_count"] += 1
             else:
@@ -282,16 +320,27 @@ class SReferencePIDDetector(Detector):
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
-        column_qc_result = ColumnQCResult(passed_count=0, failed_count=0, remarks={"length_verification_failed": 0, "prefix_verification_failed": 0})
+        column_qc_result = ColumnQCResult(passed_count=0, failed_count=0, remarks={
+            "length_verification_failed": 0, "prefix_verification_failed": 0,
+            "mapping_mismatch": 0, "mapping_offenders": []})
         column_name = self.column_config["column_name"]
+        before_dict = {r.get("nd_auto_increment_id"): r for r in before_rows}
         for row in after_rows:
             is_deidentify = True
-            if row[column_name] is not None and not self._verify_length(row[column_name], ignore_condition):
+            val = row.get(column_name)
+            if val is not None and not self._verify_length(val, ignore_condition):
                 is_deidentify = False
                 column_qc_result["remarks"]["length_verification_failed"] += 1
-            if row[column_name] is not None and  not self._verify_prefix(row[column_name], ignore_condition):
+            if val is not None and not self._verify_prefix(val, ignore_condition):
                 is_deidentify = False
                 column_qc_result["remarks"]["prefix_verification_failed"] += 1
+            # Mapping correctness: this row's de-identified id must map back to its source id.
+            offender = _check_id_mapping(row, before_dict, column_name, self.patient_mapping_dict, "patient_id")
+            if offender is not None:
+                is_deidentify = False
+                column_qc_result["remarks"]["mapping_mismatch"] += 1
+                if len(column_qc_result["remarks"]["mapping_offenders"]) < 50:
+                    column_qc_result["remarks"]["mapping_offenders"].append(offender)
             if is_deidentify:
                 column_qc_result["passed_count"] += 1
             else:
@@ -316,17 +365,42 @@ class SEncounterIDDetector(Detector):
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
-        column_qc_result = ColumnQCResult(passed_count=0, failed_count=0, remarks={"length_verification_failed": 0, "prefix_verification_failed": 0})
+        column_qc_result = ColumnQCResult(passed_count=0, failed_count=0, remarks={
+            "length_verification_failed": 0, "prefix_verification_failed": 0,
+            "patient_prefix_verification_failed": 0, "offenders": [],
+            "mapping_mismatch": 0, "mapping_offenders": []})
         column_name = self.column_config["column_name"]
+        pat_col = self.patient_id_column
+        before_dict = {r.get("nd_auto_increment_id"): r for r in before_rows}
 
         for row in after_rows:
             is_de_identify = True
-            if row[column_name] is not None and not self._verify_length(row[column_name], ignore_condition):
+            enc_val = row.get(column_name)
+            if enc_val is not None and not self._verify_length(enc_val, ignore_condition):
                 is_de_identify = False
                 column_qc_result["remarks"]["length_verification_failed"] += 1
-            if row[column_name] is not None and not self._verify_prefix(row[column_name], ignore_condition):
+            if enc_val is not None and not self._verify_prefix(enc_val, ignore_condition):
                 is_de_identify = False
                 column_qc_result["remarks"]["prefix_verification_failed"] += 1
+            # Surrogate-sequence check: nd_encounter_id must be prefixed by its row's nd_patient_id
+            # (scheme nd_encounter_id = nd_patient_id * 10^k + seq), i.e. left(enc, len(pat)) == pat.
+            if pat_col is not None and enc_val is not None:
+                pat_val = row.get(pat_col)
+                if pat_val is not None and not str(enc_val).startswith(str(pat_val)):
+                    is_de_identify = False
+                    column_qc_result["remarks"]["patient_prefix_verification_failed"] += 1
+                    if len(column_qc_result["remarks"]["offenders"]) < 50:
+                        column_qc_result["remarks"]["offenders"].append({
+                            "nd_auto_increment_id": row.get("nd_auto_increment_id"),
+                            "patientid": pat_val, "encounterid": enc_val,
+                        })
+            # Mapping correctness: nd_encounter_id must map back to this row's source encounter id.
+            offender = _check_id_mapping(row, before_dict, column_name, self.enc_mapping_dict, "encounter_id")
+            if offender is not None:
+                is_de_identify = False
+                column_qc_result["remarks"]["mapping_mismatch"] += 1
+                if len(column_qc_result["remarks"]["mapping_offenders"]) < 50:
+                    column_qc_result["remarks"]["mapping_offenders"].append(offender)
             if is_de_identify:
                 column_qc_result["passed_count"] += 1
             else:

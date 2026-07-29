@@ -99,6 +99,17 @@ class TestGetOrCreateMaxBased:
         assert id2 == 10000002
         assert id3 == 10000003
 
+    def test_new_patient_mapping_gets_banded_offset(self, mapping_session):
+        """New mappings must get a banded (30-38, signed) offset, not the ORM's offset=0."""
+        from deid.models.mappings import get_or_create_patient_mapping, PatientMapping
+        get_or_create_patient_mapping(mapping_session, "PX", id_prefix=10000000)
+        m = mapping_session.query(PatientMapping).filter_by(patient_id="PX").first()
+        assert 30 <= abs(m.offset) <= 38 and m.offset != 0
+        # explicit override still honored
+        get_or_create_patient_mapping(mapping_session, "PY", id_prefix=10000000, offset=-33)
+        m2 = mapping_session.query(PatientMapping).filter_by(patient_id="PY").first()
+        assert m2.offset == -33
+
     def test_patient_idempotent(self, mapping_session):
         from deid.models.mappings import get_or_create_patient_mapping
 

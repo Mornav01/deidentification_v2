@@ -88,7 +88,8 @@ def auto_qc_command(
     failing = [r for r in out["summary"] if r["overall_status"] in ("FAIL", "ERROR", "PARTIAL")]
     for r in out["summary"]:
         typer.echo(f"  [{r['overall_status']:<8}] {r['table']}  "
-                   f"(part1={r['part1_status']} delta={r['delta_status']} master={r['master_status']})")
+                   f"(part1={r['part1_status']} delta={r['delta_status']} master={r['master_status']} "
+                   f"fillrate={r.get('fillrate_status', '')})")
     typer.echo(f"Auto-QC complete: {len(out['summary'])} row(s), {len(failing)} failing/errored.")
     typer.echo(f"  summary : {out['summary_csv']}")
     typer.echo(f"  findings: {out['findings_csv']}  ({len(out['findings'])} finding(s))")

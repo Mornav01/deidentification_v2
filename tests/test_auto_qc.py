@@ -212,6 +212,7 @@ def test_run_auto_qc_writes_both_csvs(tmp_path, monkeypatch):
     monkeypatch.setattr(aq, "run_master", lambda cfg, roles, conn, backend: (
         {"status": "PASS", "result": {"fail_count": 0, "coverage_gaps": 0, "failure_detail": []}}
         if roles.note_cols else {"status": "SKIPPED", "result": None}))
+    monkeypatch.setattr(aq, "run_fill_rate", lambda cfg, roles: {"status": "SKIPPED", "result": None})
     monkeypatch.setattr(aq, "run_gate", lambda cfg: {"status": "SKIPPED", "reason": "test", "checks": []})
 
     out = run_auto_qc(_fake_cfg(), rules, out_dir=str(tmp_path / "out"))
@@ -241,6 +242,7 @@ def test_run_auto_qc_error_in_one_check_is_isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(aq, "run_delta", lambda cfg, roles, delta_after=None: {"status": "PASS", "result": {
         "biz_key_col": "patientid", "missing_in_dest": 0, "extra_in_dest": 0, "value_mismatch": 0, "reason": ""}})
     monkeypatch.setattr(aq, "run_master", lambda *a, **k: {"status": "SKIPPED", "result": None})
+    monkeypatch.setattr(aq, "run_fill_rate", lambda cfg, roles: {"status": "SKIPPED", "result": None})
     monkeypatch.setattr(aq, "run_gate", lambda cfg: {"status": "SKIPPED", "checks": []})
 
     out = run_auto_qc(_fake_cfg(), rules, out_dir=str(tmp_path / "out"))
@@ -264,6 +266,7 @@ def test_run_auto_qc_parallel_matches_sequential(tmp_path, monkeypatch):
     monkeypatch.setattr(aq, "run_delta", lambda cfg, roles, delta_after=None: {"status": "PASS", "result": {
         "biz_key_col": "", "missing_in_dest": 0, "extra_in_dest": 0, "value_mismatch": 0, "reason": ""}})
     monkeypatch.setattr(aq, "run_master", lambda *a, **k: {"status": "SKIPPED", "result": None})
+    monkeypatch.setattr(aq, "run_fill_rate", lambda cfg, roles: {"status": "SKIPPED", "result": None})
     monkeypatch.setattr(aq, "run_gate", lambda cfg: {"status": "SKIPPED", "checks": []})
 
     out = run_auto_qc(_fake_cfg(), rules, tables=["encounters", "patients"],

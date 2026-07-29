@@ -57,10 +57,13 @@ class Part2Config:
     encounter_map_src_col: str = "encounter_id"
     encounter_map_nd_col: str = "nd_encounter_id"
     check_uniqueness: bool = True
-    # E. offset range
+    # E. offset range — valid offsets are non-zero and banded: [offset_min, -offset_abs_min]
+    #    ∪ [offset_abs_min, offset_max], i.e. magnitude in [offset_abs_min, |bound|]. Default band
+    #    is [-38,-30] ∪ [30,38]: never 0 and never a too-small (easily-reversible) shift.
     offset_col: str = "offset"
     offset_min: int = -38
     offset_max: int = 38
+    offset_abs_min: int = 30
     check_offset_range: bool = True
     # F. mapping id format
     nd_patient_len: Optional[int] = None
@@ -186,20 +189,33 @@ def check_mapping_uniqueness(mapping_handler, cfg: Part2Config) -> list[dict]:
 
 
 def check_offset_range(mapping_handler, cfg: Part2Config) -> list[dict]:
+    """Every patient offset must be non-zero and banded: within [offset_min, offset_max] AND with
+    magnitude >= offset_abs_min. A violation is any offset outside that band (0, too-small, or
+    out-of-range). Samples a few offending nd_patient_ids into the details for manual review."""
     if not cfg.check_offset_range:
         return []
     qi = mapping_handler._qi
     table = cfg.patient_mapping_table
+    oc = qi(cfg.offset_col)
+    params = {"lo": cfg.offset_min, "hi": cfg.offset_max, "absmin": cfg.offset_abs_min}
+    where = f"{oc} IS NOT NULL AND ({oc} < :lo OR {oc} > :hi OR ABS({oc}) < :absmin)"
+    band = f"[{cfg.offset_min},-{cfg.offset_abs_min}] U [{cfg.offset_abs_min},{cfg.offset_max}]"
     try:
-        sql = (
-            f"SELECT COUNT(*) FROM {qi(table)} "
-            f"WHERE {qi(cfg.offset_col)} IS NOT NULL "
-            f"AND ({qi(cfg.offset_col)} < :lo OR {qi(cfg.offset_col)} > :hi)"
-        )
-        v = _scalar(mapping_handler, sql, {"lo": cfg.offset_min, "hi": cfg.offset_max})
+        v = _scalar(mapping_handler, f"SELECT COUNT(*) FROM {qi(table)} WHERE {where}", params)
         status = "pass" if v == 0 else "fail"
-        return [_result("offset_range", status, entity=table, expected=0, actual=v, delta=v,
-                        details="" if v == 0 else f"{v} offsets outside [{cfg.offset_min},{cfg.offset_max}]")]
+        details = ""
+        if v:
+            nd_col = qi(cfg.patient_map_nd_col)
+            is_mssql = mapping_handler.engine.dialect.name == "mssql"
+            top = "TOP 20 " if is_mssql else ""
+            limit = "" if is_mssql else " LIMIT 20"
+            with mapping_handler.engine.connect() as conn:
+                sample = conn.execute(
+                    text(f"SELECT {top}{nd_col}, {oc} FROM {qi(table)} WHERE {where}{limit}"), params
+                ).fetchall()
+            offenders = ", ".join(f"{r[0]}:{r[1]}" for r in sample)
+            details = f"{v} offsets outside {band}; e.g. nd_patient_id:offset = [{offenders}]"
+        return [_result("offset_range", status, entity=table, expected=0, actual=v, delta=v, details=details)]
     except Exception as exc:
         return [_result("offset_range", "error", entity=table, details=str(exc))]
 

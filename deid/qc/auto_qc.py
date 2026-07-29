@@ -46,6 +46,7 @@ SUMMARY_FIELDS = [
     "part1_status", "part1_failed_columns", "part1_source_rows", "part1_dest_rows",
     "delta_status", "delta_missing_in_dest", "delta_extra_in_dest", "delta_value_mismatch",
     "master_status", "master_fail_count", "master_coverage_gaps",
+    "fillrate_status", "fillrate_failed_columns",
     "errors",
 ]
 FINDINGS_FIELDS = ["table", "part", "check", "column", "status", "count", "detail"]
@@ -273,19 +274,122 @@ def run_master(cfg, roles: TableRoles, pii_master_conn_str: Optional[str], resid
     return {"status": "PASS" if ok else "FAIL", "result": report}
 
 
+# Identifier columns get mapping-generated values; their non-null fill rate must be preserved by
+# de-identification (a filled source id must map to a filled dest id, a null stays null).
+_ID_RULES = ("PATIENT_ID", "REFERENCE_PID", "ENCOUNTER_ID", "APPOINTMENT_ID", "CHART_ID")
+
+
+def _fill_counts(conn_str: str, table: str, wanted_lower: list[str]) -> tuple[int, dict, dict]:
+    """(total_rows, {lower_col: non_null_count}, {lower_col: actual_col_name}) for the wanted columns
+    present in ``table``. One aggregate query; column casing resolved case-insensitively."""
+    from sqlalchemy import create_engine, inspect, func, select, Table, MetaData
+    engine = create_engine(conn_str)
+    try:
+        actual = {c["name"].lower(): c["name"] for c in inspect(engine).get_columns(table)}
+        present = {low: actual[low] for low in wanted_lower if low in actual}
+        md = MetaData()
+        t = Table(table, md, autoload_with=engine)
+        selects = [func.count().label("t__total")] + [func.count(t.c[name]).label(low) for low, name in present.items()]
+        with engine.connect() as conn:
+            row = conn.execute(select(*selects)).mappings().fetchone()
+        total = int(row["t__total"] or 0)
+        counts = {low: int(row[low] or 0) for low in present}
+        return total, counts, present
+    finally:
+        engine.dispose()
+
+
+def run_fill_rate(cfg, roles: TableRoles) -> dict:
+    """Compare source vs dest non-null fill rate for each identifier column; FAIL when they diverge
+    beyond ``qc.fillrate_tolerance_pct`` (default 1.0 pt) — e.g. a 100%-filled source id must stay
+    100% (never nulled), a 60%-filled one must stay ~60%."""
+    tolerance = float(getattr(cfg.qc, "fillrate_tolerance_pct", 1.0) or 1.0)
+    id_cols = [c for c, rule in roles.columns.items() if rule in _ID_RULES]
+    if not id_cols:
+        return {"status": "SKIPPED", "reason": "no identifier columns", "result": None}
+    wanted = [c.lower() for c in id_cols]
+    src_total, src_counts, _ = _fill_counts(cfg.source_db.connection_string(), roles.table, wanted)
+    dst_total, dst_counts, dst_present = _fill_counts(cfg.destination_db.connection_string(), roles.table, wanted)
+
+    columns, any_fail = [], False
+    for low in wanted:
+        if low not in src_counts or low not in dst_counts:
+            continue  # column not present on one side — nothing to compare
+        s_rate = (src_counts[low] / src_total * 100.0) if src_total else 0.0
+        d_rate = (dst_counts[low] / dst_total * 100.0) if dst_total else 0.0
+        passed = abs(s_rate - d_rate) <= tolerance
+        any_fail = any_fail or not passed
+        logger.info("[fill-rate] %s.%s: source=%.2f%% (%d/%d) dest=%.2f%% (%d/%d) %s",
+                    roles.table, dst_present.get(low, low), s_rate, src_counts[low], src_total,
+                    d_rate, dst_counts[low], dst_total, "PASS" if passed else "FAIL")
+        columns.append({
+            "column": dst_present.get(low, low),
+            "source_fill_pct": round(s_rate, 2), "dest_fill_pct": round(d_rate, 2),
+            "source_total": src_total, "dest_total": dst_total,
+            "source_filled": src_counts[low], "dest_filled": dst_counts[low],
+            "passed": passed,
+        })
+    if not columns:
+        return {"status": "SKIPPED", "reason": "identifier columns not present in both source and dest", "result": None}
+    return {"status": "FAIL" if any_fail else "PASS", "result": {"columns": columns}}
+
+
+def _first_identifier_col(cfg, kind: str) -> Optional[str]:
+    """First configured identifier column for a mapping kind ('patient'/'encounter'), else None.
+
+    The physical source-id column in the mapping tables is renamed per practice (e.g. 'patientid',
+    not the default 'patient_id'), so the uniqueness/format checks must be pointed at the real name.
+    """
+    try:
+        t = cfg.mapping_tables.get(kind)
+    except Exception:
+        t = None
+    cols = list(getattr(t, "identifier_columns", []) or []) if t else []
+    return cols[0] if cols else None
+
+
 def run_gate(cfg) -> dict:
-    """Part-2 mapping & count gate — run once per run (mapping-level, not per-table)."""
-    from deid.qc.mapping_count import Part2Config, run_part2_checks
+    """Mapping-level gate — run once per run (not per-table).
+
+    The core mapping invariants ALWAYS run, regardless of whether the fuller ``qc.part2`` suite is
+    configured: (1) patient offset band (non-zero, magnitude in [offset_abs_min, |bound|]) and
+    (2) 1:1 mapping uniqueness (each source id → exactly one nd id). When ``qc.part2`` additionally
+    declares count/format checks (which need the source + dest DBs), the full suite runs instead.
+    """
+    from deid.qc.mapping_count import (
+        Part2Config, run_part2_checks, check_offset_range, check_mapping_uniqueness,
+    )
+    from deid.core.dbPkg.dbhandler import NDDBHandler
 
     part2 = dict(getattr(cfg.qc, "part2", {}) or {})
-    if not part2:
-        return {"status": "SKIPPED", "reason": "qc.part2 not configured", "checks": []}
-    checks = run_part2_checks(
-        source_conn_str=cfg.source_db.connection_string(),
-        dest_conn_str=cfg.destination_db.connection_string(),
-        mapping_conn_str=cfg.mappings_connection_string,
-        cfg=Part2Config.from_dict(part2),
-    )
+    # Point the mapping checks at the real (renamed) source-id columns unless qc.part2 overrides.
+    pat_src = _first_identifier_col(cfg, "patient")
+    if pat_src and "patient_map_src_col" not in part2:
+        part2["patient_map_src_col"] = pat_src
+    enc_src = _first_identifier_col(cfg, "encounter")
+    if enc_src and "encounter_map_src_col" not in part2:
+        part2["encounter_map_src_col"] = enc_src
+    p2cfg = Part2Config.from_dict(part2)
+
+    # The count/format checks require source+dest; only run the full suite when configured.
+    needs_full = bool(p2cfg.mapping_target_pairs or p2cfg.patient_encounter_table or p2cfg.encounter_fk_tables)
+    if needs_full:
+        checks = run_part2_checks(
+            source_conn_str=cfg.source_db.connection_string(),
+            dest_conn_str=cfg.destination_db.connection_string(),
+            mapping_conn_str=cfg.mappings_connection_string,
+            cfg=p2cfg,
+        )
+    else:
+        # Core mapping invariants only — always enforced, mapping DB alone.
+        mapping = NDDBHandler(cfg.mappings_connection_string, read_only=True)
+        try:
+            checks = check_mapping_uniqueness(mapping, p2cfg) + check_offset_range(mapping, p2cfg)
+        finally:
+            mapping.close()
+
+    if not checks:
+        return {"status": "SKIPPED", "reason": "no gate checks ran", "checks": []}
     failed = any(c.get("status") in ("fail", "error") for c in checks)
     return {"status": "FAIL" if failed else "PASS", "checks": checks}
 
@@ -322,7 +426,8 @@ def _existing_dest_tables(cfg) -> Optional[set]:
 
 def _skipped_table_record(roles: TableRoles, reason: str) -> dict:
     skip = {"status": "SKIPPED", "reason": reason, "result": None}
-    return {"roles": roles, "part1": dict(skip), "delta": dict(skip), "master": dict(skip)}
+    return {"roles": roles, "part1": dict(skip), "delta": dict(skip), "master": dict(skip),
+            "fillrate": dict(skip)}
 
 
 def _qc_one_table(cfg, roles: TableRoles, qc_config: dict, mapping_db_config: dict, *,
@@ -335,6 +440,7 @@ def _qc_one_table(cfg, roles: TableRoles, qc_config: dict, mapping_db_config: di
         "part1": _safe(run_part1, cfg, roles, qc_config, mapping_db_config),
         "delta": _safe(run_delta, cfg, roles, delta_after=delta_after),
         "master": _safe(run_master, cfg, roles, pii_master_conn_str, residual_pii_backend),
+        "fillrate": _safe(run_fill_rate, cfg, roles),
     }
 
 
@@ -349,6 +455,23 @@ def _overall(statuses: list[str]) -> str:
     if "ERROR" in statuses:
         return "PARTIAL" if "PASS" in statuses else "ERROR"
     return "PASS"
+
+
+# Remark keys whose values are per-row offender lists (each entry carries nd_auto_increment_id).
+_OFFENDER_KEYS = ("mapping_offenders", "offenders", "exact_match_failures", "remarks", "format_remarks")
+
+
+def _offender_ids(remarks: dict, limit: int = 50) -> str:
+    """Comma-joined, de-duplicated nd_auto_increment_id values gathered from any offender list in a
+    column's remarks — a uniform 'go look at these rows' list across all structured detectors."""
+    if not isinstance(remarks, dict):
+        return ""
+    ids: list[str] = []
+    for key in _OFFENDER_KEYS:
+        for x in (remarks.get(key) or []):
+            if isinstance(x, dict) and x.get("nd_auto_increment_id") is not None:
+                ids.append(str(x["nd_auto_increment_id"]))
+    return ", ".join(list(dict.fromkeys(ids))[:limit])
 
 
 def _remarks_str(remarks: dict) -> str:
@@ -371,18 +494,24 @@ def build_summary_rows(per_table: dict, gate: dict) -> list[dict]:
     rows = []
     for table, rec in per_table.items():
         p1, d, m = rec["part1"], rec["delta"], rec["master"]
+        f = rec.get("fillrate") or {"status": "SKIPPED", "result": None}
         p1res, dres, mres = p1.get("result") or {}, d.get("result") or {}, m.get("result") or {}
+        fres = f.get("result") or {}
         errs = [
             f"{name}:{check['reason']}"
-            for name, check in (("part1", p1), ("delta", d), ("master", m))
+            for name, check in (("part1", p1), ("delta", d), ("master", m), ("fillrate", f))
             if check["status"] == "ERROR" and check.get("reason")
         ]
         failed_cols = ";".join(
             c for c, r in (p1res.get("ColumnsQCResult", {}) or {}).items() if r.get("failed_count", 0) > 0
         )
+        fillrate_failed = ";".join(
+            f"{c['column']}(src={c['source_fill_pct']}%/dst={c['dest_fill_pct']}%)"
+            for c in fres.get("columns", []) if not c["passed"]
+        )
         rows.append({
             "table": table,
-            "overall_status": _overall([p1["status"], d["status"], m["status"]]),
+            "overall_status": _overall([p1["status"], d["status"], m["status"], f["status"]]),
             "part1_status": p1["status"],
             "part1_failed_columns": failed_cols,
             "part1_source_rows": p1res.get("source_rows_count", ""),
@@ -394,6 +523,8 @@ def build_summary_rows(per_table: dict, gate: dict) -> list[dict]:
             "master_status": m["status"],
             "master_fail_count": mres.get("fail_count", ""),
             "master_coverage_gaps": mres.get("coverage_gaps", ""),
+            "fillrate_status": f["status"],
+            "fillrate_failed_columns": fillrate_failed,
             "errors": " | ".join(errs),
         })
     rows.append({
@@ -402,6 +533,7 @@ def build_summary_rows(per_table: dict, gate: dict) -> list[dict]:
         "part1_status": "", "part1_failed_columns": "", "part1_source_rows": "", "part1_dest_rows": "",
         "delta_status": "", "delta_missing_in_dest": "", "delta_extra_in_dest": "", "delta_value_mismatch": "",
         "master_status": "", "master_fail_count": "", "master_coverage_gaps": "",
+        "fillrate_status": "", "fillrate_failed_columns": "",
         "errors": gate.get("reason", ""),
     })
     return rows
@@ -431,11 +563,12 @@ def build_findings_rows(per_table: dict, gate: dict) -> list[dict]:
             for col, r in (res.get("ColumnsQCResult", {}) or {}).items():
                 remarks = r.get("remarks", {}) or {}
                 if r.get("failed_count", 0) > 0:
-                    # For unstructured notes, lead with the failing row ids so a reviewer can pull them.
-                    exact_fail = remarks.get("exact_match_failures") if isinstance(remarks, dict) else None
-                    if exact_fail:
-                        ids = ", ".join(str(x.get("nd_auto_increment_id")) for x in exact_fail[:50])
-                        detail = f"nd_auto_increment_id=[{ids}]"
+                    # Uniformly lead with the failing row ids (from any detector's offender list) so a
+                    # reviewer can pull them, then append the non-offender counters (length/prefix/etc.).
+                    ids = _offender_ids(remarks)
+                    if ids:
+                        summary = _remarks_str({k: v for k, v in remarks.items() if k not in _OFFENDER_KEYS})
+                        detail = f"nd_auto_increment_id=[{ids}]" + (f"; {summary}" if summary else "")
                     else:
                         detail = _remarks_str(remarks)
                     rows.append(_finding(table, _part_label(roles, col), "phi_detected", col,
@@ -471,6 +604,18 @@ def build_findings_rows(per_table: dict, gate: dict) -> list[dict]:
                           f"surrogate_missing={fdet.get('surrogate_missing')}")
                 rows.append(_finding(table, "master_phi", "phi_or_mask", str(fdet.get("nd_patient_id", "")),
                                      "FAIL", "", detail))
+
+        fr = rec.get("fillrate", {})
+        frr = fr.get("result")
+        if fr.get("status") == "ERROR":
+            rows.append(_finding(table, "fill_rate", "(error)", "", "ERROR", "", fr.get("reason", "")))
+        elif frr:
+            for c in frr.get("columns", []):
+                if not c["passed"]:
+                    rows.append(_finding(
+                        table, "fill_rate", "id_fill_rate_mismatch", c["column"], "FAIL", c["dest_filled"],
+                        f"source={c['source_fill_pct']}% ({c['source_filled']}/{c['source_total']}) "
+                        f"dest={c['dest_fill_pct']}% ({c['dest_filled']}/{c['dest_total']})"))
 
     for c in gate.get("checks", []) or []:
         if c.get("status") in ("fail", "error"):

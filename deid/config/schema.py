@@ -131,6 +131,9 @@ class QCSettings(BaseModel):
     # (pii_master_conn_str, pii_columns, facility_names, ...) + a ``tables`` list of per-table
     # MasterPhiConfig dicts. See deid/qc/master_phi.py.
     master_phi: dict = {}
+    # Max allowed source↔dest divergence (percentage points) for identifier-column fill rates
+    # (auto-qc fill-rate check). e.g. 1.0 → dest rate must be within 1pt of source rate.
+    fillrate_tolerance_pct: float = 1.0
 
 
 class ClinicalBinDocConfig(BaseModel):
