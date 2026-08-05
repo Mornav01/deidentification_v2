@@ -26,7 +26,7 @@ import argparse
 import logging
 import os
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 
 
 MYSQL_USER = os.environ.get("DB_USER", "")
@@ -49,12 +49,26 @@ def create_mysql_engine(schema: str):
 
 
 def load_patient_map(mapping_schema: str) -> dict:
-    """Return {patientid (raw source id) → nd_patient_id} from patient_mapping_table."""
+    """Return {patientid (raw source id) → nd_patient_id} from patient_mapping_table.
+
+    Excluded patients are omitted. mapping_delta keeps them in the mapping table
+    (flagged `excluded = 1`) so their nd_patient_id is stable, but their PII must
+    never reach the master tables. The column guard keeps this working against a
+    mapping schema that predates the flag.
+    """
     engine = create_mysql_engine(mapping_schema)
+    cols = {c["name"] for c in inspect(engine).get_columns("patient_mapping_table")}
+    query = "SELECT patientid, nd_patient_id FROM patient_mapping_table"
+    if "excluded" in cols:
+        query += " WHERE excluded = 0"
+    else:
+        logger.warning(
+            "patient_mapping_table has no `excluded` column — loading every patient. "
+            "Run mapping_delta.py once to add it."
+        )
     with engine.connect() as conn:
-        rows = conn.execute(
-            text("SELECT patientid, nd_patient_id FROM patient_mapping_table")
-        ).fetchall()
+        # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
+        rows = conn.execute(text(query)).fetchall()
     return {row[0]: row[1] for row in rows}
 
 

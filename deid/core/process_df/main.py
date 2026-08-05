@@ -276,6 +276,10 @@ class JoinMapping:
         self.key_phi_columns = key_phi_columns
         self.mapping_db_config = mapping_db_config
         self.table_name = table_name
+        # Memo for "does patient_mapping_table carry the `excluded` flag?" — only
+        # dent's mapping_pg does, and this is on the per-batch path, so the answer
+        # is reflected once rather than on every lookup.
+        self._has_excluded_col: bool | None = None
         nd_logger.info(
             f"[{self.__class__.__name__}] Initialized for table: {table_name}"
         )
@@ -365,6 +369,28 @@ class JoinMapping:
         )
         return configured, None
 
+    def _get_excluded_nd_patient_ids(self, nd_patient_ids: list) -> list:
+        """Return the subset of nd_patient_ids flagged `excluded` in patient_mapping_table.
+
+        Empty list when the mapping schema has no `excluded` column (every EHR
+        other than dent, and dent before the flag was added).
+        """
+        if not nd_patient_ids or self._has_excluded_col is False:
+            return []
+
+        metadata = MetaData()
+        patient_mapping = Table("patient_mapping_table", metadata, autoload_with=self.engine)
+        self._has_excluded_col = "excluded" in patient_mapping.c
+        if not self._has_excluded_col:
+            return []
+
+        stmt = select(patient_mapping.c.nd_patient_id).where(
+            patient_mapping.c.nd_patient_id.in_(nd_patient_ids),
+            patient_mapping.c.excluded == 1,
+        )
+        with self.engine.connect() as conn:
+            return [row[0] for row in conn.execute(stmt)]
+
     def _get_patient_mapping_from_nd_patient_id(
         self,
         nd_patient_ids: list,
@@ -395,6 +421,9 @@ class JoinMapping:
         stmt = select(*cols_to_select).where(
             patient_mapping.c.nd_patient_id.in_(nd_patient_ids)
         )
+        # See apply_patient_mappings — excluded patients must not resolve.
+        if "excluded" in patient_mapping.c:
+            stmt = stmt.where(patient_mapping.c.excluded == 0)
         with self.engine.connect() as conn:
             df = _sql_result_to_polars(conn.execute(stmt))
         nd_logger.info(
@@ -472,6 +501,11 @@ class JoinMapping:
                 stmt = select(*cols_to_select).where(
                     patient_mapping_table.c[identifier_col].in_(distinct_values)
                 )
+                # Excluded patients keep their mapping row so their nd_patient_id
+                # stays stable, but must never resolve during de-id. Guarded so
+                # mapping schemas that predate the flag still work.
+                if "excluded" in patient_mapping_table.c:
+                    stmt = stmt.where(patient_mapping_table.c.excluded == 0)
                 with self.engine.connect() as conn:
                     df_mapping = _sql_result_to_polars(conn.execute(stmt))
 
@@ -554,6 +588,25 @@ class JoinMapping:
             df_patient_mapping = pl.DataFrame(
                 schema={"nd_patient_id": pl.Int64, "offset": pl.Int64}
             )
+        elif "nd_patient_id" in df_mapping.columns:
+            # _get_patient_mapping_from_nd_patient_id already dropped excluded
+            # patients. Drop their encounter/appointment/chart rows too — those
+            # rows carry nd_patient_id themselves, and the resolver coalesces it,
+            # so a left join alone would still resolve the excluded patient.
+            # Only excluded patients are dropped: rows for patients that are
+            # simply unmapped keep their pre-existing behaviour.
+            excluded = self._get_excluded_nd_patient_ids(nd_patient_ids)
+            if excluded:
+                before = df_mapping.height
+                excl = pl.DataFrame({"nd_patient_id": excluded}).cast(
+                    {"nd_patient_id": df_mapping.schema["nd_patient_id"]}
+                )
+                df_mapping = df_mapping.join(excl, on="nd_patient_id", how="anti")
+                nd_logger.info(
+                    f"[{self.__class__.__name__}] Dropped "
+                    f"{before - df_mapping.height} {table_name} rows for "
+                    f"{len(excluded)} excluded patients."
+                )
 
         nd_pid_col = f"nd_patient_id_{right_suffix}"
         if "nd_patient_id" in df_mapping.columns:

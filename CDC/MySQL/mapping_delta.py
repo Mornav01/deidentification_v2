@@ -13,9 +13,26 @@ It:
 
 Schema (new mapping_pg structure — see mapping_migration_to_new_structure_dent.sql):
   patient_mapping_table(nd_patient_id PK, patientid UNIQUE, offset,
-                        registration_date, created_at, updated_at)
+                        registration_date, excluded, excluded_at, created_at, updated_at)
   encounter_mapping_table(id PK AI, nd_patient_id, encounter_id, nd_encounter_id UNIQUE,
                           encounter_date, nd_ActiveFlag, created_at, updated_at, patientid)
+
+Exclusion handling:
+  Patients matching the exclusion criteria are NOT dropped from the mapping tables.
+  They are mapped like everyone else and flagged `excluded = 1` with `excluded_at`
+  recording when the flag was first raised. Consumers (master_pii_delta,
+  master_insurance_delta, the de-id mapping preload/joins) filter on `excluded = 0`,
+  so excluded patients still never reach the de-identified output.
+
+  Keeping the row means a patient who reappears in a later delta window without
+  exclusion criteria reuses their original nd_patient_id instead of being minted a
+  new one, and it gives an auditable record of who was excluded and from when.
+
+  The flag is STICKY: once raised it is never cleared by this script. The exclusion
+  criteria are evaluated against the staging *delta*, which holds only rows changed
+  in today's CDC window — a patient's qualifying visit surfaces in exactly one run,
+  so "absent from today's exclusion set" does not mean "no longer qualifies".
+  Clearing the flag requires re-evaluating against the full source database.
 
 Notes vs the old `mapping` structure:
   - patient_id (INT) → patientid (BIGINT); nd_patient_id is a plain BIGINT (no
@@ -38,6 +55,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     Column,
     DATETIME,
     CHAR,
@@ -47,6 +65,8 @@ from sqlalchemy import (
     UniqueConstraint,
     Index,
     create_engine,
+    func,
+    inspect,
     update,
     text,
 )
@@ -71,6 +91,40 @@ def create_mysql_engine(schema: str):
     """Create SQLAlchemy engine for a given schema."""
     url = f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASS}@{MYSQL_HOST}:{MYSQL_PORT}/{schema}"
     return create_engine(url, pool_recycle=3600, pool_pre_ping=True, connect_args={"init_command": "SET sql_mode=''"})
+
+
+def ensure_exclusion_columns(engine) -> None:
+    """Add `excluded` / `excluded_at` to an existing patient_mapping_table.
+
+    `metadata.create_all` only creates missing *tables*, so on a schema that was
+    built before the exclusion flag existed the columns have to be added here.
+    Idempotent — a no-op once the columns are present.
+    """
+    existing = {c["name"] for c in inspect(engine).get_columns("patient_mapping_table")}
+
+    ddl = []
+    if "excluded" not in existing:
+        ddl.append(
+            "ALTER TABLE patient_mapping_table "
+            "ADD COLUMN excluded TINYINT(1) NOT NULL DEFAULT 0"
+        )
+    if "excluded_at" not in existing:
+        ddl.append(
+            "ALTER TABLE patient_mapping_table ADD COLUMN excluded_at DATETIME NULL"
+        )
+
+    if not ddl:
+        return
+
+    with engine.begin() as conn:
+        for stmt in ddl:
+            logger.info("Applying: %s", stmt)
+            # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
+            conn.execute(text(stmt))
+        indexes = {i["name"] for i in inspect(engine).get_indexes("patient_mapping_table")}
+        if "idx_excluded" not in indexes:
+            conn.execute(text("CREATE INDEX idx_excluded ON patient_mapping_table (excluded)"))
+    logger.info("patient_mapping_table exclusion columns are present")
 
 
 def run_mapping_delta(mapping_schema: str, staging_schema: str):
@@ -103,10 +157,13 @@ def run_mapping_delta(mapping_schema: str, staging_schema: str):
         Column("patientid", BigInteger, nullable=False),
         Column("offset", Integer, nullable=False),
         Column("registration_date", DATETIME, nullable=True),
+        Column("excluded", Boolean, nullable=False, server_default=text("0")),
+        Column("excluded_at", DATETIME, nullable=True),
         Column("created_at", DATETIME, nullable=False),
         Column("updated_at", DATETIME, nullable=False),
         UniqueConstraint("patientid", name="uq_patientid"),
         Index("idx_patientid", "patientid"),
+        Index("idx_excluded", "excluded"),
     )
 
     encounter_mapping_table = Table(
@@ -127,6 +184,7 @@ def run_mapping_delta(mapping_schema: str, staging_schema: str):
     )
 
     metadata.create_all(dest_engine)
+    ensure_exclusion_columns(dest_engine)
     logger.info("Ensured patient_mapping_table and encounter_mapping_table exist")
 
     # -------------------------------------------------------------------------
@@ -138,7 +196,10 @@ def run_mapping_delta(mapping_schema: str, staging_schema: str):
     logger.info("Loading existing patient mappings from %s", mapping_schema)
     with dest_engine.connect() as conn:
         pat_rows = conn.execute(
-            text("SELECT patientid, nd_patient_id, `offset` FROM patient_mapping_table")
+            text(
+                "SELECT patientid, nd_patient_id, `offset`, excluded "
+                "FROM patient_mapping_table"
+            )
         ).fetchall()
         enc_rows = conn.execute(
             text("SELECT patientid, encounter_id, nd_encounter_id FROM encounter_mapping_table")
@@ -146,10 +207,13 @@ def run_mapping_delta(mapping_schema: str, staging_schema: str):
 
     old_pat_ids: dict[int, list] = {}
     old_pat_encids: dict[int, dict] = defaultdict(dict)
+    already_excluded: set[int] = set()
     last_patid = 0
 
-    for patientid, nd_patient_id, offset in pat_rows:
+    for patientid, nd_patient_id, offset, excluded in pat_rows:
         old_pat_ids[patientid] = [nd_patient_id, offset]
+        if excluded:
+            already_excluded.add(patientid)
         if nd_patient_id > last_patid:
             last_patid = nd_patient_id
 
@@ -162,8 +226,9 @@ def run_mapping_delta(mapping_schema: str, staging_schema: str):
         enc_map[encounter_id] = nd_encounter_id
 
     logger.info(
-        "Existing patient mappings: %d, encounter mappings: %d, last_patid=%s",
-        len(old_pat_ids), len(old_pat_encids), last_patid,
+        "Existing patient mappings: %d (of which %d already excluded), "
+        "encounter mappings: %d, last_patid=%s",
+        len(old_pat_ids), len(already_excluded), len(old_pat_encids), last_patid,
     )
 
     # -------------------------------------------------------------------------
@@ -173,15 +238,8 @@ def run_mapping_delta(mapping_schema: str, staging_schema: str):
         # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
         exrows = conn.execute(text(f"""select distinct patientid from {staging_schema}.enc where visittype in ('NP','NPC2','NP-DEMT','NPIV','RESU','NB RESU','RESURainka','RESU ANC','D & B RESU','Blood Draw') union
     select distinct patientid from {staging_schema}.structdemographics sd, {staging_schema}.structdatadetail sdd where sd.detailid = sdd.id and sd.detailid=7062 and value = 'Yes'""")).fetchall()
-    patientids = tuple(r[0] for r in exrows)
-    logger.info("Loaded %s exclusion patients", len(patientids))
-
-    # Guard against empty tuple — `NOT IN ()` is invalid MySQL syntax
-    if patientids:
-        pat_excl = f"AND uid NOT IN {patientids}"
-        enc_excl = f"AND patientID NOT IN {patientids}"
-    else:
-        pat_excl = enc_excl = ""
+    excluded_ids: set[int] = {r[0] for r in exrows if r[0] is not None}
+    logger.info("Loaded %s exclusion patients from this delta window", len(excluded_ids))
 
     # -------------------------------------------------------------------------
     # Load delta data from staging_schema
@@ -192,12 +250,11 @@ def run_mapping_delta(mapping_schema: str, staging_schema: str):
     logger.info("Loading delta patients from %s.users", staging_schema)
     with source_engine.connect() as conn:
         users_data = conn.execute(
-            # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
             text(
-                f"""
+                """
         SELECT DISTINCT uid AS patientid, cdate AS registration_date
         FROM users
-        WHERE UserType = 3 {pat_excl}
+        WHERE UserType = 3
         """
             )
         ).fetchall()
@@ -207,15 +264,13 @@ def run_mapping_delta(mapping_schema: str, staging_schema: str):
     logger.info("Loading delta encounters from %s.enc", staging_schema)
     with source_engine.connect() as conn:
         enc_data = conn.execute(
-            # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
             text(
-                f"""
+                """
         SELECT DISTINCT
             patientID   AS patientid,
             date        AS encounter_date,
             encounterID AS dent_encounter_id
         FROM enc
-        WHERE 1=1 {enc_excl}
         ORDER BY 1, 2, 3
         """
             )
@@ -239,16 +294,41 @@ def run_mapping_delta(mapping_schema: str, staging_schema: str):
 
     existing_patient_ids: dict[int, list] = {}
 
-    if users_data:
+    # Patients touched by this delta window: every user row, plus any patient the
+    # exclusion query flagged. The latter can qualify purely through enc /
+    # structdemographics without their `users` row changing, so they would never be
+    # visited by the loop below — and their exclusion would go unrecorded.
+    # registration_date is None for those; the update below COALESCEs so a None
+    # never wipes a stored date.
+    delta_patients: list[tuple] = list(users_data)
+    users_delta_ids = {row[0] for row in users_data}
+    exclusion_only_ids = excluded_ids - users_delta_ids
+    if exclusion_only_ids:
+        logger.info(
+            "%d excluded patients are not in the users delta — flagging them anyway",
+            len(exclusion_only_ids),
+        )
+        delta_patients.extend((pid, None) for pid in sorted(exclusion_only_ids))
+
+    if delta_patients:
         patients_to_insert = []
         patients_to_update = []
+        newly_excluded: set[int] = set()
 
-        for patientid, registration_date in users_data:
+        for patientid, registration_date in delta_patients:
+            is_excluded = patientid in excluded_ids
+
             # New patient: not in history and not yet processed in this run
             if patientid not in old_pat_ids and patientid not in existing_patient_ids:
                 offset = random.choice(possible_offsets)
                 last_patid += 1
                 nd_patient_id = last_patid
+
+                if is_excluded:
+                    newly_excluded.add(patientid)
+                    # A patient can appear twice in the delta (DISTINCT uid, cdate);
+                    # this keeps the second pass from re-stamping excluded_at.
+                    already_excluded.add(patientid)
 
                 patients_to_insert.append(
                     {
@@ -256,6 +336,8 @@ def run_mapping_delta(mapping_schema: str, staging_schema: str):
                         "patientid": patientid,
                         "offset": offset,
                         "registration_date": registration_date,
+                        "excluded": is_excluded,
+                        "excluded_at": datetime.now(timezone.utc) if is_excluded else None,
                         "created_at": datetime.now(timezone.utc),
                         "updated_at": datetime.now(timezone.utc),
                     }
@@ -264,18 +346,28 @@ def run_mapping_delta(mapping_schema: str, staging_schema: str):
                 # Update in-memory map for use in Step 2 (Encounters)
                 existing_patient_ids[patientid] = [nd_patient_id, offset]
             else:
+                # Sticky: only ever raise the flag. `excluded_ids` is computed from
+                # the staging delta, so a patient dropping out of it says nothing
+                # about whether they still qualify in the full source.
+                flag_now = is_excluded and patientid not in already_excluded
+                if flag_now:
+                    newly_excluded.add(patientid)
+                    already_excluded.add(patientid)
+
                 patients_to_update.append(
                     {
                         "patientid": patientid,
                         "registration_date": registration_date,
                         "updated_at": datetime.now(timezone.utc),
+                        "flag_excluded": flag_now,
                     }
                 )
 
         logger.info(
-            "Patients to insert: %d, to update: %d",
+            "Patients to insert: %d, to update: %d, newly excluded: %d",
             len(patients_to_insert),
             len(patients_to_update),
+            len(newly_excluded),
         )
 
         if patients_to_insert or patients_to_update:
@@ -288,29 +380,51 @@ def run_mapping_delta(mapping_schema: str, staging_schema: str):
                         )
 
                     if patients_to_update:
-                        stmt = (
+                        # COALESCE so the exclusion-only rows (registration_date
+                        # None) leave the stored registration date intact.
+                        base_values = {
+                            "registration_date": func.coalesce(
+                                bindparam("b_reg_date", type_=DATETIME),
+                                patient_mapping_table.c.registration_date,
+                            ),
+                            "updated_at": bindparam("b_ts"),
+                        }
+                        where_pid = patient_mapping_table.c.patientid == bindparam("b_pid")
+
+                        plain_stmt = (
+                            update(patient_mapping_table).where(where_pid).values(base_values)
+                        )
+                        # excluded_at is stamped only on the False → True transition,
+                        # so it keeps meaning "excluded since".
+                        exclude_stmt = (
                             update(patient_mapping_table)
-                            .where(
-                                patient_mapping_table.c.patientid == bindparam("b_pid")
-                            )
+                            .where(where_pid)
                             .values(
                                 {
-                                    "registration_date": bindparam("b_reg_date"),
-                                    "updated_at": bindparam("b_ts"),
+                                    **base_values,
+                                    "excluded": True,
+                                    "excluded_at": bindparam("b_ts"),
                                 }
                             )
                         )
 
-                        bulk_params = [
-                            {
-                                "b_pid": d["patientid"],
-                                "b_reg_date": d["registration_date"],
-                                "b_ts": d["updated_at"],
-                            }
-                            for d in patients_to_update
-                        ]
-
-                        conn.execute(stmt, bulk_params)
+                        for stmt, rows in (
+                            (plain_stmt, [d for d in patients_to_update if not d["flag_excluded"]]),
+                            (exclude_stmt, [d for d in patients_to_update if d["flag_excluded"]]),
+                        ):
+                            if not rows:
+                                continue
+                            conn.execute(
+                                stmt,
+                                [
+                                    {
+                                        "b_pid": d["patientid"],
+                                        "b_reg_date": d["registration_date"],
+                                        "b_ts": d["updated_at"],
+                                    }
+                                    for d in rows
+                                ],
+                            )
 
                     trans.commit()
                     logger.info("Patient upsert completed successfully")
@@ -325,6 +439,12 @@ def run_mapping_delta(mapping_schema: str, staging_schema: str):
 
     # -------------------------------------------------------------------------
     # STEP 2: Process & upsert delta encounters
+    #
+    # Encounters belonging to excluded patients are mapped like any other. Staging
+    # only ever holds the current CDC window, so an encounter skipped here would
+    # never be offered again — leaving the patient's history permanently unmapped
+    # if the exclusion is ever lifted. Gating happens at the patient level via
+    # `excluded`, which every downstream consumer filters on.
     # -------------------------------------------------------------------------
     if enc_data:
         encounters_to_insert = []
