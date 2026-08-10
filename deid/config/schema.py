@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, validate_call
+from sqlalchemy.engine import URL
 
 
 def validate_replace_value(pii_config, *, source: str = "pii_config") -> None:
@@ -78,8 +79,14 @@ class DbConfig(BaseModel):
             DbType.postgresql: "postgresql+psycopg2",
             DbType.snowflake: "snowflake",
         }
-        driver = drivers[self.type]
-        return f"{driver}://{self.username}:{self.password}@{self.host}:{self.port}/{self.database}"
+        return URL.create(
+            drivername=drivers[self.type],
+            username=self.username,
+            password=self.password,
+            host=self.host,
+            port=self.port,
+            database=self.database,
+        ).render_as_string(hide_password=False)
 
 
 class DeidentificationSettings(BaseModel):
@@ -143,11 +150,11 @@ class DeidConfig(BaseModel):
     join_db: Optional[DbConfig] = None
     config_key: str = "default"
     state_db_path: str = "./state.db"
-    state_db_url: Optional[str] = None
+    state_db_name: Optional[str] = None
     mappings_db: Optional[DbConfig] = None
     mappings_db_path: str = ""
     failed_rows_db_path: str = "./failed_rows.db"
-    failed_rows_db_url: Optional[str] = None
+    failed_rows_db_name: Optional[str] = None
     qc_results_db_path: str = "./qc_results.db"
     qc_results_db_url: Optional[str] = None
     redis_url: str = "redis://localhost:6379/0"
@@ -235,19 +242,25 @@ class DeidConfig(BaseModel):
     def resolved_state_db_url(self) -> str:
         """Full SQLAlchemy URL for the state database.
 
-        Uses ``state_db_url`` when set (e.g. ``mysql+pymysql://...``),
-        otherwise falls back to SQLite at ``state_db_path``.
+        Uses ``state_db_name`` (same server/credentials as ``destination_db``,
+        different database) when set, otherwise falls back to SQLite at
+        ``state_db_path``.
         """
-        return self.state_db_url or f"sqlite:///{self.state_db_path}"
+        if self.state_db_name:
+            return self.destination_db.model_copy(update={"database": self.state_db_name}).connection_string()
+        return f"sqlite:///{self.state_db_path}"
 
     @property
     def resolved_failed_rows_db_url(self) -> str:
         """Full SQLAlchemy URL for the failed-rows audit database.
 
-        Uses ``failed_rows_db_url`` when set, otherwise falls back to
-        SQLite at ``failed_rows_db_path``.
+        Uses ``failed_rows_db_name`` (same server/credentials as
+        ``destination_db``, different database) when set, otherwise falls
+        back to SQLite at ``failed_rows_db_path``.
         """
-        return self.failed_rows_db_url or f"sqlite:///{self.failed_rows_db_path}"
+        if self.failed_rows_db_name:
+            return self.destination_db.model_copy(update={"database": self.failed_rows_db_name}).connection_string()
+        return f"sqlite:///{self.failed_rows_db_path}"
 
     @property
     def resolved_qc_results_db_url(self) -> str:

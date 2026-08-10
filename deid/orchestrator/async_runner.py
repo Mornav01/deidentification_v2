@@ -7,6 +7,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 from deid.config.schema import DeidConfig
@@ -33,13 +34,19 @@ async def run(config: DeidConfig, config_path: str):
     run_start = datetime.now(timezone.utc)
     run_timestamp = run_start.strftime("%Y-%m-%d_%H-%M-%S")
 
-    if config.state_db_url:
-        logger.info("State DB: using MySQL at %s", config.state_db_url)
+    if config.state_db_name:
+        logger.info(
+            "State DB: using MySQL at %s",
+            make_url(config.resolved_state_db_url).render_as_string(hide_password=True),
+        )
     else:
         logger.info("State DB: using SQLite at %s", config.state_db_path)
 
-    if config.failed_rows_db_url:
-        logger.info("Failed-rows DB: using MySQL at %s", config.failed_rows_db_url)
+    if config.failed_rows_db_name:
+        logger.info(
+            "Failed-rows DB: using MySQL at %s",
+            make_url(config.resolved_failed_rows_db_url).render_as_string(hide_password=True),
+        )
     else:
         logger.info("Failed-rows DB: using SQLite at %s", config.failed_rows_db_path)
 
