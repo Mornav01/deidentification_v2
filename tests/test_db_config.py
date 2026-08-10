@@ -81,3 +81,34 @@ def test_resolved_failed_rows_db_url_reuses_destination_db_credentials():
     assert parsed.username == "myuser"
     assert parsed.password == "p@ss"
     assert parsed.database == "deid_failed"
+
+
+def test_pii_db_connection_strings_built_from_destination_db_with_at_password():
+    """pii_db uses destination_db credentials; a '@' in the password must be
+    encoded (not misparsed into a bogus host like '2025@localhost')."""
+    cfg = _deid_config(
+        destination_db=_db_config(database="dest", password="Nd@2025"),
+        pii_db={"master_db_name": "master_sep", "secondary_pii_db_name": "master_sep"},
+    )
+    for key, db_name in (
+        ("master_connection_str", "master_sep"),
+        ("secondary_pii_connection_str", "master_sep"),
+    ):
+        parsed = make_url(cfg.pii_db[key])
+        assert parsed.host == "localhost", f"{key} host misparsed: {cfg.pii_db[key]!r}"
+        assert parsed.username == "myuser"
+        assert parsed.password == "Nd@2025"
+        assert parsed.database == db_name
+
+
+def test_pii_db_none_is_left_untouched():
+    cfg = _deid_config()
+    assert cfg.pii_db is None
+
+
+def test_pii_db_raw_connection_str_without_db_name_is_preserved():
+    """Legacy configs supplying a raw *_connection_str and no *_db_name are not
+    a regression: the value is passed through unchanged."""
+    raw = "mysql+pymysql://u:p@localhost:3306/master_sep"
+    cfg = _deid_config(pii_db={"master_connection_str": raw})
+    assert cfg.pii_db["master_connection_str"] == raw

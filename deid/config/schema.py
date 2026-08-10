@@ -272,6 +272,33 @@ class DeidConfig(BaseModel):
         return self.qc_results_db_url or f"sqlite:///{self.qc_results_db_path}"
 
     @model_validator(mode="after")
+    def build_pii_db_connection_strings(self) -> "DeidConfig":
+        """Derive pii_db connection strings from ``destination_db`` credentials.
+
+        ``pii_db`` uses the same server/user/password as ``destination_db`` and
+        only differs by database name. Building the URL through
+        ``DbConfig.connection_string()`` (``URL.create``) percent-encodes special
+        characters in the password (e.g. ``@`` → ``%40``), avoiding the broken
+        URL parsing that a raw ``mysql+pymysql://user:${DB_PASS}@host`` string
+        would produce. Consumers keep reading the ``*_connection_str`` keys.
+        """
+        if not self.pii_db:
+            return self
+        # map: <db-name key in yaml> -> <conn-str key consumers read>
+        _pii_map = {
+            "master_db_name": "master_connection_str",
+            "secondary_pii_db_name": "secondary_pii_connection_str",
+            "insurance_db_name": "insurance_connection_str",
+        }
+        for name_key, conn_key in _pii_map.items():
+            db_name = self.pii_db.get(name_key)
+            if db_name:
+                self.pii_db[conn_key] = self.destination_db.model_copy(
+                    update={"database": db_name}
+                ).connection_string()
+        return self
+
+    @model_validator(mode="after")
     def require_tables_or_csv(self) -> "DeidConfig":
         if not self.tables and not self.rules_csv:
             raise ValueError("Either 'tables' or 'rules_csv' must be provided")
