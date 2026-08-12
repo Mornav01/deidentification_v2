@@ -854,6 +854,7 @@ def _build_fetch_config(config, batch, staging_root, mappings_conn_str):
     base["table_details"] = _get_table_details(config, batch.table_name)
     base["offset_days"] = config.deidentification.date_offset_days
     base["dest_conn_str"] = config.destination_db.connection_string()
+    base["join_db_conn_str"] = config.join_db.connection_string() if config.join_db else None
     # PII config for NOTES de-identification (patient name masking in free text)
     if config.pii_db:
         base["pii_config"] = config.pii_config

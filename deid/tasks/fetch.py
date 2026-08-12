@@ -118,6 +118,7 @@ def _fetch_batch_inner(config: FetchTaskConfig, raw_config: dict, batch_tag: str
                     "mapping_db_config", "table_details", "source_conn_str",
                     "offset_days", "pii_config", "pii_db_conn_str",
                     "secondary_pii_configs", "dest_conn_str", "failed_rows_db_url",
+                    "join_db_conn_str",
                 ) if k in raw_config},
             }
             process_batch.apply_async(args=[process_config], queue=f"deid-process-{config.config_key}")
@@ -205,6 +206,7 @@ def _fetch_batch_inner(config: FetchTaskConfig, raw_config: dict, batch_tag: str
             "mapping_db_config", "table_details", "source_conn_str",
             "offset_days", "pii_config", "pii_db_conn_str",
             "secondary_pii_configs", "dest_conn_str", "failed_rows_db_url",
+            "join_db_conn_str",
         ) if k in raw_config},
     }
     process_batch.apply_async(args=[process_config], queue=f"deid-process-{config.config_key}")
