@@ -101,7 +101,7 @@ def _preload_mappings(app: Celery) -> None:
     from pathlib import Path
 
     import polars as pl
-    from sqlalchemy import text
+    from sqlalchemy import inspect as sa_inspect, text
 
     from deid.config.loader import load_config
     from deid.models.base import create_read_only_mappings_engine
@@ -112,12 +112,40 @@ def _preload_mappings(app: Celery) -> None:
     # Tables that should filter by nd_ActiveFlag = 'Y' when that column exists.
     _active_flag_tables = {"encounter_mapping_table", "appointment_mapping_table", "chart_mapping_table"}
 
+    # Only dent's mapping_pg carries the exclusion flag. Decided by reflection
+    # rather than by running a SELECT that is expected to fail: on PostgreSQL a
+    # failed statement aborts the surrounding transaction, which would take out
+    # every subsequent mapping-table load on this connection.
+    try:
+        _patient_mapping_cols = {
+            c["name"].lower()
+            for c in sa_inspect(engine).get_columns("patient_mapping_table")
+        }
+    except Exception as e:  # table missing / reflection unsupported
+        _preload_logger.warning("Could not reflect patient_mapping_table: %s", e)
+        _patient_mapping_cols = set()
+    _has_excluded = "excluded" in _patient_mapping_cols
+    _preload_logger.info(
+        "patient_mapping_table exclusion flag: %s",
+        "present — excluded patients will be gated out" if _has_excluded
+        else "absent — no exclusion gating (expected for non-dent clients)",
+    )
+
     def _fetch_mapping_table(conn, table_name: str) -> tuple[list, list]:
         """Return (cols, rows) for a mapping table.
+
+        For patient_mapping_table, filters WHERE excluded = 0 when the column
+        exists — excluded patients keep their mapping row (see
+        CDC/MySQL/mapping_delta.py) but must never resolve during de-id.
 
         For encounter/appointment tables, filters WHERE nd_ActiveFlag = 'Y'
         if that column exists; otherwise falls back to a full SELECT.
         """
+        if table_name == "patient_mapping_table" and _has_excluded:
+            result = conn.execute(text(
+                "SELECT * FROM patient_mapping_table WHERE excluded = 0"
+            ))
+            return [c.lower() for c in result.keys()], result.fetchall()
         if table_name in _active_flag_tables:
             try:
                 # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
@@ -143,6 +171,44 @@ def _preload_mappings(app: Celery) -> None:
             infer_schema_length=len(rows),
         )
 
+    def _drop_excluded_patient_mappings(conn) -> None:
+        """Drop encounter/appointment/chart rows belonging to excluded patients.
+
+        Filtering patient_mapping_table alone is not enough: those tables carry
+        nd_patient_id themselves, and the resolver coalesces it — so an excluded
+        patient's rows would still resolve through the encounter path and land in
+        the output. No-op when the mapping schema has no `excluded` column.
+        """
+        if not _has_excluded:
+            return
+
+        excluded_ids = [
+            r[0] for r in conn.execute(text(
+                "SELECT nd_patient_id FROM patient_mapping_table WHERE excluded = 1"
+            ))
+        ]
+        if not excluded_ids:
+            return
+
+        for table_key in ("encounter_mapping", "appointment_mapping", "chart_mapping"):
+            df = _preloaded_data.get(table_key)
+            if df is None or "nd_patient_id" not in df.columns:
+                continue
+            excl = pl.DataFrame({"nd_patient_id": excluded_ids}).cast(
+                {"nd_patient_id": df.schema["nd_patient_id"]}
+            )
+            before = df.height
+            _preloaded_data[table_key] = df.join(excl, on="nd_patient_id", how="anti")
+            dropped = before - _preloaded_data[table_key].height
+            if dropped:
+                _preload_logger.info(
+                    "Dropped %d %s rows for excluded patients", dropped, table_key
+                )
+
+        _preload_logger.info(
+            "Excluded patients gated out of preloaded mappings: %d", len(excluded_ids)
+        )
+
     try:
         with engine.connect() as conn:
             for table_key, table_name in [
@@ -163,6 +229,8 @@ def _preload_mappings(app: Celery) -> None:
                         )
                 except Exception as e:
                     _preload_logger.warning("Failed to preload %s: %s", table_name, e)
+
+            _drop_excluded_patient_mappings(conn)
     finally:
         engine.dispose()
 
