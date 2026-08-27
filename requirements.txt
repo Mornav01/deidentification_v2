@@ -30,8 +30,6 @@ pyarrow>=23.0.1
 
 # NLP & PII
 spacy>=3.8.0
-presidio-analyzer>=2.2.355
-presidio-anonymizer>=2.2.355
 pyahocorasick>=2.1.0
 
 # Utilities

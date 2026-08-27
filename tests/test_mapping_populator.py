@@ -101,7 +101,8 @@ class TestBulkInsertPatientMappings:
             assert mappings[2].nd_patient_id == prefix + 3
 
             for m in mappings:
-                assert 1 <= m.offset <= max_offset
+                # Offsets are signed and banded: magnitude in [offset_abs_min(30), max_offset].
+                assert 30 <= abs(m.offset) <= max_offset
 
     def test_is_idempotent(self, engine):
         prefix = 10_000_000
@@ -127,6 +128,17 @@ class TestBulkInsertPatientMappings:
         with Session(engine) as session:
             offsets = [m.offset for m in session.query(PatientMapping).all()]
             assert len(set(offsets)) > 1, "Expected more than 1 distinct offset value"
+
+    def test_offsets_are_signed_and_banded_by_default(self, engine):
+        """Default band matches the CDC path: magnitude in [30, 38], both signs, never 0."""
+        prefix = 10_000_000
+        ids = [f"P{i:04d}" for i in range(200)]
+        bulk_insert_patient_mappings(engine, ids, prefix, 38)  # max_offset(=abs_max)=38, abs_min=30
+        with Session(engine) as session:
+            offsets = [m.offset for m in session.query(PatientMapping).all()]
+        assert all(30 <= abs(o) <= 38 for o in offsets)
+        assert all(o != 0 for o in offsets)
+        assert any(o < 0 for o in offsets) and any(o > 0 for o in offsets)  # signed
 
 
 # ---------------------------------------------------------------------------

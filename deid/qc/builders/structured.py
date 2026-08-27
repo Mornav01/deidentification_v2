@@ -12,18 +12,84 @@ def _parse_date(value: Any) -> datetime | None:
     s = str(value).strip()
     if not s or s.lower() in ("none", "null", "nat", ""):
         return None
+    # Keep only the date part of a datetime string (e.g. "2020-01-01 00:00:00").
+    s = s.split(" ")[0]
     parts = s.split("-")
     if len(parts) != 3:
         return None
     if not all(p.isdigit() for p in parts):
         return None
-    return datetime(int(parts[0]), int(parts[1]), int(parts[2]))
+    try:
+        return datetime(int(parts[0]), int(parts[1]), int(parts[2]))
+    except ValueError:
+        return None
+
+
+# QC Framework Part 1 — DATE plausibility window: [1900-01-01, today].
+_PLAUSIBLE_MIN_DATE = datetime(1900, 1, 1)
+
+
+def _is_null_like(value: Any) -> bool:
+    return value is None or str(value).strip().lower() in ("", "none", "null", "nat")
+
+
+def _row_get_ci(row: dict, col: str, default: Any = None) -> Any:
+    """Case-insensitive column read. Source and dest tables can differ in column casing
+    (dest is remapped to its own casing during QC), so cross-table comparisons — e.g. the
+    DATE_OFFSET check reading the same column from both the source and dest row — must not
+    assume the casings match."""
+    if col in row:
+        return row[col]
+    low = col.lower()
+    for k, v in row.items():
+        if k.lower() == low:
+            return v
+    return default
+
+
+def _check_id_mapping(after_row: dict, before_dict: dict, column_name: str,
+                      mapping_dict: dict, mapped_field: str):
+    """Verify a row's de-identified id maps back to its source id per the mapping table.
+
+    ``mapping_dict`` is the reverse map (nd id -> {mapped_field: source id, ...}) built for the
+    sample. Returns None when OK or not verifiable (nd id absent from the sampled map, or no aligned
+    source row), else an offender dict describing the mismatch for manual review.
+    """
+    dest_nd = after_row.get(column_name)
+    if dest_nd is None or not mapping_dict:
+        return None
+    entry = mapping_dict.get(dest_nd)
+    if entry is None:
+        return None  # nd id not in the sampled reverse map — can't verify; don't false-fail
+    src_row = before_dict.get(after_row.get("nd_auto_increment_id"))
+    if src_row is None:
+        return None
+    src_id = _row_get_ci(src_row, column_name)
+    mapped = entry.get(mapped_field)
+    if src_id is None or mapped is None:
+        return None
+    if str(mapped).strip() != str(src_id).strip():
+        return {"nd_auto_increment_id": after_row.get("nd_auto_increment_id"),
+                "source_id": src_id, "dest_nd_id": dest_nd, "mapped_source_id": mapped}
+    return None
+
+
+def _is_plausible_date(d: datetime | None, today: datetime) -> bool:
+    """A de-identified date must land within [1900-01-01, today] (doc Part 1 DATE value check)."""
+    if d is None:
+        return True  # unparseable handled separately by format check
+    return _PLAUSIBLE_MIN_DATE <= d <= today
 
 
 class SZipCodeDetector(Detector):
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
-        passed_count = sum(1 for row in after_rows if len(str(row[self.column_name])) <= 3 or str(row[self.column_name]).lower() in ["none", "null"])
+        # QC Framework Part 1 / Decision D2: ZIP must be exactly 3 chars (Safe-Harbor truncation),
+        # or null/empty. (Previously accepted len <= 3.)
+        passed_count = sum(
+            1 for row in after_rows
+            if _is_null_like(row[self.column_name]) or len(str(row[self.column_name]).strip()) == 3
+        )
         failed_count = len(after_rows) - passed_count
         return ColumnQCResult(passed_count=passed_count, failed_count=failed_count, remarks={})
 
@@ -50,10 +116,12 @@ class SStaticOffestDetector(Detector):
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
         column_qc_result = ColumnQCResult(passed_count=0, failed_count=0, remarks={})
         column_name = self.column_config["column_name"]
+        today = datetime.now()
 
         before_dict = {row['nd_auto_increment_id']: row for row in before_rows}
 
         remarks = []
+        format_remarks = []
 
         for after_row in after_rows:
             nd_id = after_row.get('nd_auto_increment_id')
@@ -62,25 +130,45 @@ class SStaticOffestDetector(Detector):
             if not before_row:
                 continue
 
-            before_date = _parse_date(before_row.get(column_name, ''))
-            after_date = _parse_date(after_row.get(column_name, ''))
-            if before_date is None or after_date is None:
+            after_raw = after_row.get(column_name, '')
+            if _is_null_like(after_raw):
                 continue
 
-            offset_value = self.get_offset(after_row)
-            date_diff = (after_date - before_date).days
-
-            if date_diff == offset_value:
-                column_qc_result['passed_count'] += 1
-            else:
-                remarks.append({
-                    'nd_auto_increment_id': nd_id,
-                    'source date': str(before_date),
-                    'dest date': str(after_date)
-                })
+            after_date = _parse_date(after_raw)
+            if after_date is None:
+                format_remarks.append({'nd_auto_increment_id': nd_id, 'value': str(after_raw), 'issue': 'bad_format'})
                 column_qc_result['failed_count'] += 1
+                continue
 
-        column_qc_result['remarks'] = {'remarks': remarks}
+            before_date = _parse_date(_row_get_ci(before_row, column_name, ''))
+            offset_value = self.get_offset(after_row)
+
+            if before_date is not None:
+                # Ground truth for a de-identified date: dest == source shifted by the offset. When the
+                # source date is available this is authoritative — a matching offset PASSES even if the
+                # shifted date lands in the near future (a positive offset legitimately does), which the
+                # [1900, today] plausibility window would otherwise wrongly flag as 'implausible'.
+                if (after_date - before_date).days == offset_value:
+                    column_qc_result['passed_count'] += 1
+                else:
+                    remarks.append({
+                        'nd_auto_increment_id': nd_id,
+                        'source date': str(before_date),
+                        'dest date': str(after_date),
+                        'expected_offset': offset_value,
+                    })
+                    column_qc_result['failed_count'] += 1
+                continue
+
+            # No source date to compare against — fall back to a plausibility sanity check, widening the
+            # upper bound by the (positive) offset so a correctly future-shifted date isn't false-flagged.
+            if not _is_plausible_date(after_date, today + timedelta(days=max(0, offset_value))):
+                format_remarks.append({'nd_auto_increment_id': nd_id, 'value': str(after_date), 'issue': 'implausible'})
+                column_qc_result['failed_count'] += 1
+            else:
+                column_qc_result['passed_count'] += 1
+
+        column_qc_result['remarks'] = {'remarks': remarks, 'format_remarks': format_remarks}
         return column_qc_result
 
 class SMaskDetector(Detector):
@@ -95,24 +183,31 @@ class SMaskDetector(Detector):
 class SDateOffestDetector(Detector):
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_offset(self, row: dict):
-        enc_id, patient_id = None, None
+        # Resolve the patient's date offset from patient_mapping_table, reached either directly
+        # via the PATIENT_ID column (dest value = nd_patient_id) or via the ENCOUNTER_ID column
+        # (dest value = nd_encounter_id → encounter's nd_patient_id bridge). A missing mapping row
+        # falls back to the default offset rather than aborting the whole table's scan.
+        default = self.qc_config.get("default_offset_value", DEFAULT_OFFSET_VALUE)
         if self.patient_id_column is not None:
-            pid = row[self.patient_id_column]
-            return self.patient_mapping_dict[pid]['offset']
+            entry = self.patient_mapping_dict.get(row.get(self.patient_id_column))
+            return entry["offset"] if entry else default
         elif self.enc_id_column is not None:
-            encid = row[self.enc_id_column]
-            pid = self.enc_mapping_dict[encid]['patient_id']
-            return  self.patient_mapping_dict[pid]['offset']
-        return self.qc_config.get("default_offset_value", DEFAULT_OFFSET_VALUE)
+            enc = self.enc_mapping_dict.get(row.get(self.enc_id_column))
+            nd_pid = enc.get("patient_id") if enc else None
+            entry = self.patient_mapping_dict.get(nd_pid)
+            return entry["offset"] if entry else default
+        return default
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
         column_qc_result = ColumnQCResult(passed_count=0, failed_count=0, remarks={})
         column_name = self.column_config["column_name"]
+        today = datetime.now()
 
         before_dict = {row['nd_auto_increment_id']: row for row in before_rows}
 
         remarks = []
+        format_remarks = []
 
         for after_row in after_rows:
             nd_id = after_row.get('nd_auto_increment_id')
@@ -121,25 +216,45 @@ class SDateOffestDetector(Detector):
             if not before_row:
                 continue
 
-            before_date = _parse_date(before_row.get(column_name, ''))
-            after_date = _parse_date(after_row.get(column_name, ''))
-            if before_date is None or after_date is None:
+            after_raw = after_row.get(column_name, '')
+            if _is_null_like(after_raw):
                 continue
 
-            offset_value = self.get_offset(after_row)
-            date_diff = (after_date - before_date).days
-
-            if date_diff == offset_value:
-                column_qc_result['passed_count'] += 1
-            else:
-                remarks.append({
-                    'nd_auto_increment_id': nd_id,
-                    'source date': str(before_date),
-                    'dest date': str(after_date)
-                })
+            after_date = _parse_date(after_raw)
+            if after_date is None:
+                format_remarks.append({'nd_auto_increment_id': nd_id, 'value': str(after_raw), 'issue': 'bad_format'})
                 column_qc_result['failed_count'] += 1
+                continue
 
-        column_qc_result['remarks'] = {'remarks': remarks}
+            before_date = _parse_date(_row_get_ci(before_row, column_name, ''))
+            offset_value = self.get_offset(after_row)
+
+            if before_date is not None:
+                # Ground truth for a de-identified date: dest == source shifted by the offset. When the
+                # source date is available this is authoritative — a matching offset PASSES even if the
+                # shifted date lands in the near future (a positive offset legitimately does), which the
+                # [1900, today] plausibility window would otherwise wrongly flag as 'implausible'.
+                if (after_date - before_date).days == offset_value:
+                    column_qc_result['passed_count'] += 1
+                else:
+                    remarks.append({
+                        'nd_auto_increment_id': nd_id,
+                        'source date': str(before_date),
+                        'dest date': str(after_date),
+                        'expected_offset': offset_value,
+                    })
+                    column_qc_result['failed_count'] += 1
+                continue
+
+            # No source date to compare against — fall back to a plausibility sanity check, widening the
+            # upper bound by the (positive) offset so a correctly future-shifted date isn't false-flagged.
+            if not _is_plausible_date(after_date, today + timedelta(days=max(0, offset_value))):
+                format_remarks.append({'nd_auto_increment_id': nd_id, 'value': str(after_date), 'issue': 'implausible'})
+                column_qc_result['failed_count'] += 1
+            else:
+                column_qc_result['passed_count'] += 1
+
+        column_qc_result['remarks'] = {'remarks': remarks, 'format_remarks': format_remarks}
         return column_qc_result
 
 class SPatientIdDetector(Detector):
@@ -160,16 +275,27 @@ class SPatientIdDetector(Detector):
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
-        column_qc_result = ColumnQCResult(passed_count=0, failed_count=0, remarks={"length_verification_failed": 0, "prefix_verification_failed": 0})
+        column_qc_result = ColumnQCResult(passed_count=0, failed_count=0, remarks={
+            "length_verification_failed": 0, "prefix_verification_failed": 0,
+            "mapping_mismatch": 0, "mapping_offenders": []})
         column_name = self.column_config["column_name"]
+        before_dict = {r.get("nd_auto_increment_id"): r for r in before_rows}
         for row in after_rows:
             is_deidentify = True
-            if row[column_name] is not None and not self._verify_length(row[column_name], ignore_condition):
+            val = row.get(column_name)
+            if val is not None and not self._verify_length(val, ignore_condition):
                 is_deidentify = False
                 column_qc_result["remarks"]["length_verification_failed"] += 1
-            if row[column_name] is not None and  not self._verify_prefix(row[column_name], ignore_condition):
+            if val is not None and not self._verify_prefix(val, ignore_condition):
                 is_deidentify = False
                 column_qc_result["remarks"]["prefix_verification_failed"] += 1
+            # Mapping correctness: this row's de-identified id must map back to its source id.
+            offender = _check_id_mapping(row, before_dict, column_name, self.patient_mapping_dict, "patient_id")
+            if offender is not None:
+                is_deidentify = False
+                column_qc_result["remarks"]["mapping_mismatch"] += 1
+                if len(column_qc_result["remarks"]["mapping_offenders"]) < 50:
+                    column_qc_result["remarks"]["mapping_offenders"].append(offender)
             if is_deidentify:
                 column_qc_result["passed_count"] += 1
             else:
@@ -194,16 +320,27 @@ class SReferencePIDDetector(Detector):
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
-        column_qc_result = ColumnQCResult(passed_count=0, failed_count=0, remarks={"length_verification_failed": 0, "prefix_verification_failed": 0})
+        column_qc_result = ColumnQCResult(passed_count=0, failed_count=0, remarks={
+            "length_verification_failed": 0, "prefix_verification_failed": 0,
+            "mapping_mismatch": 0, "mapping_offenders": []})
         column_name = self.column_config["column_name"]
+        before_dict = {r.get("nd_auto_increment_id"): r for r in before_rows}
         for row in after_rows:
             is_deidentify = True
-            if row[column_name] is not None and not self._verify_length(row[column_name], ignore_condition):
+            val = row.get(column_name)
+            if val is not None and not self._verify_length(val, ignore_condition):
                 is_deidentify = False
                 column_qc_result["remarks"]["length_verification_failed"] += 1
-            if row[column_name] is not None and  not self._verify_prefix(row[column_name], ignore_condition):
+            if val is not None and not self._verify_prefix(val, ignore_condition):
                 is_deidentify = False
                 column_qc_result["remarks"]["prefix_verification_failed"] += 1
+            # Mapping correctness: this row's de-identified id must map back to its source id.
+            offender = _check_id_mapping(row, before_dict, column_name, self.patient_mapping_dict, "patient_id")
+            if offender is not None:
+                is_deidentify = False
+                column_qc_result["remarks"]["mapping_mismatch"] += 1
+                if len(column_qc_result["remarks"]["mapping_offenders"]) < 50:
+                    column_qc_result["remarks"]["mapping_offenders"].append(offender)
             if is_deidentify:
                 column_qc_result["passed_count"] += 1
             else:
@@ -228,20 +365,104 @@ class SEncounterIDDetector(Detector):
 
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
-        column_qc_result = ColumnQCResult(passed_count=0, failed_count=0, remarks={"length_verification_failed": 0, "prefix_verification_failed": 0})
+        column_qc_result = ColumnQCResult(passed_count=0, failed_count=0, remarks={
+            "length_verification_failed": 0, "prefix_verification_failed": 0,
+            "patient_prefix_verification_failed": 0, "offenders": [],
+            "mapping_mismatch": 0, "mapping_offenders": []})
         column_name = self.column_config["column_name"]
+        pat_col = self.patient_id_column
+        before_dict = {r.get("nd_auto_increment_id"): r for r in before_rows}
 
         for row in after_rows:
             is_de_identify = True
-            if row[column_name] is not None and not self._verify_length(row[column_name], ignore_condition):
+            enc_val = row.get(column_name)
+            if enc_val is not None and not self._verify_length(enc_val, ignore_condition):
                 is_de_identify = False
                 column_qc_result["remarks"]["length_verification_failed"] += 1
-            if row[column_name] is not None and not self._verify_prefix(row[column_name], ignore_condition):
+            if enc_val is not None and not self._verify_prefix(enc_val, ignore_condition):
                 is_de_identify = False
                 column_qc_result["remarks"]["prefix_verification_failed"] += 1
+            # Surrogate-sequence check: nd_encounter_id must be prefixed by its row's nd_patient_id
+            # (scheme nd_encounter_id = nd_patient_id * 10^k + seq), i.e. left(enc, len(pat)) == pat.
+            if pat_col is not None and enc_val is not None:
+                pat_val = row.get(pat_col)
+                if pat_val is not None and not str(enc_val).startswith(str(pat_val)):
+                    is_de_identify = False
+                    column_qc_result["remarks"]["patient_prefix_verification_failed"] += 1
+                    if len(column_qc_result["remarks"]["offenders"]) < 50:
+                        column_qc_result["remarks"]["offenders"].append({
+                            "nd_auto_increment_id": row.get("nd_auto_increment_id"),
+                            "patientid": pat_val, "encounterid": enc_val,
+                        })
+            # Mapping correctness: nd_encounter_id must map back to this row's source encounter id.
+            offender = _check_id_mapping(row, before_dict, column_name, self.enc_mapping_dict, "encounter_id")
+            if offender is not None:
+                is_de_identify = False
+                column_qc_result["remarks"]["mapping_mismatch"] += 1
+                if len(column_qc_result["remarks"]["mapping_offenders"]) < 50:
+                    column_qc_result["remarks"]["mapping_offenders"].append(offender)
             if is_de_identify:
                 column_qc_result["passed_count"] += 1
             else:
                 column_qc_result["failed_count"] += 1
 
         return column_qc_result
+
+
+# ── Offender-capturing ID length/prefix base ───────────────────────────────────
+# QC Framework Part 1 failure action: "log row identifier, column name, actual length".
+# APPOINTMENT_ID and CHART_ID had no detector at all (KeyError risk in the scanner); these add
+# them and also record the offending nd_auto_increment_id + actual value (capped) in remarks.
+_MAX_OFFENDER_SAMPLES = 50
+
+
+class _SIdLengthPrefixDetector(Detector):
+    """Length + prefix check for an ID column, driven by ``qc_config[CONFIG_KEY]``."""
+    CONFIG_KEY: str = ""
+
+    def _rule(self) -> dict:
+        return self.qc_config.get(self.CONFIG_KEY, {}) or {}
+
+    @validate_call(config=dict(arbitrary_types_allowed=True))
+    def is_deidentified(self, before_rows: list[dict], after_rows: list[dict], ignore_condition: dict) -> ColumnQCResult:
+        rule = self._rule()
+        length_of_value = rule.get("length_of_value", None)
+        prefix_value = rule.get("prefix_value", None)
+        column_name = self.column_config["column_name"]
+        result = ColumnQCResult(
+            passed_count=0, failed_count=0,
+            remarks={"length_verification_failed": 0, "prefix_verification_failed": 0, "offenders": []},
+        )
+        for row in after_rows:
+            val = row.get(column_name)
+            if val is None:
+                result["passed_count"] += 1
+                continue
+            sval = str(val)
+            ok = True
+            if length_of_value is not None and len(sval) != length_of_value:
+                ok = False
+                result["remarks"]["length_verification_failed"] += 1
+            if prefix_value is not None and not sval.startswith(str(prefix_value)):
+                ok = False
+                result["remarks"]["prefix_verification_failed"] += 1
+            if ok:
+                result["passed_count"] += 1
+            else:
+                result["failed_count"] += 1
+                if len(result["remarks"]["offenders"]) < _MAX_OFFENDER_SAMPLES:
+                    result["remarks"]["offenders"].append({
+                        "nd_auto_increment_id": row.get("nd_auto_increment_id"),
+                        "column": column_name,
+                        "value": sval,
+                        "length": len(sval),
+                    })
+        return result
+
+
+class SAppointmentIdDetector(_SIdLengthPrefixDetector):
+    CONFIG_KEY = "APPOINTMENT_ID"
+
+
+class SChartIdDetector(_SIdLengthPrefixDetector):
+    CONFIG_KEY = "CHART_ID"

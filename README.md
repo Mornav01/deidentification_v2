@@ -229,6 +229,9 @@ pip install -e .
 
 This registers the `deid` CLI command via the entry point defined in `pyproject.toml`.
 
+> QC's residual-PII scan uses a dependency-free `regex` backend by default, so the pipeline and QC
+> install and run everywhere. Set `qc.residual_pii_backend: none` to disable the residual scan.
+
 ---
 
 ## Configuration
@@ -297,11 +300,10 @@ redis_url: redis://localhost:6379/0   # Celery broker + progress pub/sub
 
 # ── De-Identification Settings ──────────────────────────────────────
 deidentification:
-  batch_size: 100000                  # Rows processed per batch (default: 100000)
-  date_offset_days: 34                # Days to shift dates (default: 34)
+  batch_size: 100000                  # Rows per batch — also the split unit for large tables (default: 100000)
+  date_offset_days: 34                # Days to shift dates for STATIC_OFFSET (default: 34)
   patient_id_prefix: 10000000         # Prefix for anonymized patient IDs
-  parallel_tasks_per_table: 4         # Number of parallel splits for large tables
-  large_table_threshold: 500000       # Row count threshold for parallel splitting
+  random_seed: 42                     # Seed for deterministic offset assignment
 
 # ── Tables & Rules ──────────────────────────────────────────────────
 tables:
@@ -343,15 +345,120 @@ phases:                               # Phases to execute (default: all three)
 
 # ── Worker Settings ─────────────────────────────────────────────────
 workers:
-  concurrency: 4                      # Number of Celery prefork worker processes
+  fetchers: 2                         # Concurrency of the fetch worker pool
+  processors: 16                      # Concurrency of the process (de-id) worker pool
   max_retries: 1                      # Task retry limit on failure
+  max_batch_retries: 3                # Per-batch retry limit
   task_timeout: 3600                  # Max seconds per task (default: 1 hour)
+  table_batch_size: 0                 # Process N tables per batch (0 = all at once)
 
 # ── Quality Control ─────────────────────────────────────────────────
 qc:
   sample_size: 100                    # Rows to sample for QC verification
   scan_for_residual_pii: true         # Run NLP-based residual PII scan on notes
+
+  # Optional: feed the in-pipeline notes scan real PHI values from the master table
+  # (without this, the notes exact-match set is empty and only the residual-PII scanner runs).
+  pii_master_conn_str: mysql+pymysql://user:pass@host/master_db
+  pii_columns: [users_ufname, users_ulname, users_upphone]   # default: all non-id cols
+
+  # Residual-PII scanner backend for the notes scan (replaces Presidio):
+  #   regex (default) — portable, dependency-free | none — disable the residual scan
+  residual_pii_backend: regex
+
+  # Part 2 — mapping & count checks, run as a BLOCKING gate before de-identification.
+  # Empty `part2` → gate is a no-op. See "Quality Control" section for all keys.
+  part2_blocking: true
+  part2:
+    mapping_target_pairs: [[patient_mapping_table, patients]]
+    offset_min: -38
+    offset_max: 38
+
+  # Delta-identity QC (deid qc-delta) — row-level source↔dest diff on CDC delta.
+  delta_identity:
+    tables: [rwe_ad_mci_lab]
+    delta_after: "2026-05-15"          # only check dest rows newer than this
+
+  # Part 3 — master-referenced unstructured PHI audit (deid qc-audit).
+  master_phi:
+    pii_master_conn_str: mysql+pymysql://user:pass@host/master_db
+    facility_names: [Northwest]
+    check_address: true                # residual full street-address regex
+    check_dates_in_notes: true         # flag leaked master dates + implausible dates in text
+    date_columns: [users_dob]          # master date cols (default: auto by name)
+    require_mask_token: false          # opt-in: assert a mask token replaced the PHI
+    expected_mask_tokens: ["<<PATIENT_NAME>>"]
+    sample_size: 500                   # 0 = whole table
+    tables:
+      - dest_table: rwe_ad_mci_lab
+        content_cols: [content]
+        name_columns: [users_ufname, users_ulname]
 ```
+
+### Programmatic / Airflow use
+
+Every QC task is an importable function (in [deid/qc/api.py](deid/qc/api.py)) that returns a structured
+result and never exits the process — so an orchestrator can call it directly and raise/alert on the
+outcome. The CLI commands are thin wrappers over these same functions.
+
+```python
+from deid.config.loader import load_config
+from deid.qc.api import (
+    run_part2_from_config,          # Part 2 gate — raises Part2Blocked on failure
+    run_delta_identity_from_config, # Part 2 row-level diff — returns [ {is_qc_passed, ...} ]
+    run_master_phi_from_config,     # Part 3 audit — returns [ {fail_count, coverage_gaps, ...} ]
+    build_audit_report,             # consolidated report dict across all parts
+)
+
+cfg = load_config("config.yaml")
+results = run_delta_identity_from_config(cfg)
+if any(not r["is_qc_passed"] for r in results):
+    raise ValueError("delta-identity QC failed")   # Airflow marks the task failed → alerts fire
+```
+
+### Auto-QC (all parts → CSV)
+
+`run_auto_qc_from_config` (CLI: `deid auto-qc`) is the single entry point that runs **all four QC
+checks over a list of tables** and writes **two CSVs**. It is the intended target for a per-vendor
+Airflow DAG (ecw / greenway / athenaone).
+
+**Inputs**
+
+| Input | Source | Notes |
+|---|---|---|
+| Connections + `qc` defaults | `config.yaml` (`DeidConfig`) | source / destination / mappings DBs; `qc.part2`, `qc.delta_identity`, `qc.master_phi` |
+| Column roles per table | **PHI rules CSV** (`table_name,column_name,rule`) | the same file `deid generate-config` produces; passed as `--rules-csv` |
+| Tables to QC | `--tables` (optional) | defaults to every table in the rules CSV |
+| PHI master (Part 3) | `qc.master_phi.pii_master_conn_str` or `--pii-master-conn-str` | without it, the master exact-match/audit feed is empty |
+
+**What runs per table** (each isolated — one failure never aborts the run):
+1. **Part 1** structured/unstructured scan (`DbScanner`) — roles derived from the rules CSV.
+2. **Part 2 delta-identity** — business key defaults to the table's `PATIENT_ID`/`ENCOUNTER_ID` column.
+3. **Part 3 master PHI audit** — only when the table has `NOTES`/`GENERIC_NOTES` columns.
+4. **Part 2 mapping & count gate** — run **once per run** from `qc.part2` (skipped if unset).
+
+**Outputs** (in `--out-dir`):
+- `auto_qc_summary.csv` — one row per table: `overall_status`, per-check status + headline counts.
+- `auto_qc_findings.csv` — one row per finding: `table, part, check, column, status, count, detail`.
+
+```python
+from deid.config.loader import load_config
+from deid.qc.api import run_auto_qc_from_config
+
+cfg = load_config("ecw/config.yaml")
+out = run_auto_qc_from_config(cfg, "ecw/phi_rules.csv", tables=["patients", "encounters"],
+                              out_dir="qc_out", max_workers=4)
+# out["summary_csv"], out["findings_csv"], out["summary"], out["findings"]
+```
+
+`max_workers > 1` QCs that many tables concurrently (thread pool — the checks are DB-I/O bound and
+Polars releases the GIL; each table opens its own connections). The CLI exposes `--max-workers` and
+`--tables-filepath` (a headerless single-column CSV of table names, same format the other deid steps use).
+
+**Airflow (per-vendor DAGs).** The production DAGs live in the `airflow-automation` repo under
+`Airflow/dags/{ecw,greenway,athenaone,dent}/<vendor>_auto_qc_dag.py`. They shell out to
+`deid auto-qc` in the `DEID_PYTHON` env via the shared `task_auto_qc` callable
+(`Airflow/dags/shared/tasks.py`); all paths + `AUTO_QC_MAX_WORKERS` come from each practice's `.env`.
 
 ### Environment Variable Interpolation
 
@@ -451,6 +558,22 @@ Displays the latest run status, phase progress, and per-table breakdown (pending
 ```bash
 deid run --config config.yaml --log-level DEBUG
 ```
+
+### Quality Control Commands
+
+```bash
+deid qc --config config.yaml                    # Part 1/3 in-pipeline scan (also: run --phase qc)
+deid qc-delta --config config.yaml              # Part 2 row-level source↔dest identity diff
+deid qc-audit --config config.yaml --report     # Part 3 master-referenced notes audit + report
+
+# Auto-QC — run ALL parts over a table list and emit two CSVs (summary + findings)
+deid auto-qc --config config.yaml --rules-csv phi_rules.csv --out-dir qc_out
+deid auto-qc -c config.yaml -r phi_rules.csv -t patients,encounters -o qc_out --stamp
+```
+
+Part 2's mapping & count gate runs automatically inside `deid run` (before de-identification) when
+`qc.part2` is configured. See the [Quality Control](#quality-control) section for the full framework,
+and [Auto-QC](#auto-qc-all-parts--csv) for the table-list → CSV runner used by the vendor DAGs.
 
 ### CDC (Change Data Capture)
 
@@ -555,7 +678,9 @@ deid/
 │   ├── pii_table.py        #   deid pii-table — create PII tables + pii_config
 │   ├── status.py           #   deid status — display run progress
 │   ├── retry.py            #   deid retry — re-run failed batches
-│   ├── qc.py               #   deid qc — standalone QC phase
+│   ├── qc.py               #   deid qc — Part 1/3 in-pipeline scan (DbScanner)
+│   ├── qc_delta.py         #   deid qc-delta — Part 2 row-level source↔dest diff
+│   ├── qc_audit.py         #   deid qc-audit — Part 3 master-referenced notes audit
 │   ├── cdc.py              #   deid cdc — change data capture
 │   └── decrypt_notes.py    #   deid decrypt-notes — decrypt ClinicalBin documents
 │
@@ -574,7 +699,8 @@ deid/
 │   ├── state.py            #   DbConfig, TableState, BatchState, RunLog
 │   ├── mappings.py         #   PatientMapping, EncounterMapping, AppointmentMapping, PhiStaging
 │   ├── failed_rows.py      #   Per-source-schema failed_rows_{schema} tables
-│   └── qc_results.py       #   QCTableResult (qc_results.db)
+│   └── qc_results.py       #   QCTableResult, QCPart2Result, QCDeltaIdentityResult,
+│                           #   QCUnstructuredAuditResult (qc_results.db)
 │
 ├── orchestrator/           # Async pipeline orchestrator
 │   ├── async_runner.py     #   Drives setup → deidentify phases; polls BatchState;
@@ -630,14 +756,21 @@ deid/
 ├── clinical_bin_doc/       # ClinicalBin (MSSQL) binary document extraction
 │   └── extractor.py        #   Extract + decrypt clinical binary documents
 │
-└── qc/                     # Quality control scanning
-    ├── scanner.py          #   DbScanner — samples source/dest and runs detectors
+└── qc/                     # Quality control (3-part QC Framework)
+    ├── scanner.py          #   DbScanner — Part 1/3 in-pipeline scan; get_pii_info loads master PHI
     ├── generator.py        #   DataGenerator — stratified sampling from databases
     ├── schema.py           #   Output schemas (ColumnQCResult, FinalQCResult)
-    └── builders/           #   QC detector classes
+    ├── mapping_count.py    #   Part 2 — mapping/count checks + blocking pre-run gate
+    ├── delta_identity.py   #   Part 2 — polars row-level source↔dest diff (cdc_id_validation port)
+    ├── master_phi.py       #   Part 3 — master-referenced unstructured PHI audit
+    ├── coverage.py         #   Part 3 — coverage check (count parity + NULL/empty)
+    ├── report.py           #   Consolidated audit report across Parts 1–3
+    ├── api.py              #   Public API — *_from_config task functions (Airflow entry point)
+    ├── llm_scan.py         #   Residual-PII scanner: regex (default) | none
+    └── builders/           #   Part 1 detector classes
         ├── base.py         #     Abstract Detector interface
-        ├── structured.py   #     ID, mask, date, ZIP, DOB detectors
-        └── unstructured.py #     Residual PII scanner (Presidio)
+        ├── structured.py   #     ID (incl. APPOINTMENT/CHART), mask, date, ZIP, DOB detectors
+        └── unstructured.py #     Notes scan: master exact-match + pluggable residual-PII scanner
 ```
 
 > Change Data Capture lives at the **repo root** (not inside the `deid/` package): `CDC/MySQL/`
@@ -669,10 +802,13 @@ The platform uses four SQLite databases for persistent state:
 |-------|---------|
 | `failed_rows_<schema>` | Rows filtered by `InvalidRowHandler` (e.g., unresolved patient IDs) — full row JSON + reason for audit |
 
-**`qc_results.db`** — Quality control output (written incrementally by `deid qc`):
+**`qc_results.db`** — Quality control output (written by `deid qc` / `qc-delta` / `qc-audit`):
 | Table | Purpose |
 |-------|---------|
-| `qc_table_results` | Per-table pass/fail with per-column detector results |
+| `qc_table_results` | Part 1 — per-table pass/fail with per-column detector results |
+| `qc_part2_results` | Part 2 — one row per mapping/count check (status, expected, actual, delta) |
+| `qc_delta_identity_results` | Part 2 — per-table row-level diff (missing/extra/value-mismatch) |
+| `qc_unstructured_audit_results` | Part 3 — per-table notes audit + quarantine list (`failure_detail`) |
 
 All four databases use SQLite WAL mode and `PRAGMA busy_timeout=5000` to allow concurrent worker reads/writes without spurious `SQLITE_BUSY` errors. The state engine is created once per worker process via `deid.models.base.get_cached_state_engine(db_path)` — every Celery task on the hot batch update path reuses the same cached engine instead of creating and disposing one per call.
 
@@ -752,11 +888,15 @@ Rules are assigned per-column in the `tables` section of `config.yaml`. The `DeI
 | `ENCOUNTER_ID` | Replace with anonymized encounter ID | `ENC789` → `20000015` |
 | `REFERENCE_PID` | Replace reference patient ID via mapping (indirect / reference-mapping columns) | indirect patient ID |
 | `APPOINTMENT_ID` | Replace with anonymized appointment ID | `APT456` → `30000008` |
+| `CHART_ID` | Replace with anonymized chart ID via chart mapping | `CHT321` → `40000005` |
 | `CHART_ID` | Replace with anonymized chart ID (joins via chart mapping) | `CHT321` → `40000012` |
 | `MASK` | Replace with fixed placeholder | `John Smith` → `<<PATIENT_NAME>>` |
 | `DATE_OFFSET` | Shift date by per-patient offset (days) | `2024-03-15` → `2024-04-18` |
 | `STATIC_OFFSET` | Shift date by global fixed offset | `2024-03-15` → `2024-04-18` |
 | `ZIP_CODE` | Truncate to 3 digits or mask | `90210` → `902` |
+| `PATIENT_DOB` | Replace with birth year only (`Int64`); columns with no recognised date pattern are nulled to prevent PHI leakage | `1985-06-15` → `1985` |
+| `NOTES` | PII-master lookup + regex masking | Free-text clinical notes |
+| `GENERIC_NOTES` | Regex-based PII masking | Free-text with pattern-based replacement |
 | `DOB` / `PATIENT_DOB` | Replace with birth year only (`Int64`); columns with no recognised date pattern are nulled to prevent PHI leakage | `1985-06-15` → `1985` |
 | `NOTES` | NLP-based PII extraction and masking | Free-text clinical notes (Presidio + Spacy) |
 | `GENERIC_NOTES` | Regex/Spacy/Presidio generic PHI masking | Free-text with pattern-based replacement |
@@ -787,35 +927,84 @@ The `STATIC_OFFSET` rule shifts all dates by the global `date_offset_days` value
 
 ### Unstructured Text (Clinical Notes)
 
-The `NOTES` rule uses a two-stage NLP pipeline:
+The `NOTES` rule de-identifies free text by combining:
 
-1. **Presidio + Spacy** (`en_core_web_lg`) — Detects entities: person names, phone numbers, email addresses, dates, locations, medical record numbers
-2. **PII table lookup** — Cross-references detected entities against the patient's known PII data (names, addresses, etc.) from the PHI staging table
+1. **PII master lookup** — the patient's known PHI values (names, addresses, contact info, identifiers) from the PHI master/staging table are located in the note and replaced with the de-identified surrogate.
+2. **Regex patterns** — dates, phone numbers, emails, and other common PII formats, plus structured-tag/XML handling.
 
-Detected PII is replaced with typed placeholders (e.g., `<<PERSON>>`, `<<PHONE_NUMBER>>`).
+The `GENERIC_NOTES` rule applies regex-based masking of dates, phone numbers, emails, addresses, and other common PII formats.
 
-The `GENERIC_NOTES` rule uses regex patterns for faster but less precise masking of dates, phone numbers, emails, addresses, and other common PII formats.
+> Note: the de-identification engine does **not** use Presidio (it was removed project-wide). QC's residual-PII scan uses the `regex` backend described under [Quality Control](#quality-control).
 
 ---
 
 ## Quality Control
 
-After de-identification, the QC phase automatically verifies each table:
+QC implements a three-part framework spanning the whole de-identification lifecycle. Each part runs
+at a different time, has a different scope, and a different failure action.
 
-### Verification Process
+| Part | When | Scope | Command | Blocking? |
+|------|------|-------|---------|-----------|
+| **1 — Structured column checks** | after de-id (QC phase) | de-identified columns by rule category | `deid qc` (or `deid run --phase qc`) | per-column pass/fail |
+| **2 — Mapping & count checks** | **before** the pipeline | mapping tables, entity counts, row-level identity | inside `deid run`; row-level via `deid qc-delta` | **yes — halts the run** |
+| **3 — Unstructured data audit** | after the pipeline | de-identified notes vs PHI master | `deid qc-audit` | post-hoc quarantine |
 
-1. **Sampling** — Stratified random sampling from both source and destination tables. Sample size scales with table size (300-5000 rows).
+### Part 1 — Structured column checks (`deid qc`)
 
-2. **Structured Column Checks** — Each de-identified column is verified by a specialized detector:
-   - **Patient/Encounter ID** — Verifies correct length and prefix of anonymized IDs
-   - **Mask** — Confirms values match the expected `<<mask_value>>` pattern
-   - **Date Offset** — Validates the date shift matches the patient's assigned offset
-   - **ZIP Code** — Confirms truncation to 3 or fewer digits
-   - **DOB** — Verifies replacement with 4-digit birth year
+Samples rows from source and destination (size scales with table size, 300–5000) and verifies each
+de-identified column with a rule-specific detector ([deid/qc/builders/structured.py](deid/qc/builders/structured.py)):
 
-3. **Unstructured Column Checks** — Runs Presidio NLP on de-identified text to detect any residual PII that was not masked.
+- **Patient / Encounter / Reference / Appointment / Chart ID** — length + prefix of the anonymized ID (offending rows captured in remarks).
+- **Mask** — value equals the expected `<<mask_value>>`.
+- **Date offset** — the shift matches the patient's assigned offset, plus format (`YYYY-MM-DD`) and plausibility (`[1900, today]`) checks.
+- **ZIP** — truncated to exactly 3 chars (or null).
+- **DOB** — 4-digit birth year.
+- **Notes / generic notes** — routed to the unstructured scan: a master exact-match (wire `qc.pii_master_conn_str` to feed real PHI values) plus a pluggable **residual-PII scanner** — `regex` by default (dependency-free, portable), or `none` to disable. Presidio has been removed from QC.
 
-4. **Row Count Verification** — Confirms source row count equals destination rows plus any intentionally ignored rows.
+Plus a row-count check (source == dest + ignored). Results persist per-table to `qc_results.db`.
+
+### Part 2 — Mapping & count checks (blocking pre-run gate)
+
+Runs **before** any de-identification when `qc.part2` is configured; a failing blocking check halts
+`deid run` (exit 1) so bad mappings never reach the pipeline ([deid/qc/mapping_count.py](deid/qc/mapping_count.py)):
+
+- `mapping_to_table_count` — mapping table row count == target table row count.
+- `patient_encounter_count` / `encounter_row_count` — per-patient / per-encounter count distributions match source↔dest.
+- `mapping_uniqueness` — each `patient_id`→one `nd_patient_id`; each `encounter_id`→one `nd_encounter_id`.
+- `offset_range` — patient offset within `[-38, 38]` (configurable).
+- `mapping_id_format` — nd-id length/prefix on the mapping tables.
+
+Set `qc.part2_blocking: false` to run these as warnings without halting.
+
+**Delta-identity QC** (`deid qc-delta`, [deid/qc/delta_identity.py](deid/qc/delta_identity.py)) is the row-level
+member of Part 2 — a polars source↔dest diff that classifies every key as `missing_in_dest`,
+`extra_in_dest`, or `value_mismatch`, scoped to a delta window (`nd_extracted_date`). It runs on
+demand and, opt-in (`DEID_CDC_DELTA_QC=1`), automatically after a CDC merge.
+
+```bash
+deid qc-delta --config config.yaml                       # uses qc.delta_identity
+deid qc-delta --config config.yaml --tables t1,t2 --delta-after 2026-05-15
+```
+
+### Part 3 — Unstructured data audit (`deid qc-audit`)
+
+Post-pipeline, **master-referenced** audit of clinical notes ([deid/qc/master_phi.py](deid/qc/master_phi.py)) —
+it references the PHI master directly rather than trusting pipeline logic. For each sampled record it
+scans the note text for: any raw PHI value (case-insensitive; names matched on parts), and residual
+phone / 5-digit ZIP / URL / facility-name patterns; optionally asserts the surrogate id is present;
+and flags NULL/empty notes as coverage gaps ([deid/qc/coverage.py](deid/qc/coverage.py)). Failed records are
+recorded as a **quarantine list** for remediation before release.
+
+```bash
+deid qc-audit --config config.yaml            # audits qc.master_phi.tables
+deid qc-audit --config config.yaml --report   # also print the consolidated report
+```
+
+### Consolidated report
+
+[deid/qc/report.py](deid/qc/report.py) (`build_audit_report` / `render_markdown`) reads `qc_results.db` and
+produces the framework's Audit Output across all three parts (totals, pass/fail, coverage gaps, and
+per-part failure detail). `deid qc-audit --report` prints it.
 
 ### QC Output
 
@@ -915,5 +1104,6 @@ python -m pytest tests/ -v
 | Config | Pydantic v2 + PyYAML | Validation, env var interpolation |
 | DataFrames | Polars | High-performance columnar processing |
 | Regex | `regex` (PyPI), with stdlib `re` fallback | High-performance regex engine. Note: `google-re2` is deliberately avoided — its Python bindings have ~50× overhead due to string marshalling. |
-| NLP | Presidio + Spacy | PII detection in unstructured text |
+| NLP (de-id) | regex + PII-master lookup | PII detection/replacement in unstructured text during de-identification (Presidio removed) |
+| QC residual-PII | `regex` (stdlib `re`) | Residual-PII scan in QC notes; dependency-free, runs everywhere. Set `qc.residual_pii_backend: none` to disable. |
 | Databases | SQLAlchemy | MySQL, MSSQL, PostgreSQL, Snowflake |

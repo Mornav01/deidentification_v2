@@ -273,15 +273,17 @@ def test_mappings_db_path_explicit_overrides_default(tmp_path):
     assert config.mappings_db_path == "./custom.db"
 
 
-def test_importing_qc_builders_does_not_load_presidio():
-    """Importing the QC builders package should NOT eagerly load AnalyzerEngine."""
+def test_qc_builders_do_not_use_presidio():
+    """Presidio has been removed from QC — the unstructured detector must not reference or load it."""
     import sys
     mods_to_remove = [k for k in sys.modules if k.startswith("deid.qc.builders")]
     for m in mods_to_remove:
         del sys.modules[m]
 
     from deid.qc.builders import unstructured
-    assert unstructured._analyzer is None
+    assert not hasattr(unstructured, "_analyzer")
+    assert not hasattr(unstructured, "_get_analyzer")
+    assert "presidio_analyzer" not in sys.modules
 
 
 # ── JSON env-var parsing (new in mind-into-main) ─────────────────────────────

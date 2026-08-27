@@ -66,6 +66,18 @@ class MappingDb:
             }
         return mapping_dict
 
+    def _source_patient_id_column(self) -> str:
+        """Physical source-identifier column of ``patient_mapping_table``.
+
+        The modernized mapping table names this column after the source identifier
+        (``mapping_tables.patient.identifier_columns[0]``, e.g. ``PATIENT_PATIENTID``)
+        rather than a fixed ``patient_id`` — ``mapping_populator.bulk_insert_patient_mappings``
+        builds it that way. The QC path passes that name in as ``patient_identifier_columns``;
+        fall back to ``patient_id`` for the legacy fixed-schema tables.
+        """
+        cols = self.mapping_db_config.get("patient_identifier_columns") or []
+        return cols[0] if cols else "patient_id"
+
     @validate_call(config=dict(arbitrary_types_allowed=True))
     def get_reverse_patients_dict(
         self, nd_patient_ids: list
@@ -76,11 +88,12 @@ class MappingDb:
         with self.engine.connect() as conn:
             rows = conn.execute(stmt).fetchall()
 
+        src_id_col = self._source_patient_id_column()
         mapping_dict = {}
         for row in rows:
             row_dict = row._asdict()
             mapping_dict[row_dict["nd_patient_id"]] = {
-                "patient_id": row_dict["patient_id"],
+                "patient_id": row_dict.get(src_id_col),
                 "offset": row_dict["offset"],
             }
         return mapping_dict
@@ -95,11 +108,18 @@ class MappingDb:
         with self.engine.connect() as conn:
             rows = conn.execute(stmt).fetchall()
 
+        # The encounter → patient link used for the DATE_OFFSET chain must be the ``nd_patient_id``
+        # bridge (encounter_mapping_table carries nd_patient_id in the modernized schema), because
+        # the caller keys the patient reverse dict — which holds the offset — by nd_patient_id.
+        # ``.get`` so a legacy table without an nd_patient_id column degrades to None, not KeyError.
         mapping_dict = {}
         for row in rows:
             row_dict = row._asdict()
             mapping_dict[row_dict["nd_encounter_id"]] = {
-                "encounter_id": row_dict["encounter_id"],
-                "patient_id": row_dict["patient_id"],
+                "encounter_id": row_dict.get("encounter_id"),
+                # Kept under 'patient_id' for the detector contract. Prefer the modernized
+                # nd_patient_id bridge (keys the patient reverse dict → offset); fall back to the
+                # legacy source patient_id column for the old fixed-schema mapping table.
+                "patient_id": row_dict.get("nd_patient_id", row_dict.get("patient_id")),
             }
         return mapping_dict

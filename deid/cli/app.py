@@ -22,6 +22,9 @@ def _register_commands():
     from deid.cli.mapping import mapping_command
     from deid.cli.pii_table import pii_table_command
     from deid.cli.qc import qc_command
+    from deid.cli.qc_delta import qc_delta_command
+    from deid.cli.qc_audit import qc_audit_command
+    from deid.cli.auto_qc import auto_qc_command
 
     app.command(name="run")(run_command)
     app.command(name="status")(status_command)
@@ -30,6 +33,9 @@ def _register_commands():
     app.command(name="mapping")(mapping_command)
     app.command(name="pii-table")(pii_table_command)
     app.command(name="qc")(qc_command)
+    app.command(name="qc-delta")(qc_delta_command)
+    app.command(name="qc-audit")(qc_audit_command)
+    app.command(name="auto-qc")(auto_qc_command)
 
     if importlib.util.find_spec("deid.cli.cdc") is not None:
         from deid.cli.cdc import cdc_command
