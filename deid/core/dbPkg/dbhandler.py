@@ -351,16 +351,27 @@ def _sqlalchemy_type_to_mysql_ddl(col_type) -> str:
                 return "LONGTEXT"
             return "VARCHAR(255)"
         if "INT" in name or "INTEGER" in name:
+            # col_type.unsigned is set (e.g. by mssql_type_to_mysql for MSSQL
+            # tinyint, which is always 0-255) — without emitting it here, the
+            # DDL would silently fall back to signed and overflow on values >127.
+            suffix = " UNSIGNED" if getattr(col_type, "unsigned", False) else ""
             if "BIG" in name:
-                return "BIGINT"
+                return f"BIGINT{suffix}"
             if "SMALL" in name:
-                return "SMALLINT"
+                return f"SMALLINT{suffix}"
             if "TINY" in name:
-                return "TINYINT"
-            return "INT"
+                return f"TINYINT{suffix}"
+            return f"INT{suffix}"
         if "DECIMAL" in name or "NUMERIC" in name:
-            p = getattr(col_type, "precision", 18) or 18
-            s = getattr(col_type, "scale", 2) or 2
+            # `or` would silently discard a real precision/scale of 0 (falsy)
+            # and substitute the fallback default — e.g. DECIMAL(18,0) (no
+            # fractional digits) would wrongly become DECIMAL(20,2). Check
+            # `is None` instead so an explicit 0 is preserved (same bug/fix as
+            # mssql_type_to_mysql's Numeric branch in type_mapping.py).
+            p_attr = getattr(col_type, "precision", None)
+            s_attr = getattr(col_type, "scale", None)
+            p = p_attr if p_attr is not None else 18
+            s = s_attr if s_attr is not None else 2
             if s >= 2 and p <= 18:
                 p = max(p, 20)
             return f"DECIMAL({p},{s})"
@@ -1037,6 +1048,15 @@ class NDDBHandler:
             max_lengths: dict[str, int] = {}
             for col_def in col_defs:
                 col_name = col_def["name"]
+                if col_name in numeric_columns:
+                    # BIT/INT/DECIMAL/etc. also expose a `.length` attribute (e.g.
+                    # mysql.BIT(1).length == 1, meaning 1 *bit*), which this loop
+                    # would otherwise mistake for a VARCHAR max-*character*-length.
+                    # Casting such a column to a string and slicing it to 1 char
+                    # produces a 1-byte value that overflows a true BIT(1) column,
+                    # raising MySQL 1406 "Data too long" instead of ever truncating
+                    # correctly — these types are never string-truncated.
+                    continue
                 col_type = col_def.get("type")
                 length = None
                 if col_type is not None:

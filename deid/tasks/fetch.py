@@ -13,7 +13,12 @@ from sqlalchemy.orm import Session
 from deid.config.task_models import FetchTaskConfig, LogLevel
 from sqlalchemy.types import Enum as SAEnum
 
-from deid.core.dbPkg.dbhandler import NDDBHandler, stream_table_keyset
+from deid.core.dbPkg.dbhandler import (
+    NDDBHandler,
+    stream_table_keyset,
+    _sqlalchemy_type_to_mysql_ddl,
+)
+from deid.core.dbPkg.type_mapping import mssql_type_to_mysql
 from deid.core.log_publisher import get_peak_memory_mb, make_log_record, publish_log
 from deid.models.base import get_cached_state_engine
 from deid.models.state import BatchState
@@ -128,6 +133,14 @@ def _fetch_batch_inner(config: FetchTaskConfig, raw_config: dict, batch_tag: str
     # 1. Fetch rows from source using keyset pagination (O(1) per batch)
     source = _get_cached_handler(config.source_conn_str, read_only=True)
     col_info = source.get_columns(config.table_name)
+    # Destination is always MySQL (see db_config.py). When the source is MSSQL,
+    # route through the same mssql_type_to_mysql / _sqlalchemy_type_to_mysql_ddl
+    # mapping used by create_table_in_dest, instead of a bare str(col_type) —
+    # a raw MSSQL type's string form carries no MySQL-specific info (e.g.
+    # str(mssql.TINYINT()) == "TINYINT", silently losing the fact that MSSQL
+    # tinyint is always unsigned 0-255, which overflows MySQL's default signed
+    # TINYINT on any source value >= 128).
+    source_is_mssql = source.engine.dialect.name == "mssql"
     col_schema = {}
     for c in col_info:
         col_type = c.get("type")
@@ -135,8 +148,12 @@ def _fetch_batch_inner(config: FetchTaskConfig, raw_config: dict, batch_tag: str
         # ENUM: str() renders without values ("ENUM" is invalid DDL); use VARCHAR instead.
         if isinstance(col_type, SAEnum):
             type_str = "VARCHAR(255)"
+        elif col_type is None:
+            type_str = ""
+        elif source_is_mssql:
+            type_str = _sqlalchemy_type_to_mysql_ddl(mssql_type_to_mysql(col_type))
         else:
-            type_str = str(col_type) if col_type is not None else ""
+            type_str = str(col_type)
         col_schema[c["name"].lower()] = {
             "original_name": c["name"],
             "type": type_str,
