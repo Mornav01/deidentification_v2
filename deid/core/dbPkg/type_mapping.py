@@ -37,6 +37,7 @@ from sqlalchemy.dialects.mssql import (
     REAL,
     SMALLDATETIME,
     SMALLMONEY,
+    TINYINT as MSSQL_TINYINT,
     UNIQUEIDENTIFIER,
     VARCHAR as MSSQL_VARCHAR,
 )
@@ -58,6 +59,11 @@ def mssql_type_to_mysql(source_type) -> "sa_types.TypeEngine":
         return CHAR(36)
     if type_cls is BIT:
         return TINYINT(1)
+    if type_cls is MSSQL_TINYINT:
+        # MSSQL tinyint is always 0-255 (there is no signed tinyint in T-SQL) —
+        # map to an unsigned MySQL TINYINT, not the generic signed Integer
+        # fallback below, which would let values >127 overflow on insert.
+        return TINYINT(unsigned=True)
     if type_cls is DATETIME2:
         return DATETIME(fsp=getattr(source_type, "precision", 6) or 6)
     if type_cls is SMALLDATETIME:
@@ -96,15 +102,19 @@ def mssql_type_to_mysql(source_type) -> "sa_types.TypeEngine":
         return VARCHAR(length or 255)
     if isinstance(source_type, sa_types.Integer):
         if isinstance(source_type, sa_types.BigInteger):
-            return BIGINT
+            return BIGINT()
         if isinstance(source_type, sa_types.SmallInteger):
-            return SMALLINT
-        return INTEGER
+            return SMALLINT()
+        return INTEGER()
     if isinstance(source_type, sa_types.Float):
         return DOUBLE()
     if isinstance(source_type, sa_types.Numeric):
-        p = getattr(source_type, "precision", 18) or 18
-        s = getattr(source_type, "scale", 2) or 2
+        # `or` would silently discard a real precision/scale of 0 (falsy) and
+        # substitute the fallback default — e.g. NUMERIC(18,0), a whole-number
+        # ID column, would wrongly become DECIMAL(18,2). Check `is None` instead
+        # so an explicit 0 (no fractional digits) is preserved.
+        p = source_type.precision if source_type.precision is not None else 18
+        s = source_type.scale if source_type.scale is not None else 2
         # DECIMAL(p,s) allows only (p-s) digits before decimal. Values like 635264369268131824
         # (18 digits) overflow DECIMAL(18,2). Use min precision 20 when s>=2 so 18-digit
         # integers fit.

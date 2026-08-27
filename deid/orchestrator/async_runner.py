@@ -7,6 +7,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 from deid.config.schema import DeidConfig
@@ -33,13 +34,19 @@ async def run(config: DeidConfig, config_path: str):
     run_start = datetime.now(timezone.utc)
     run_timestamp = run_start.strftime("%Y-%m-%d_%H-%M-%S")
 
-    if config.state_db_url:
-        logger.info("State DB: using MySQL at %s", config.state_db_url)
+    if config.state_db_name:
+        logger.info(
+            "State DB: using MySQL at %s",
+            make_url(config.resolved_state_db_url).render_as_string(hide_password=True),
+        )
     else:
         logger.info("State DB: using SQLite at %s", config.state_db_path)
 
-    if config.failed_rows_db_url:
-        logger.info("Failed-rows DB: using MySQL at %s", config.failed_rows_db_url)
+    if config.failed_rows_db_name:
+        logger.info(
+            "Failed-rows DB: using MySQL at %s",
+            make_url(config.resolved_failed_rows_db_url).render_as_string(hide_password=True),
+        )
     else:
         logger.info("Failed-rows DB: using SQLite at %s", config.failed_rows_db_path)
 
@@ -847,6 +854,7 @@ def _build_fetch_config(config, batch, staging_root, mappings_conn_str):
     base["table_details"] = _get_table_details(config, batch.table_name)
     base["offset_days"] = config.deidentification.date_offset_days
     base["dest_conn_str"] = config.destination_db.connection_string()
+    base["join_db_conn_str"] = config.join_db.connection_string() if config.join_db else None
     # PII config for NOTES de-identification (patient name masking in free text)
     if config.pii_db:
         base["pii_config"] = config.pii_config

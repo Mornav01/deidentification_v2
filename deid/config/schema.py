@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, validate_call
+from sqlalchemy.engine import URL
 
 
 def validate_replace_value(pii_config, *, source: str = "pii_config") -> None:
@@ -78,8 +79,14 @@ class DbConfig(BaseModel):
             DbType.postgresql: "postgresql+psycopg2",
             DbType.snowflake: "snowflake",
         }
-        driver = drivers[self.type]
-        return f"{driver}://{self.username}:{self.password}@{self.host}:{self.port}/{self.database}"
+        return URL.create(
+            drivername=drivers[self.type],
+            username=self.username,
+            password=self.password,
+            host=self.host,
+            port=self.port,
+            database=self.database,
+        ).render_as_string(hide_password=False)
 
 
 class DeidentificationSettings(BaseModel):
@@ -156,11 +163,11 @@ class DeidConfig(BaseModel):
     join_db: Optional[DbConfig] = None
     config_key: str = "default"
     state_db_path: str = "./state.db"
-    state_db_url: Optional[str] = None
+    state_db_name: Optional[str] = None
     mappings_db: Optional[DbConfig] = None
     mappings_db_path: str = ""
     failed_rows_db_path: str = "./failed_rows.db"
-    failed_rows_db_url: Optional[str] = None
+    failed_rows_db_name: Optional[str] = None
     qc_results_db_path: str = "./qc_results.db"
     qc_results_db_url: Optional[str] = None
     redis_url: str = "redis://localhost:6379/0"
@@ -248,19 +255,25 @@ class DeidConfig(BaseModel):
     def resolved_state_db_url(self) -> str:
         """Full SQLAlchemy URL for the state database.
 
-        Uses ``state_db_url`` when set (e.g. ``mysql+pymysql://...``),
-        otherwise falls back to SQLite at ``state_db_path``.
+        Uses ``state_db_name`` (same server/credentials as ``destination_db``,
+        different database) when set, otherwise falls back to SQLite at
+        ``state_db_path``.
         """
-        return self.state_db_url or f"sqlite:///{self.state_db_path}"
+        if self.state_db_name:
+            return self.destination_db.model_copy(update={"database": self.state_db_name}).connection_string()
+        return f"sqlite:///{self.state_db_path}"
 
     @property
     def resolved_failed_rows_db_url(self) -> str:
         """Full SQLAlchemy URL for the failed-rows audit database.
 
-        Uses ``failed_rows_db_url`` when set, otherwise falls back to
-        SQLite at ``failed_rows_db_path``.
+        Uses ``failed_rows_db_name`` (same server/credentials as
+        ``destination_db``, different database) when set, otherwise falls
+        back to SQLite at ``failed_rows_db_path``.
         """
-        return self.failed_rows_db_url or f"sqlite:///{self.failed_rows_db_path}"
+        if self.failed_rows_db_name:
+            return self.destination_db.model_copy(update={"database": self.failed_rows_db_name}).connection_string()
+        return f"sqlite:///{self.failed_rows_db_path}"
 
     @property
     def resolved_qc_results_db_url(self) -> str:
@@ -270,6 +283,33 @@ class DeidConfig(BaseModel):
         SQLite at ``qc_results_db_path``.
         """
         return self.qc_results_db_url or f"sqlite:///{self.qc_results_db_path}"
+
+    @model_validator(mode="after")
+    def build_pii_db_connection_strings(self) -> "DeidConfig":
+        """Derive pii_db connection strings from ``destination_db`` credentials.
+
+        ``pii_db`` uses the same server/user/password as ``destination_db`` and
+        only differs by database name. Building the URL through
+        ``DbConfig.connection_string()`` (``URL.create``) percent-encodes special
+        characters in the password (e.g. ``@`` → ``%40``), avoiding the broken
+        URL parsing that a raw ``mysql+pymysql://user:${DB_PASS}@host`` string
+        would produce. Consumers keep reading the ``*_connection_str`` keys.
+        """
+        if not self.pii_db:
+            return self
+        # map: <db-name key in yaml> -> <conn-str key consumers read>
+        _pii_map = {
+            "master_db_name": "master_connection_str",
+            "secondary_pii_db_name": "secondary_pii_connection_str",
+            "insurance_db_name": "insurance_connection_str",
+        }
+        for name_key, conn_key in _pii_map.items():
+            db_name = self.pii_db.get(name_key)
+            if db_name:
+                self.pii_db[conn_key] = self.destination_db.model_copy(
+                    update={"database": db_name}
+                ).connection_string()
+        return self
 
     @model_validator(mode="after")
     def require_tables_or_csv(self) -> "DeidConfig":
