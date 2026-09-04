@@ -43,6 +43,29 @@ from sqlalchemy.dialects.mssql import (
 )
 
 
+def _is_unbounded_length(length) -> bool:
+    """True if `length` is one of the sentinel values MSSQL reflection uses for
+    VARCHAR(MAX)/NVARCHAR(MAX), rather than a real declared column width."""
+    if length is None or length == "max":
+        return True
+    if isinstance(length, int) and (length < 0 or length >= 65535):
+        return True
+    return False
+
+
+def _buffered_varchar_length(length: int) -> int:
+    """Add a safety margin to a reflected source VARCHAR/NVARCHAR length.
+
+    Destination tables are sized once from the source's declared column width,
+    with no later ALTER if source data grows or de-identification placeholders
+    (e.g. ``<<COLUMN>>`` masks) push a value past that width — the next insert
+    then fails with MySQL error 1406 ("Data too long"). A fixed margin absorbs
+    that drift without discarding the source's real declared width the way
+    forcing everything to LONGTEXT would.
+    """
+    return length + max(20, length // 4)
+
+
 def mssql_type_to_mysql(source_type) -> "sa_types.TypeEngine":
     """Map an MSSQL-reflected column type to a MySQL-compatible type.
 
@@ -77,29 +100,33 @@ def mssql_type_to_mysql(source_type) -> "sa_types.TypeEngine":
     if type_cls is REAL:
         return FLOAT()
     if type_cls is NTEXT or type_cls is IMAGE:
-        return LONGTEXT
+        return LONGTEXT()
     if type_cls is NCHAR:
         length = getattr(source_type, "length", None) or 255
         return CHAR(min(length, 255))
     if type_cls is NVARCHAR:
         length = getattr(source_type, "length", None)
-        # NVARCHAR(MAX) / 2147483647 → LONGTEXT
-        if length is None or length == "max" or (isinstance(length, int) and length >= 255):
-            return LONGTEXT
-        return VARCHAR(min(length, 16383))  # MySQL VARCHAR max ~16383 utf8mb4
+        # NVARCHAR(MAX) → LONGTEXT; any real declared width is preserved (+ buffer)
+        if _is_unbounded_length(length):
+            return LONGTEXT()
+        return VARCHAR(min(_buffered_varchar_length(length), 16383))  # MySQL VARCHAR max ~16383 utf8mb4
     if type_cls is MSSQL_VARCHAR:
         length = getattr(source_type, "length", None)
-        # VARCHAR(MAX) / 2147483647 / 2147483657 → LONGTEXT
-        if length is None or length == "max" or (isinstance(length, int) and length >= 255):
-            return LONGTEXT
-        return VARCHAR(min(length, 16383))
+        # VARCHAR(MAX) → LONGTEXT; any real declared width is preserved (+ buffer)
+        if _is_unbounded_length(length):
+            return LONGTEXT()
+        return VARCHAR(min(_buffered_varchar_length(length), 16383))
 
-    # Generic SQLAlchemy types (may come from reflection)
+    # Generic SQLAlchemy types (may come from reflection). Note: pyodbc reflects
+    # MSSQL VARCHAR(MAX)/NVARCHAR(MAX) columns as a *generic* sqlalchemy.sql
+    # VARCHAR (length=None), not the mssql-dialect VARCHAR matched above — so
+    # this branch, not the ones above, is what most MAX-width free-text columns
+    # (e.g. Messages.Body) actually hit.
     if isinstance(source_type, (sa_types.String, sa_types.Text)):
         length = getattr(source_type, "length", None)
-        if length is None or (isinstance(length, int) and length >= 65535):
-            return LONGTEXT
-        return VARCHAR(length or 255)
+        if _is_unbounded_length(length):
+            return LONGTEXT()
+        return VARCHAR(min(_buffered_varchar_length(length), 16383))
     if isinstance(source_type, sa_types.Integer):
         if isinstance(source_type, sa_types.BigInteger):
             return BIGINT()
@@ -124,13 +151,13 @@ def mssql_type_to_mysql(source_type) -> "sa_types.TypeEngine":
     if isinstance(source_type, sa_types.DateTime):
         return DATETIME()
     if isinstance(source_type, sa_types.Date):
-        return DATE
+        return DATE()
     if isinstance(source_type, sa_types.Time):
-        return TIME
+        return TIME()
     if isinstance(source_type, sa_types.Boolean):
         return TINYINT(1)
     if isinstance(source_type, sa_types.LargeBinary):
-        return LONGBLOB
+        return LONGBLOB()
     if isinstance(source_type, sa_types.Binary):
         length = getattr(source_type, "length", None)
         return VARBINARY(length or 255)
@@ -139,9 +166,9 @@ def mssql_type_to_mysql(source_type) -> "sa_types.TypeEngine":
     try:
         length = getattr(source_type, "length", None)
         if length and isinstance(length, int):
-            if length >= 255:
-                return LONGTEXT  # VARCHAR(MAX) / large lengths → LONGTEXT
-            return VARCHAR(length)
+            if _is_unbounded_length(length):
+                return LONGTEXT()  # VARCHAR(MAX) sentinel → LONGTEXT
+            return VARCHAR(min(_buffered_varchar_length(length), 16383))
     except Exception:
         pass
     return VARCHAR(255)

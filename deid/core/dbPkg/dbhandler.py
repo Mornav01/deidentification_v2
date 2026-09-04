@@ -5,7 +5,11 @@ from sqlalchemy.exc import ProgrammingError
 from deid.core.logger import nd_logger
 from sqlalchemy.types import Enum as SAEnum
 
-from deid.core.dbPkg.type_mapping import mssql_type_to_mysql
+from deid.core.dbPkg.type_mapping import (
+    mssql_type_to_mysql,
+    _buffered_varchar_length,
+    _is_unbounded_length,
+)
 import datetime
 import decimal
 import os
@@ -337,6 +341,13 @@ def _sqlalchemy_type_to_mysql_ddl(col_type) -> str:
     """Convert SQLAlchemy column type to MySQL DDL type string."""
     if col_type is None:
         return "VARCHAR(255)"
+    # A bare type CLASS (e.g. `LONGTEXT`, not `LONGTEXT()`) breaks the type(col_type)
+    # introspection below — type(a_class) is `type`, not the SQLAlchemy type itself —
+    # and every branch silently misses, falling through to the VARCHAR(255) default.
+    # mssql_type_to_mysql always returns instances now, but guard here too since this
+    # is the single choke point every caller's mapped type flows through.
+    if isinstance(col_type, type):
+        col_type = col_type()
     if isinstance(col_type, SAEnum):
         return "VARCHAR(255)"
     type_cls = type(col_type)
@@ -345,10 +356,11 @@ def _sqlalchemy_type_to_mysql_ddl(col_type) -> str:
         name = type_cls.__name__.upper()
         if "VARCHAR" in name or "CHAR" in name:
             length = getattr(col_type, "length", None)
-            if length and isinstance(length, int) and length <= 255:
-                return f"{'VARCHAR' if 'VARCHAR' in name else 'CHAR'}({length})"
-            if length and isinstance(length, int) and length > 255:
-                return "LONGTEXT"
+            # Length here already reflects mssql_type_to_mysql's sizing (buffer
+            # applied, MAX sentinels resolved to LONGTEXT upstream) when reached
+            # via the MSSQL recursion below — just preserve it, no extra cutoff.
+            if length and isinstance(length, int):
+                return f"{'VARCHAR' if 'VARCHAR' in name else 'CHAR'}({min(length, 16383)})"
             return "VARCHAR(255)"
         if "INT" in name or "INTEGER" in name:
             # col_type.unsigned is set (e.g. by mssql_type_to_mysql for MSSQL
@@ -394,16 +406,14 @@ def _sqlalchemy_type_to_mysql_ddl(col_type) -> str:
         return _sqlalchemy_type_to_mysql_ddl(mapped)
     if isinstance(col_type, (String,)):
         length = getattr(col_type, "length", None)
-        if length is None:
-            return "VARCHAR(255)"
-        if isinstance(length, int) and length > 255:
+        if _is_unbounded_length(length):
             return "LONGTEXT"
-        return f"VARCHAR({length})"
+        return f"VARCHAR({min(_buffered_varchar_length(length), 16383)})"
     if hasattr(col_type, "length") and col_type.length:
         length = col_type.length
-        if isinstance(length, int) and length > 255:
+        if _is_unbounded_length(length):
             return "LONGTEXT"
-        return f"VARCHAR({length})"
+        return f"VARCHAR({min(_buffered_varchar_length(length), 16383)})"
     type_name = type_cls.__name__.upper()
     if "INT" in type_name:
         return "BIGINT" if "BIG" in type_name else "INT"
@@ -507,7 +517,13 @@ class NDDBHandler:
         if read_only:
             # Read-only workers need a single connection; keeping the pool
             # small avoids flooding the source DB when many workers run.
-            engine_kwargs = dict(pool_size=6, max_overflow=2, pool_timeout=1000, pool_recycle=1800, pool_pre_ping=True)
+            # process.py opens a source + a join_db handler per batch, so with
+            # `workers.processors: 16` the previous pool_size=6/max_overflow=2
+            # (8 per handler) could reach ~256 concurrent source connections —
+            # enough to exhaust a local SQL Server instance's connection limit
+            # and surface as spurious "Login failed" / "Adaptive Server
+            # connection failed" errors. 3 per handler caps that at ~96.
+            engine_kwargs = dict(pool_size=2, max_overflow=1, pool_timeout=1000, pool_recycle=1800, pool_pre_ping=True)
             self.engine = create_read_only_engine(connection_string, **engine_kwargs)
         else:
             engine_kwargs = dict(pool_size=6, max_overflow=5, pool_timeout=1000, pool_recycle=1800, pool_pre_ping=True)

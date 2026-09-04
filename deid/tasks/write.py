@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from deid.config.task_models import LogLevel, WriteTaskConfig
 from deid.core.dbPkg.dbhandler import NDDBHandler
+from deid.core.dbPkg.type_mapping import _buffered_varchar_length, _is_unbounded_length
 from deid.core.log_publisher import get_peak_memory_mb, make_log_record, publish_log
 from deid.models.base import get_cached_state_engine
 from deid.models.state import BatchState, TableState
@@ -266,12 +267,14 @@ def _clean_type_str(raw: str) -> str:
     # to TINYTEXT. Promote to LONGTEXT to preserve the source semantics.
     if re.match(r"^TEXT\s*\(\s*\d+\s*\)$", s, re.I):
         return "LONGTEXT"
-    # NVARCHAR(n) → VARCHAR(n), or LONGTEXT for large/max lengths
+    # NVARCHAR(n) → VARCHAR(n) with a safety buffer, or LONGTEXT for MAX/unbounded
     if upper.startswith("NVARCHAR("):
         m = re.search(r"\((\d+)\)", s)
         if m:
             length = int(m.group(1))
-            return "LONGTEXT" if length >= 255 else f"VARCHAR({length})"
+            if _is_unbounded_length(length):
+                return "LONGTEXT"
+            return f"VARCHAR({min(_buffered_varchar_length(length), 16383)})"
         return "LONGTEXT"
     # MSSQL XML type has no MySQL equivalent — store as LONGTEXT
     if upper == "XML":
