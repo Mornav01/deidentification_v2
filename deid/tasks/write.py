@@ -259,14 +259,16 @@ def _clean_type_str(raw: str) -> str:
     # Bare ENUM without values is invalid MySQL DDL; treat as VARCHAR
     if s.upper() == "ENUM" or s.upper() == "ENUM()":
         return "VARCHAR(255)"
-    # VARCHAR/NVARCHAR/TEXT/NTEXT without a length means unbounded source text — use LONGTEXT
+    # VARCHAR/NVARCHAR without a length means unbounded source text — use LONGTEXT
     upper = s.upper()
-    if upper in ("VARCHAR", "NVARCHAR", "TEXT", "NTEXT"):
+    if upper in ("VARCHAR", "NVARCHAR", "NTEXT"):
         return "LONGTEXT"
-    # TEXT(n) — MSSQL text is unbounded (2^31-1 bytes); MySQL silently converts TEXT(n≤255)
-    # to TINYTEXT. Promote to LONGTEXT to preserve the source semantics.
-    if re.match(r"^TEXT\s*\(\s*\d+\s*\)$", s, re.I):
-        return "LONGTEXT"
+    # MSSQL TEXT — deprecated, semantically unbounded, but MySQL has a native
+    # TEXT type; use it instead of always ballooning to LONGTEXT. Any numeric
+    # length here (e.g. "TEXT(16)") is a bogus MSSQL catalog artifact (the size
+    # of the legacy internal text-pointer, not real capacity) — ignore it.
+    if upper == "TEXT" or re.match(r"^TEXT\s*\(\s*\d+\s*\)$", s, re.I):
+        return "TEXT"
     # NVARCHAR(n) → VARCHAR(n) with a safety buffer, or LONGTEXT for MAX/unbounded
     if upper.startswith("NVARCHAR("):
         m = re.search(r"\((\d+)\)", s)

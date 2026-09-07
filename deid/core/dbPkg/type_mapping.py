@@ -20,6 +20,7 @@ from sqlalchemy.dialects.mysql import (
     LONGBLOB,
     LONGTEXT,
     SMALLINT,
+    TEXT as MYSQL_TEXT,
     TIME,
     TINYINT,
     VARBINARY,
@@ -37,6 +38,7 @@ from sqlalchemy.dialects.mssql import (
     REAL,
     SMALLDATETIME,
     SMALLMONEY,
+    TEXT as MSSQL_TEXT,
     TINYINT as MSSQL_TINYINT,
     UNIQUEIDENTIFIER,
     VARCHAR as MSSQL_VARCHAR,
@@ -101,6 +103,13 @@ def mssql_type_to_mysql(source_type) -> "sa_types.TypeEngine":
         return FLOAT()
     if type_cls is NTEXT or type_cls is IMAGE:
         return LONGTEXT()
+    if type_cls is MSSQL_TEXT:
+        # MSSQL's deprecated TEXT type is inherently unbounded (~2GB), but SQL
+        # Server's catalog (sys.columns.max_length) always reports a bogus
+        # length of 16 for it — the size of the legacy internal text-pointer
+        # structure, not real capacity — so `.length` can't be trusted here.
+        # MySQL has a native TEXT type; use it instead of forcing LONGTEXT.
+        return MYSQL_TEXT()
     if type_cls is NCHAR:
         length = getattr(source_type, "length", None) or 255
         return CHAR(min(length, 255))

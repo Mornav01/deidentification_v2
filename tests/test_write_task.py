@@ -127,19 +127,19 @@ def test_write_batch_failure_resets_batch_via_reset_or_fail(tmp_path, state_engi
 # _clean_type_str — TEXT / TEXT(n) normalization for MSSQL→MySQL
 # ---------------------------------------------------------------------------
 
-def test_clean_type_str_bare_text_becomes_longtext():
+def test_clean_type_str_bare_text_becomes_text():
     from deid.tasks.write import _clean_type_str
-    assert _clean_type_str("TEXT") == "LONGTEXT"
+    assert _clean_type_str("TEXT") == "TEXT"
 
 
-def test_clean_type_str_text_with_small_n_becomes_longtext():
+def test_clean_type_str_text_with_small_n_becomes_text():
     from deid.tasks.write import _clean_type_str
-    assert _clean_type_str("TEXT(100)") == "LONGTEXT"
+    assert _clean_type_str("TEXT(100)") == "TEXT"
 
 
-def test_clean_type_str_text_with_large_n_becomes_longtext():
+def test_clean_type_str_text_with_large_n_becomes_text():
     from deid.tasks.write import _clean_type_str
-    assert _clean_type_str("TEXT(8000)") == "LONGTEXT"
+    assert _clean_type_str("TEXT(8000)") == "TEXT"
 
 
 def test_clean_type_str_ntext_still_longtext():
