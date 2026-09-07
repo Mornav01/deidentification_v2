@@ -13,7 +13,8 @@ from datetime import datetime
 from queue import Empty
 
 from sqlalchemy import create_engine
- 
+from sqlalchemy.engine import URL
+
 # Try to import orjson for faster JSON serialization
 try:
     import orjson
@@ -89,14 +90,22 @@ def get_cdc_db_url() -> str:
     """
     mysql+pymysql URL for the CDC database.
     Override with DB_USER / DB_PASS / DB_HOST / DB_PORT (same convention as cdc_restore.py).
-    DB_PASS may be stored URL-encoded (e.g. %40 for @); the f-string URL form lets SQLAlchemy
-    decode it on parse, consistent with cdc_restore.py / cdc_merge.py.
+    Built via URL.create (same as deid/config/schema.py DbConfig.connection_string) so
+    special characters in DB_PASS (e.g. @) are percent-encoded correctly instead of
+    breaking a hand-built f-string URL.
     """
     user     = os.environ.get("DB_USER", MYSQL_USER)
     password = os.environ.get("DB_PASS", MYSQL_PASS)
     host     = os.environ.get("DB_HOST", "localhost")
     port     = os.environ.get("DB_PORT", "3306")
-    return f"mysql+pymysql://{user}:{password}@{host}:{port}/{MYSQL_DB}"
+    return URL.create(
+        drivername="mysql+pymysql",
+        username=user,
+        password=password,
+        host=host,
+        port=int(port),
+        database=MYSQL_DB,
+    ).render_as_string(hide_password=False)
 
 
 def _writer_engine(db_url: str, pool_size: int):

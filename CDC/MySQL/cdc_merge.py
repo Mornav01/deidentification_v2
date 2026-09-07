@@ -1,4 +1,5 @@
 from sqlalchemy import create_engine, text, inspect
+from sqlalchemy.engine import URL
 from collections import defaultdict
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -80,16 +81,24 @@ def init_databases(staging_schema_arg: str, prod_schema_arg: str):
     _db_user = os.environ.get("DB_USER", "")
     _db_pass = os.environ.get("DB_PASS", "")
     _db_host = os.environ.get("DB_HOST", "localhost")
-    _db_port = os.environ.get("DB_PORT", "3306")
+    _db_port = int(os.environ.get("DB_PORT", "3306"))
 
+    # Built via URL.create (same as deid/config/schema.py DbConfig.connection_string) so
+    # special characters in DB_PASS (e.g. @) are percent-encoded correctly.
     staging_engine = create_engine(
-        f"mysql+pymysql://{_db_user}:{_db_pass}@{_db_host}:{_db_port}/{staging_schema}",
+        URL.create(
+            drivername="mysql+pymysql", username=_db_user, password=_db_pass,
+            host=_db_host, port=_db_port, database=staging_schema,
+        ).render_as_string(hide_password=False),
         pool_recycle=3600,
         pool_pre_ping=True,
     )
 
     prod_engine = create_engine(
-        f"mysql+pymysql://{_db_user}:{_db_pass}@{_db_host}:{_db_port}/{prod_schema}",
+        URL.create(
+            drivername="mysql+pymysql", username=_db_user, password=_db_pass,
+            host=_db_host, port=_db_port, database=prod_schema,
+        ).render_as_string(hide_password=False),
         pool_recycle=3600,
         pool_pre_ping=True,
     )

@@ -27,6 +27,7 @@ import logging
 import os
 
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.engine import URL
 
 
 MYSQL_USER = os.environ.get("DB_USER", "")
@@ -43,8 +44,15 @@ logger = logging.getLogger(__name__)
 
 
 def create_mysql_engine(schema: str):
-    """Create SQLAlchemy engine for a given schema."""
-    url = f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASS}@{MYSQL_HOST}:{MYSQL_PORT}/{schema}"
+    """Create SQLAlchemy engine for a given schema.
+
+    Built via URL.create (same as deid/config/schema.py DbConfig.connection_string) so
+    special characters in DB_PASS (e.g. @) are percent-encoded correctly.
+    """
+    url = URL.create(
+        drivername="mysql+pymysql", username=MYSQL_USER, password=MYSQL_PASS,
+        host=MYSQL_HOST, port=MYSQL_PORT, database=schema,
+    ).render_as_string(hide_password=False)
     return create_engine(url, pool_recycle=3600, pool_pre_ping=True)
 
 

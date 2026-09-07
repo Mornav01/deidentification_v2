@@ -1,6 +1,7 @@
 import os
 import time
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import URL
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
 import pandas as pd
 from datetime import datetime
@@ -84,12 +85,23 @@ def parse_args():
 # DB helpers
 # ============================
 def _db_url(schema: str) -> str:
-    """Build a MySQL connection URL. Set DB_USER / DB_PASS / DB_HOST / DB_PORT env vars."""
+    """Build a MySQL connection URL. Set DB_USER / DB_PASS / DB_HOST / DB_PORT env vars.
+
+    Built via URL.create (same as deid/config/schema.py DbConfig.connection_string) so
+    special characters in DB_PASS (e.g. @) are percent-encoded correctly.
+    """
     user     = os.environ.get("DB_USER", "")
     password = os.environ.get("DB_PASS", "")
     host     = os.environ.get("DB_HOST", "localhost")
     port     = os.environ.get("DB_PORT", "3306")
-    return f"mysql+pymysql://{user}:{password}@{host}:{port}/{schema}"
+    return URL.create(
+        drivername="mysql+pymysql",
+        username=user,
+        password=password,
+        host=host,
+        port=int(port),
+        database=schema,
+    ).render_as_string(hide_password=False)
 
 
 def stream_cdc_data(engine, table_name, batch_size=10000):
